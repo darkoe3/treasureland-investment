@@ -1,7 +1,21 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 
-from .models import Agency, Game, Person, TPMCode, User, UserAgencyAssignment, WeeklyGameSchedule
+from .models import (
+    Agency,
+    AuditLog,
+    DailySheet,
+    DailySheetGame,
+    Game,
+    OmittedTerminal,
+    Person,
+    TPMCode,
+    TPMDailyTransaction,
+    TransactionGameSale,
+    User,
+    UserAgencyAssignment,
+    WeeklyGameSchedule,
+)
 
 
 @admin.register(User)
@@ -75,3 +89,97 @@ class WeeklyGameScheduleAdmin(admin.ModelAdmin):
     list_filter = ("weekday", "is_active", "game")
     search_fields = ("game__name",)
     ordering = ("weekday", "display_order", "closing_time")
+
+
+class DailySheetGameInline(admin.TabularInline):
+    model = DailySheetGame
+    extra = 0
+    readonly_fields = ("game_name_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
+
+
+@admin.register(DailySheet)
+class DailySheetAdmin(admin.ModelAdmin):
+    list_display = ("agency", "transaction_date", "status", "incoming_funds", "tax", "gross_sales", "total_to_pay", "created_by")
+    list_filter = ("status", "agency", "transaction_date", "created_at")
+    search_fields = ("agency__name", "created_by__email", "reconciliation_note", "return_comment", "reopen_reason")
+    date_hierarchy = "transaction_date"
+    readonly_fields = ("created_at", "updated_at", "gross_sales", "total_to_pay", "commission", "variance", "variance_status")
+    inlines = [DailySheetGameInline]
+
+    @admin.display(description="Gross Sales")
+    def gross_sales(self, obj):
+        return obj.totals()["gross_sales"]
+
+    @admin.display(description="Total To Pay")
+    def total_to_pay(self, obj):
+        return obj.totals()["total_to_pay"]
+
+    @admin.display(description="Commission")
+    def commission(self, obj):
+        return obj.totals()["commission"]
+
+    @admin.display(description="Variance")
+    def variance(self, obj):
+        return obj.totals()["variance"]
+
+    @admin.display(description="Variance Status")
+    def variance_status(self, obj):
+        return obj.totals()["variance_status"]
+
+
+@admin.register(DailySheetGame)
+class DailySheetGameAdmin(admin.ModelAdmin):
+    list_display = ("daily_sheet", "game_name_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
+    list_filter = ("daily_sheet__agency", "game")
+    search_fields = ("game_name_snapshot", "daily_sheet__agency__name")
+    date_hierarchy = "created_at"
+
+
+class TransactionGameSaleInline(admin.TabularInline):
+    model = TransactionGameSale
+    extra = 0
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(TPMDailyTransaction)
+class TPMDailyTransactionAdmin(admin.ModelAdmin):
+    list_display = ("daily_sheet", "tpm_code", "person_name_snapshot", "agent_type_snapshot", "net_sales", "commission", "to_pay", "created_by")
+    list_filter = ("daily_sheet__agency", "agent_type_snapshot", "created_at")
+    search_fields = ("tpm_code__code", "person_name_snapshot", "daily_sheet__agency__name")
+    date_hierarchy = "created_at"
+    readonly_fields = ("person_name_snapshot", "agent_type_snapshot", "net_sales", "commission", "to_pay", "created_at", "updated_at")
+    inlines = [TransactionGameSaleInline]
+
+
+@admin.register(TransactionGameSale)
+class TransactionGameSaleAdmin(admin.ModelAdmin):
+    list_display = ("transaction", "daily_sheet_game", "amount", "created_at")
+    list_filter = ("daily_sheet_game__daily_sheet__agency", "daily_sheet_game__game")
+    search_fields = ("transaction__tpm_code__code", "daily_sheet_game__game_name_snapshot")
+    date_hierarchy = "created_at"
+
+
+@admin.register(OmittedTerminal)
+class OmittedTerminalAdmin(admin.ModelAdmin):
+    list_display = ("daily_sheet", "tpm_code", "recorded_by", "created_at")
+    list_filter = ("daily_sheet__agency", "created_at")
+    search_fields = ("tpm_code__code", "tpm_code__person__full_name", "reason")
+    date_hierarchy = "created_at"
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "action", "agency", "daily_sheet", "user", "model_name", "object_id")
+    list_filter = ("action", "agency", "created_at")
+    search_fields = ("user__email", "agency__name", "model_name", "object_id", "description")
+    date_hierarchy = "created_at"
+    readonly_fields = ("user", "agency", "daily_sheet", "action", "model_name", "object_id", "old_values", "new_values", "description", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

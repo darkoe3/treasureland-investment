@@ -3,11 +3,15 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AgencyViewSet,
+    AuditLogViewSet,
+    DailySheetViewSet,
     GameViewSet,
     LoginView,
+    OmittedTerminalViewSet,
     PersonViewSet,
     RefreshView,
     TPMCodeViewSet,
+    TPMDailyTransactionViewSet,
     UserAgencyAssignmentViewSet,
     WeeklyGameScheduleViewSet,
     current_user_view,
@@ -21,6 +25,10 @@ router.register("people", PersonViewSet, basename="person")
 router.register("tpm-codes", TPMCodeViewSet, basename="tpm-code")
 router.register("games", GameViewSet, basename="game")
 router.register("weekly-game-schedules", WeeklyGameScheduleViewSet, basename="weekly-game-schedule")
+router.register("daily-sheets", DailySheetViewSet, basename="daily-sheet")
+router.register("tpm-daily-transactions", TPMDailyTransactionViewSet, basename="tpm-daily-transaction")
+router.register("omitted-terminals", OmittedTerminalViewSet, basename="omitted-terminal")
+router.register("audit-logs", AuditLogViewSet, basename="audit-log")
 
 urlpatterns = [
     path("auth/login/", LoginView.as_view(), name="token_obtain_pair"),

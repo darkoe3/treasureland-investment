@@ -29,6 +29,21 @@ test("auth routes avoid browser storage and token responses", async () => {
   assert.doesNotMatch(await file("lib/client-api.js"), /ACCESS_COOKIE|REFRESH_COOKIE|Authorization/);
 });
 
+test("staging deployment keeps api base server-only and cookies secure in production", async () => {
+  const envExample = await file(".env.example");
+  const backendUrl = await file("lib/backend-url.js");
+  const authCookies = await file("lib/auth-cookies.js");
+  const clientApi = await file("lib/client-api.js");
+
+  assert.match(envExample, /^API_BASE_URL=/m);
+  assert.doesNotMatch(envExample, /^NEXT_PUBLIC_API_BASE_URL=/m);
+  assert.match(backendUrl, /process\.env\.API_BASE_URL/);
+  assert.doesNotMatch(clientApi, /process\.env\.API_BASE_URL|NEXT_PUBLIC_API_BASE_URL/);
+  assert.match(authCookies, /secure: process\.env\.NODE_ENV === "production"/);
+  assert.match(authCookies, /httpOnly: true/);
+  assert.match(authCookies, /sameSite: "lax"/);
+});
+
 test("state-changing auth endpoints require csrf validation", async () => {
   assert.match(await file("app/api/auth/login/route.js"), /validateCsrf\(request, store\)/);
   assert.match(await file("app/api/auth/logout/route.js"), /validateCsrf\(request, store\)/);

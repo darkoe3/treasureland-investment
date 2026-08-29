@@ -1,8 +1,9 @@
 from datetime import date
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import resolve, reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -19,6 +20,25 @@ from core.models import (
 
 
 User = get_user_model()
+
+
+class DeploymentReadinessTests(SimpleTestCase):
+    def test_health_endpoint_is_public_and_minimal(self):
+        response = self.client.get("/api/health/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json(), {"status": "ok"})
+
+    def test_static_files_are_configured_for_whitenoise(self):
+        self.assertIn("whitenoise.middleware.WhiteNoiseMiddleware", settings.MIDDLEWARE)
+        self.assertEqual(
+            settings.STORAGES["staticfiles"]["BACKEND"],
+            "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        )
+
+    def test_production_security_settings_are_environment_driven(self):
+        self.assertEqual(settings.SECURE_PROXY_SSL_HEADER, ("HTTP_X_FORWARDED_PROTO", "https"))
+        self.assertIsInstance(settings.ALLOWED_HOSTS, list)
+        self.assertIsInstance(settings.CSRF_TRUSTED_ORIGINS, list)
 
 
 class Phase3APITests(APITestCase):

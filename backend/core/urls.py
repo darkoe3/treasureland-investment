@@ -16,6 +16,7 @@ from .views import (
     UserAgencyAssignmentViewSet,
     WeeklyGameScheduleViewSet,
     current_user_view,
+    health_view,
     logout_view,
 )
 
@@ -33,6 +34,7 @@ router.register("omitted-terminals", OmittedTerminalViewSet, basename="omitted-t
 router.register("audit-logs", AuditLogViewSet, basename="audit-log")
 
 urlpatterns = [
+    path("health/", health_view, name="health"),
     path("auth/login/", LoginView.as_view(), name="token_obtain_pair"),
     path("auth/refresh/", RefreshView.as_view(), name="token_refresh"),
     path("auth/logout/", logout_view, name="token_blacklist"),

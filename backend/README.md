@@ -103,6 +103,43 @@ npm run lint
 npm run build
 ```
 
+## First Staging Deployment
+
+Render hosts the Django service and PostgreSQL database. Use the backend directory as the service root.
+
+Render build command:
+
+```text
+bash render-build.sh
+```
+
+Render start command:
+
+```text
+gunicorn config.wsgi:application
+```
+
+Required Render environment variables:
+
+- `SECRET_KEY`: generated secret value.
+- `DEBUG`: `False`.
+- `DATABASE_URL`: Render PostgreSQL internal connection string.
+- `ALLOWED_HOSTS`: comma-separated Render hostnames, for example the Render service host.
+- `CORS_ALLOWED_ORIGINS`: comma-separated Vercel frontend origins with `https://`.
+- `CSRF_TRUSTED_ORIGINS`: comma-separated Vercel frontend origins with `https://`.
+- `JWT_ACCESS_MINUTES`: usually `10`.
+- `JWT_REFRESH_DAYS`: usually `7`.
+- `TIME_ZONE`: `Africa/Accra`.
+
+Optional hardening variables after the HTTPS custom domain is verified:
+
+- `SECURE_SSL_REDIRECT=True`
+- `SECURE_HSTS_SECONDS=31536000`
+- `SECURE_HSTS_INCLUDE_SUBDOMAINS=True`
+- `SECURE_HSTS_PRELOAD=True`
+
+Do not store database credentials, domains or secrets in source control. Keep the public health check minimal at `GET /api/health/`; it returns only `{"status":"ok"}`.
+
 ## Known Assumptions
 
 - Draft sheets may leave `incoming_funds` and `tax` blank until submission.

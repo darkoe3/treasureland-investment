@@ -17,6 +17,18 @@ API_BASE_URL=http://127.0.0.1:8000/api
 
 `API_BASE_URL` is server-only. Do not expose backend secrets or JWTs through `NEXT_PUBLIC_*`.
 
+## Vercel Staging Configuration
+
+Set this environment variable in Vercel:
+
+```text
+API_BASE_URL=https://your-render-service.onrender.com/api
+```
+
+Do not set `NEXT_PUBLIC_API_BASE_URL`. Browser code must keep calling same-origin Next.js route handlers under `/api/auth/*` and `/api/backend/*`; those handlers forward to Django from the server side.
+
+Production deployments must use HTTPS. The JWT cookies are HTTP-only, use `sameSite: "lax"`, and use `secure: true` when `NODE_ENV=production`, which is the Vercel production build/runtime default.
+
 ## Authentication Architecture
 
 The browser calls Next.js Route Handlers under `/api/auth/*`. Those handlers call the Django REST API, then store JWT access and refresh tokens in HTTP-only cookies:

@@ -54,6 +54,14 @@ Premier Office Payment = Incoming Funds - Commission Minus Tax
 - `GET /api/games/for-date/?date=YYYY-MM-DD`
 - `GET /api/audit-logs/`
 - `GET /api/audit-logs/{id}/`
+- `GET|POST /api/accountants/`
+- `GET|PATCH /api/accountants/{id}/`
+- `POST /api/accountants/{id}/set-agencies/`
+- `POST /api/accountants/{id}/reset-password/`
+- `POST /api/accountants/{id}/activate/`
+- `POST /api/accountants/{id}/deactivate/`
+
+Accountant management action URLs are hyphenated DRF action paths. Use `set-agencies` and `reset-password`, not the Python method names `set_agencies` or `reset_password`, and keep Django's trailing slash.
 
 Daily sheets support `agency`, `date`, `date_from`, `date_to`, `status` and `created_by` query filters.
 
@@ -101,3 +109,26 @@ npm run build
 - Accountants submit sheets through their assigned agency edit permission.
 - Reopen reason is stored in `reopen_reason` and audit history.
 - All five agencies share the same active weekly game schedule for a weekday.
+
+## Phase 3 Authentication And Accountants
+
+The Next.js frontend acts as a Backend-for-Frontend. It sends credentials to Django, stores JWTs only in HTTP-only cookies, and calls protected Django endpoints from server-side route handlers. Django remains the source of truth for authentication and authorization.
+
+`GET /api/auth/me/` returns safe profile data:
+
+- Super Admin: role, profile and all active agencies.
+- Accountant: role, profile and assigned agencies with permission flags.
+
+Super Admin accountant management uses `/api/accountants/`. Passwords are validated with Django password validators and saved with `set_password()`. Accountant deactivation keeps historical daily sheets, transactions and audit records intact.
+
+For Render/Vercel deployment, configure:
+
+- Backend: `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` with the Vercel origin.
+- Frontend: server-only `API_BASE_URL` pointing to the Render `/api` base URL.
+
+Manual checks for the training manual:
+
+- Confirm inactive accountants cannot log in.
+- Confirm accountants see only assigned agencies.
+- Confirm Super Admin can assign separate permission flags per agency.
+- Confirm accountant management audit logs do not expose password values.

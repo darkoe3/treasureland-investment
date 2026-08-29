@@ -20,6 +20,7 @@ from .models import (
     TPMCode,
     TPMDailyTransaction,
     TransactionGameSale,
+    User,
     UserAgencyAssignment,
     UserRole,
     WeeklyGameSchedule,
@@ -28,7 +29,13 @@ from .models import (
 from .permissions import IsSuperAdmin, SuperAdminOnlyWrites, SuperAdminOrReadOnlyAccountant
 from .serializers import (
     AgencySerializer,
+    AccountantCreateSerializer,
+    AccountantPasswordResetSerializer,
+    AccountantSerializer,
+    AccountantSetAgenciesSerializer,
+    AccountantUpdateSerializer,
     AuditLogSerializer,
+    CurrentUserSerializer,
     DailySheetGameSerializer,
     DailySheetSerializer,
     EmailTokenObtainPairSerializer,
@@ -38,7 +45,6 @@ from .serializers import (
     TPMCodeSerializer,
     TPMDailyTransactionSerializer,
     UserAgencyAssignmentSerializer,
-    UserProfileSerializer,
     WeeklyGameScheduleSerializer,
 )
 
@@ -67,7 +73,8 @@ def logout_view(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def current_user_view(request):
-    return Response(UserProfileSerializer(request.user).data)
+    user = User.objects.prefetch_related("agency_assignments__agency").get(pk=request.user.pk)
+    return Response(CurrentUserSerializer(user).data)
 
 
 class BaseSearchViewSet(viewsets.ModelViewSet):
@@ -159,6 +166,163 @@ class UserAgencyAssignmentViewSet(BaseSearchViewSet):
 
     def perform_create(self, serializer):
         serializer.save(assigned_by=self.request.user)
+
+
+class AccountantViewSet(BaseSearchViewSet):
+    permission_classes = [IsSuperAdmin]
+    search_fields = ["email", "full_name", "agency_assignments__agency__name"]
+    ordering_fields = ["email", "full_name", "created_at", "is_active"]
+
+    def get_queryset(self):
+        return (
+            User.objects.filter(role=UserRole.ACCOUNTANT)
+            .prefetch_related("agency_assignments__agency")
+            .order_by("email")
+            .distinct()
+        )
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return AccountantCreateSerializer
+        if self.action in {"partial_update", "update"}:
+            return AccountantUpdateSerializer
+        return AccountantSerializer
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        active = request.query_params.get("active")
+        if active in {"true", "false"}:
+            queryset = queryset.filter(is_active=active == "true")
+        page = self.paginate_queryset(queryset)
+        serializer = AccountantSerializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+    def perform_create(self, serializer):
+        user = serializer.save()
+        log_audit(
+            self.request.user,
+            None,
+            "ACCOUNTANT_CREATED",
+            "User",
+            user.id,
+            new_values={"email": user.email, "full_name": user.full_name, "is_active": user.is_active},
+            description=f"Accountant created: {user.email}",
+        )
+
+    def perform_update(self, serializer):
+        user = self.get_object()
+        old_values = {"email": user.email, "full_name": user.full_name, "is_active": user.is_active, "role": user.role}
+        updated = serializer.save(role=UserRole.ACCOUNTANT, is_staff=False, is_superuser=False)
+        log_audit(
+            self.request.user,
+            None,
+            "ACCOUNTANT_UPDATED",
+            "User",
+            updated.id,
+            old_values=old_values,
+            new_values={"email": updated.email, "full_name": updated.full_name, "is_active": updated.is_active, "role": updated.role},
+            description=f"Accountant updated: {updated.email}",
+        )
+
+    @action(detail=True, methods=["post"], url_path="set-agencies")
+    def set_agencies(self, request, pk=None):
+        accountant = self.get_object()
+        serializer = AccountantSetAgenciesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        assignments = serializer.validated_data["agency_assignments"]
+        with transaction.atomic():
+            old_values = [
+                {
+                    "agency": item.agency_id,
+                    "can_create": item.can_create,
+                    "can_edit": item.can_edit,
+                    "can_delete": item.can_delete,
+                    "can_export": item.can_export,
+                    "can_view_history": item.can_view_history,
+                }
+                for item in accountant.agency_assignments.select_related("agency")
+            ]
+            accountant.agency_assignments.all().delete()
+            new_values = []
+            for item in assignments:
+                assignment = UserAgencyAssignment.objects.create(
+                    user=accountant,
+                    agency=item["agency"],
+                    can_create=item["can_create"],
+                    can_edit=item["can_edit"],
+                    can_delete=item["can_delete"],
+                    can_export=item["can_export"],
+                    can_view_history=item["can_view_history"],
+                    assigned_by=request.user,
+                )
+                assignment_values = {
+                    "accountant": accountant.id,
+                    "agency": assignment.agency_id,
+                    "can_create": assignment.can_create,
+                    "can_edit": assignment.can_edit,
+                    "can_delete": assignment.can_delete,
+                    "can_export": assignment.can_export,
+                    "can_view_history": assignment.can_view_history,
+                }
+                new_values.append(assignment_values)
+                log_audit(
+                    request.user,
+                    assignment.agency,
+                    "ACCOUNTANT_AGENCY_ASSIGNED",
+                    "UserAgencyAssignment",
+                    assignment.id,
+                    new_values=assignment_values,
+                    description=f"Agency permissions set for {accountant.email}",
+                )
+            log_audit(
+                request.user,
+                None,
+                "ACCOUNTANT_AGENCIES_SET",
+                "User",
+                accountant.id,
+                old_values={"agency_assignments": old_values},
+                new_values={"agency_assignments": new_values},
+                description=f"Agency assignments replaced for {accountant.email}",
+            )
+        refreshed = self.get_queryset().get(pk=accountant.pk)
+        return Response(AccountantSerializer(refreshed).data)
+
+    @action(detail=True, methods=["post"], url_path="reset-password")
+    def reset_password(self, request, pk=None):
+        accountant = self.get_object()
+        serializer = AccountantPasswordResetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        accountant.set_password(serializer.validated_data["password"])
+        accountant.save(update_fields=["password", "updated_at"])
+        log_audit(
+            request.user,
+            None,
+            "ACCOUNTANT_PASSWORD_RESET",
+            "User",
+            accountant.id,
+            description=f"Password reset for {accountant.email}",
+        )
+        return Response({"detail": "Password reset successfully."})
+
+    @action(detail=True, methods=["post"])
+    def activate(self, request, pk=None):
+        accountant = self.get_object()
+        old_active = accountant.is_active
+        accountant.is_active = True
+        accountant.save(update_fields=["is_active", "updated_at"])
+        log_audit(request.user, None, "ACCOUNTANT_ACTIVATED", "User", accountant.id, {"is_active": old_active}, {"is_active": True}, f"Accountant activated: {accountant.email}")
+        return Response(AccountantSerializer(accountant).data)
+
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        accountant = self.get_object()
+        old_active = accountant.is_active
+        accountant.is_active = False
+        accountant.save(update_fields=["is_active", "updated_at"])
+        log_audit(request.user, None, "ACCOUNTANT_DEACTIVATED", "User", accountant.id, {"is_active": old_active}, {"is_active": False}, f"Accountant deactivated: {accountant.email}")
+        return Response(AccountantSerializer(accountant).data)
 
 
 class PersonViewSet(BaseSearchViewSet):

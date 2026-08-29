@@ -533,7 +533,7 @@ class OmittedTerminal(TimeStampedModel):
 
 class AuditLog(models.Model):
     user = models.ForeignKey(User, on_delete=models.PROTECT, related_name="audit_logs")
-    agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="audit_logs")
+    agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="audit_logs", null=True, blank=True)
     daily_sheet = models.ForeignKey(DailySheet, on_delete=models.CASCADE, related_name="audit_logs", null=True, blank=True)
     action = models.CharField(max_length=40, choices=AuditAction.choices)
     model_name = models.CharField(max_length=120)

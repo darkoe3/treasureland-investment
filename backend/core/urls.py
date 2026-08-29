@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AgencyViewSet,
+    AccountantViewSet,
     AuditLogViewSet,
     DailySheetViewSet,
     GameViewSet,
@@ -20,6 +21,7 @@ from .views import (
 
 router = DefaultRouter()
 router.register("agencies", AgencyViewSet, basename="agency")
+router.register("accountants", AccountantViewSet, basename="accountant")
 router.register("agency-assignments", UserAgencyAssignmentViewSet, basename="agency-assignment")
 router.register("people", PersonViewSet, basename="person")
 router.register("tpm-codes", TPMCodeViewSet, basename="tpm-code")

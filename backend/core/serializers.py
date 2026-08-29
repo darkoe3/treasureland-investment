@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
 from django.db.models import Sum
 from rest_framework import serializers
@@ -34,6 +35,43 @@ class UserProfileSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class AgencyBriefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Agency
+        fields = ("id", "name", "code")
+        read_only_fields = fields
+
+
+class UserAgencyProfileSerializer(serializers.ModelSerializer):
+    agency = AgencyBriefSerializer(read_only=True)
+
+    class Meta:
+        model = UserAgencyAssignment
+        fields = ("agency", "can_create", "can_edit", "can_delete", "can_export", "can_view_history")
+        read_only_fields = fields
+
+
+class CurrentUserSerializer(serializers.ModelSerializer):
+    agency_assignments = serializers.SerializerMethodField()
+    active_agencies = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ("id", "email", "full_name", "role", "is_active", "agency_assignments", "active_agencies")
+        read_only_fields = fields
+
+    def get_agency_assignments(self, user):
+        if user.role != UserRole.ACCOUNTANT:
+            return []
+        assignments = user.agency_assignments.select_related("agency").filter(agency__is_active=True)
+        return UserAgencyProfileSerializer(assignments, many=True).data
+
+    def get_active_agencies(self, user):
+        if user.role != UserRole.SUPER_ADMIN:
+            return []
+        return AgencyBriefSerializer(Agency.objects.filter(is_active=True).order_by("name"), many=True).data
+
+
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = User.USERNAME_FIELD
 
@@ -54,7 +92,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         return {
             "refresh": str(refresh),
             "access": str(refresh.access_token),
-            "user": UserProfileSerializer(user).data,
+            "user": CurrentUserSerializer(user).data,
         }
 
     @classmethod
@@ -101,6 +139,112 @@ class UserAgencyAssignmentSerializer(serializers.ModelSerializer):
         if user.role != UserRole.ACCOUNTANT:
             raise serializers.ValidationError("Only accountants can be assigned to agencies.")
         return user
+
+
+class AccountantAssignmentInputSerializer(serializers.Serializer):
+    agency = serializers.PrimaryKeyRelatedField(queryset=Agency.objects.filter(is_active=True))
+    can_create = serializers.BooleanField(default=False)
+    can_edit = serializers.BooleanField(default=False)
+    can_delete = serializers.BooleanField(default=False)
+    can_export = serializers.BooleanField(default=False)
+    can_view_history = serializers.BooleanField(default=False)
+
+
+class AccountantSerializer(serializers.ModelSerializer):
+    agency_assignments = UserAgencyProfileSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = User
+        fields = ("id", "email", "full_name", "role", "is_active", "agency_assignments", "created_at", "updated_at")
+        read_only_fields = ("id", "role", "agency_assignments", "created_at", "updated_at")
+
+
+class AccountantCreateSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+    agency_assignments = AccountantAssignmentInputSerializer(many=True, required=False)
+
+    class Meta:
+        model = User
+        fields = ("id", "email", "full_name", "password", "is_active", "agency_assignments")
+
+    def validate_email(self, email):
+        normalized = User.objects.normalize_email(email).lower()
+        if User.objects.filter(email__iexact=normalized).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return normalized
+
+    def validate_password(self, password):
+        validate_password(password)
+        return password
+
+    def validate_agency_assignments(self, assignments):
+        agency_ids = [item["agency"].id for item in assignments]
+        if len(agency_ids) != len(set(agency_ids)):
+            raise serializers.ValidationError("Duplicate agency assignments are not allowed.")
+        return assignments
+
+    @transaction.atomic
+    def create(self, validated_data):
+        assignments = validated_data.pop("agency_assignments", [])
+        password = validated_data.pop("password")
+        user = User(
+            role=UserRole.ACCOUNTANT,
+            is_staff=False,
+            is_superuser=False,
+            **validated_data,
+        )
+        user.set_password(password)
+        user.save()
+        assigned_by = self.context["request"].user
+        UserAgencyAssignment.objects.bulk_create(
+            [
+                UserAgencyAssignment(
+                    user=user,
+                    agency=item["agency"],
+                    can_create=item["can_create"],
+                    can_edit=item["can_edit"],
+                    can_delete=item["can_delete"],
+                    can_export=item["can_export"],
+                    can_view_history=item["can_view_history"],
+                    assigned_by=assigned_by,
+                )
+                for item in assignments
+            ]
+        )
+        return user
+
+
+class AccountantUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ("email", "full_name", "is_active")
+
+    def validate_email(self, email):
+        normalized = User.objects.normalize_email(email).lower()
+        queryset = User.objects.filter(email__iexact=normalized)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return normalized
+
+
+class AccountantSetAgenciesSerializer(serializers.Serializer):
+    agency_assignments = AccountantAssignmentInputSerializer(many=True)
+
+    def validate_agency_assignments(self, assignments):
+        agency_ids = [item["agency"].id for item in assignments]
+        if len(agency_ids) != len(set(agency_ids)):
+            raise serializers.ValidationError("Duplicate agency assignments are not allowed.")
+        return assignments
+
+
+class AccountantPasswordResetSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate_password(self, password):
+        validate_password(password)
+        return password
 
 
 class PersonSerializer(serializers.ModelSerializer):

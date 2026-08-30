@@ -168,4 +168,20 @@ Manual checks for the training manual:
 - Confirm inactive accountants cannot log in.
 - Confirm accountants see only assigned agencies.
 - Confirm Super Admin can assign separate permission flags per agency.
+
+## Phase 4 Notes
+
+Phase 4 completes daily operations using the existing core models. Accountants can manage people, TPM codes, sheets, transaction rows and omissions only for assigned agencies where the relevant permission flag allows it. The backend enforces object-level agency checks.
+
+TPM code uniqueness is enforced case-insensitively. People and TPM codes are safely deactivated so transaction history remains intact. Omitted-terminal removals mark records inactive to preserve history.
+
+Manual tax is stored on `DailySheet` but does not reduce calculated To Pay. Difference remains `incoming_funds - total_to_pay`.
+
+Run local verification without connecting to staging:
+
+```bash
+python manage.py makemigrations --check
+python manage.py check
+python manage.py test
+```
 - Confirm accountant management audit logs do not expose password values.

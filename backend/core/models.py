@@ -5,6 +5,7 @@ from django.contrib.auth.models import PermissionsMixin
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, Sum
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 
@@ -154,6 +155,9 @@ class TPMCode(TimeStampedModel):
 
     class Meta:
         ordering = ["code"]
+        constraints = [
+            models.UniqueConstraint(Lower("code"), name="unique_tpm_code_case_insensitive"),
+        ]
         indexes = [
             models.Index(fields=["code", "is_active"]),
             models.Index(fields=["person", "is_active"]),
@@ -362,7 +366,6 @@ class DailySheet(TimeStampedModel):
         )
         incoming = money(self.incoming_funds)
         tax = money(self.tax)
-        commission_minus_tax = money(commission - tax)
         variance = money(incoming - total_to_pay)
         if variance == 0:
             variance_status = VarianceStatus.BALANCED
@@ -377,8 +380,7 @@ class DailySheet(TimeStampedModel):
             "subagent_sales": subagent_sales,
             "subagent_share": money(subagent_sales * SUBAGENT_RATE),
             "organisation_share_on_subagent_sales": money(subagent_sales * ORGANISATION_SUBAGENT_RATE),
-            "commission_minus_tax": commission_minus_tax,
-            "premier_office_payment": money(incoming - commission_minus_tax),
+            "tax": tax,
             "variance": variance,
             "variance_status": variance_status,
         }
@@ -498,11 +500,16 @@ class OmittedTerminal(TimeStampedModel):
     tpm_code = models.ForeignKey(TPMCode, on_delete=models.PROTECT, related_name="omissions")
     reason = models.TextField()
     recorded_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="recorded_terminal_omissions")
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["tpm_code__code"]
         constraints = [
-            models.UniqueConstraint(fields=["daily_sheet", "tpm_code"], name="unique_omitted_terminal_per_sheet"),
+            models.UniqueConstraint(
+                fields=["daily_sheet", "tpm_code"],
+                condition=Q(is_active=True),
+                name="unique_active_omitted_terminal_per_sheet",
+            ),
         ]
         indexes = [
             models.Index(fields=["daily_sheet", "tpm_code"]),
@@ -516,7 +523,7 @@ class OmittedTerminal(TimeStampedModel):
         if self.daily_sheet_id and self.tpm_code_id:
             if self.tpm_code.person.agency_id != self.daily_sheet.agency_id:
                 errors["tpm_code"] = "TPM code must belong to the DailySheet agency."
-            if TPMDailyTransaction.objects.filter(daily_sheet=self.daily_sheet, tpm_code=self.tpm_code).exists():
+            if self.is_active and TPMDailyTransaction.objects.filter(daily_sheet=self.daily_sheet, tpm_code=self.tpm_code).exists():
                 errors["tpm_code"] = "TPM code cannot be both entered and omitted on the same sheet."
         if not self.reason.strip():
             errors["reason"] = "Reason is required."

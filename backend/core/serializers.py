@@ -249,12 +249,18 @@ class AccountantPasswordResetSerializer(serializers.Serializer):
 
 class PersonSerializer(serializers.ModelSerializer):
     agency_name = serializers.CharField(source="agency.name", read_only=True)
-    tpm_codes = serializers.StringRelatedField(many=True, read_only=True)
+    tpm_codes = serializers.SerializerMethodField()
 
     class Meta:
         model = Person
         fields = ("id", "agency", "agency_name", "full_name", "agent_type", "is_active", "tpm_codes", "created_at", "updated_at")
         read_only_fields = ("created_at", "updated_at")
+
+    def get_tpm_codes(self, obj):
+        return [
+            {"id": code.id, "code": code.code, "is_active": code.is_active}
+            for code in obj.tpm_codes.all().order_by("code")
+        ]
 
 
 class TPMCodeSerializer(serializers.ModelSerializer):
@@ -266,6 +272,14 @@ class TPMCodeSerializer(serializers.ModelSerializer):
         model = TPMCode
         fields = ("id", "person", "person_name", "agency", "agency_name", "code", "is_active", "created_at", "updated_at")
         read_only_fields = ("created_at", "updated_at")
+
+    def validate_code(self, code):
+        queryset = TPMCode.objects.filter(code__iexact=code.strip())
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError("A TPM code with this value already exists.")
+        return code.strip()
 
 
 class GameSerializer(serializers.ModelSerializer):
@@ -397,8 +411,8 @@ class TPMDailyTransactionSerializer(serializers.ModelSerializer):
             expected_ids = set(daily_sheet.sheet_games.values_list("id", flat=True))
             if set(game_ids) != expected_ids:
                 raise serializers.ValidationError({"sales": "Provide exactly one sale entry for every game on the sheet."})
-        if request and request.user.role != UserRole.SUPER_ADMIN and daily_sheet and not daily_sheet.is_accountant_editable:
-            raise serializers.ValidationError("This sheet is locked against accountant changes.")
+        if daily_sheet and not daily_sheet.is_accountant_editable:
+            raise serializers.ValidationError("This sheet is locked against changes.")
         return attrs
 
     @transaction.atomic
@@ -449,7 +463,7 @@ class OmittedTerminalSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OmittedTerminal
-        fields = ("id", "daily_sheet", "tpm_code", "tpm_code_value", "person_name", "reason", "recorded_by", "created_at", "updated_at")
+        fields = ("id", "daily_sheet", "tpm_code", "tpm_code_value", "person_name", "reason", "recorded_by", "is_active", "created_at", "updated_at")
         read_only_fields = ("recorded_by", "created_at", "updated_at")
 
     def validate(self, attrs):
@@ -460,8 +474,10 @@ class OmittedTerminalSerializer(serializers.ModelSerializer):
         if daily_sheet and tpm_code:
             if tpm_code.person.agency_id != daily_sheet.agency_id:
                 raise serializers.ValidationError({"tpm_code": "TPM code must belong to the DailySheet agency."})
-            if TPMDailyTransaction.objects.filter(daily_sheet=daily_sheet, tpm_code=tpm_code).exists():
+            if attrs.get("is_active", getattr(self.instance, "is_active", True)) and TPMDailyTransaction.objects.filter(daily_sheet=daily_sheet, tpm_code=tpm_code).exists():
                 raise serializers.ValidationError({"tpm_code": "TPM code cannot be both entered and omitted."})
+        if not (attrs.get("reason") or getattr(self.instance, "reason", "")).strip():
+            raise serializers.ValidationError({"reason": "Reason is required."})
         return attrs
 
 
@@ -474,8 +490,7 @@ class DailySheetSerializer(serializers.ModelSerializer):
     subagent_sales = serializers.SerializerMethodField()
     subagent_share = serializers.SerializerMethodField()
     organisation_share_on_subagent_sales = serializers.SerializerMethodField()
-    commission_minus_tax = serializers.SerializerMethodField()
-    premier_office_payment = serializers.SerializerMethodField()
+    manual_tax = serializers.SerializerMethodField()
     variance = serializers.SerializerMethodField()
     variance_status = serializers.SerializerMethodField()
     zero_sales_count = serializers.SerializerMethodField()
@@ -516,8 +531,7 @@ class DailySheetSerializer(serializers.ModelSerializer):
             "subagent_sales",
             "subagent_share",
             "organisation_share_on_subagent_sales",
-            "commission_minus_tax",
-            "premier_office_payment",
+            "manual_tax",
             "variance",
             "variance_status",
             "zero_sales_count",
@@ -566,11 +580,8 @@ class DailySheetSerializer(serializers.ModelSerializer):
     def get_organisation_share_on_subagent_sales(self, obj):
         return self._totals(obj)["organisation_share_on_subagent_sales"]
 
-    def get_commission_minus_tax(self, obj):
-        return self._totals(obj)["commission_minus_tax"]
-
-    def get_premier_office_payment(self, obj):
-        return self._totals(obj)["premier_office_payment"]
+    def get_manual_tax(self, obj):
+        return self._totals(obj)["tax"]
 
     def get_variance(self, obj):
         return self._totals(obj)["variance"]
@@ -596,7 +607,7 @@ class DailySheetSerializer(serializers.ModelSerializer):
         entered_ids = set(obj.transactions.values_list("tpm_code_id", flat=True))
         explicit = {
             item.tpm_code_id: item
-            for item in obj.omitted_terminals.select_related("tpm_code", "tpm_code__person")
+            for item in obj.omitted_terminals.select_related("tpm_code", "tpm_code__person").filter(is_active=True)
         }
         omitted_ids = sorted((active_ids - entered_ids) | set(explicit.keys()))
         items = []
@@ -654,8 +665,8 @@ class DailySheetSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"incoming_funds": "Incoming funds cannot be negative."})
         if attrs.get("tax") is not None and attrs["tax"] < 0:
             raise serializers.ValidationError({"tax": "Tax cannot be negative."})
-        if request and request.user.role != UserRole.SUPER_ADMIN and self.instance and not self.instance.is_accountant_editable:
-            raise serializers.ValidationError("This sheet is locked against accountant changes.")
+        if self.instance and not self.instance.is_accountant_editable:
+            raise serializers.ValidationError("This sheet is locked against changes.")
         return attrs
 
     @transaction.atomic

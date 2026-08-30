@@ -7,6 +7,16 @@ import { normalizeProxySegments, resolveBackendProxyRequest } from "../lib/backe
 import { ACCOUNTANT_ID_ERROR, saveAccountantWithAssignments } from "../lib/accountant-submit.js";
 import { apiPath, clientRequest, resetClientApiStateForTests } from "../lib/client-api.js";
 import { backendPathFromProxySegments, isAllowedBackendProxyPath } from "../lib/controlled-proxy-path.js";
+import {
+  actionAvailability,
+  activeTpmOptions,
+  buildTransactionPayload,
+  calculateTransactionPreview,
+  differenceLabel,
+  filterByVisibleAgency,
+  listFromPayload,
+  searchPeople,
+} from "../lib/phase4-operations.js";
 import { activeAgenciesFromPayload, buildAssignmentRows, listFromApiPayload, shouldSyncAgencyAssignments } from "../lib/resource-shapes.js";
 
 async function file(path) {
@@ -65,7 +75,8 @@ test("backend proxy is allowlisted and not an open proxy", async () => {
   const source = await file("app/api/backend/[...path]/route.js");
   const allowlist = await file("lib/controlled-proxy-path.js");
   assert.match(source, /resolveBackendProxyRequest/);
-  assert.match(allowlist, /ALLOWED_PREFIXES/);
+  assert.match(allowlist, /COLLECTION_METHODS/);
+  assert.match(allowlist, /DETAIL_METHODS/);
   assert.match(allowlist, /ACCOUNTANT_ACTION_METHODS/);
   assert.match(await file("lib/backend-proxy.js"), /API path is not allowed/);
   assert.equal(source.includes("destination"), false);
@@ -400,6 +411,86 @@ test("accountant proxy allowlist only permits supported action methods", () => {
   assert.equal(isAllowedBackendProxyPath("accountants/7/set-agencies", "GET"), false);
   assert.equal(isAllowedBackendProxyPath("accountants/7/reset-password", "GET"), false);
   assert.equal(isAllowedBackendProxyPath("accountants/7/unknown-action", "POST"), false);
+});
+
+test("phase 4 proxy allowlist permits exact operations and methods only", () => {
+  assert.equal(isAllowedBackendProxyPath("people", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("people", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("people/4", "PATCH"), true);
+  assert.equal(isAllowedBackendProxyPath("people/4", "DELETE"), true);
+  assert.equal(isAllowedBackendProxyPath("tpm-codes/4", "PATCH"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheets/9/summary", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheets/9/submit", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheets/9/approve", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheets/9/return", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheets/9/reopen", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("tpm-daily-transactions", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("omitted-terminals/6", "DELETE"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheets/9/approve", "GET"), false);
+  assert.equal(isAllowedBackendProxyPath("daily-sheets/9/mystery", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("anything", "GET"), false);
+});
+
+test("phase 4 people parsing and search handles names and tpm codes", () => {
+  const people = [
+    { id: 1, full_name: "Ayo", agency: 1, agency_name: "Musa 1", tpm_codes: [{ id: 4, code: "TPM-A", is_active: true }] },
+    { id: 2, full_name: "Bisi", agency: 2, agency_name: "Sango", tpm_codes: [{ id: 5, code: "SUB-A", is_active: true }] },
+  ];
+  assert.deepEqual(listFromPayload({ results: people }), people);
+  assert.equal(searchPeople(people, "ayo").length, 1);
+  assert.equal(searchPeople(people, "sub-a")[0].full_name, "Bisi");
+});
+
+test("phase 4 role and agency visibility uses assigned agencies", () => {
+  const user = { role: "ACCOUNTANT", agency_assignments: [{ agency: { id: 2 }, can_create: true, can_edit: false }] };
+  const rows = [{ id: 1, agency: 1 }, { id: 2, agency: 2 }];
+  assert.deepEqual(filterByVisibleAgency(rows, user).map((row) => row.id), [2]);
+  assert.equal(actionAvailability(user, { agency: 2, status: "DRAFT" }).canSubmit, false);
+});
+
+test("phase 4 transaction payload and previews are deterministic", () => {
+  const games = [{ id: 10 }, { id: 11 }];
+  const payload = buildTransactionPayload(7, 4, games, { 10: "100.005", 11: "50" });
+  assert.deepEqual(payload, {
+    daily_sheet: 7,
+    tpm_code: 4,
+    sales: [
+      { daily_sheet_game: 10, amount: "100.00" },
+      { daily_sheet_game: 11, amount: "50.00" },
+    ],
+  });
+  const preview = calculateTransactionPreview({ 10: "100", 11: "50" }, true);
+  assert.equal(preview.netSales, 150);
+  assert.equal(preview.toPay, 142.5);
+  assert.equal(preview.subagentShare, 3);
+  assert.equal(preview.organisationShare, 4.5);
+});
+
+test("phase 4 multiple tpm codes for one person become separate selectable terminals", () => {
+  const options = activeTpmOptions([{ id: 1, full_name: "Ayo", agency: 1, agent_type: "MAIN_AGENT", tpm_codes: [{ id: 3, code: "A" }, { id: 4, code: "B", is_active: true }] }]);
+  assert.deepEqual(options.map((item) => item.code), ["A", "B"]);
+});
+
+test("phase 4 manual tax and difference display stay separate from to pay", () => {
+  assert.equal(differenceLabel(5), "Positive difference");
+  assert.equal(differenceLabel(0), "Zero difference");
+  assert.equal(differenceLabel(-5), "Negative difference");
+  const preview = calculateTransactionPreview({ a: "200" }, false);
+  assert.equal(preview.toPay, 190);
+});
+
+test("phase 4 screens include loading empty error workflow and unsaved-change states", async () => {
+  const sources = await Promise.all([
+    file("components/PeopleTpmClient.js"),
+    file("components/DailySheetsClient.js"),
+    file("components/DailySheetDetailClient.js"),
+  ]);
+  const source = sources.join("\n");
+  assert.match(source, /Loading people|Loading daily sheets/);
+  assert.match(source, /No people match|No daily sheets match|No transactions entered/);
+  assert.match(source, /form-error|form-success/);
+  assert.match(source, /beforeunload/);
+  assert.match(source, /canApprove|canReturn|canReopen/);
 });
 
 test("mocked outgoing backend requests use normalized urls and preserve bodies", async () => {

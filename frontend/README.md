@@ -68,7 +68,23 @@ The screens call Super Admin-only Django endpoints through the controlled Next.j
 
 ## Out-of-Scope Phase 3 Pages
 
-Daily transaction entry, Excel export and complete reporting screens are placeholders only in Phase 3.
+Daily transaction entry and people/TPM management are implemented in Phase 4. Excel export and complete reporting screens remain out of scope.
+
+## Phase 4 Screens
+
+- `/dashboard/people`: search, filter, create and edit people; add and safely deactivate TPM codes.
+- `/dashboard/daily-sheets`: list, filter and create daily sheets.
+- `/dashboard/daily-sheets/[id]`: enter transactions, record omissions, update manual tax and actual received, review totals and run workflow actions.
+
+All browser requests use `/api/backend/...`; the controlled proxy allowlist permits only exact Phase 4 paths and methods.
+
+Run local verification:
+
+```bash
+npm run test:auth
+npm run lint
+npm run build
+```
 
 ## Troubleshooting
 

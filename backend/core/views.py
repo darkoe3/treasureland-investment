@@ -101,6 +101,15 @@ def require_assignment_flag(user, agency, flag):
         raise PermissionDenied(f"You do not have {flag} permission for this agency.")
 
 
+def accessible_agency_ids(user, flag=None):
+    if user.role == UserRole.SUPER_ADMIN:
+        return None
+    queryset = UserAgencyAssignment.objects.filter(user=user, agency__is_active=True)
+    if flag:
+        queryset = queryset.filter(**{flag: True})
+    return queryset.values_list("agency_id", flat=True)
+
+
 def log_audit(user, agency, action, model_name, object_id, old_values=None, new_values=None, description="", daily_sheet=None):
     def clean(values):
         return {key: json_safe_value(value) for key, value in (values or {}).items()}
@@ -129,7 +138,7 @@ def validate_sheet_submission(sheet):
         TPMCode.objects.filter(person__agency=sheet.agency, person__is_active=True, is_active=True).values_list("id", flat=True)
     )
     entered_ids = set(sheet.transactions.values_list("tpm_code_id", flat=True))
-    omitted_ids = set(sheet.omitted_terminals.values_list("tpm_code_id", flat=True))
+    omitted_ids = set(sheet.omitted_terminals.filter(is_active=True).values_list("tpm_code_id", flat=True))
     unexplained = active_tpm_ids - entered_ids - omitted_ids
     if unexplained:
         raise ValidationError({"omitted_terminals": "Every active TPM code must be entered or omitted with an explanation."})
@@ -333,28 +342,136 @@ class AccountantViewSet(BaseSearchViewSet):
 
 class PersonViewSet(BaseSearchViewSet):
     serializer_class = PersonSerializer
-    permission_classes = [SuperAdminOnlyWrites]
+    permission_classes = [IsAuthenticated]
     search_fields = ["full_name", "agency__name", "tpm_codes__code"]
     ordering_fields = ["full_name", "created_at"]
 
     def get_queryset(self):
         queryset = Person.objects.select_related("agency").prefetch_related("tpm_codes")
         if self.request.user.role == UserRole.SUPER_ADMIN:
-            return queryset
-        return queryset.filter(agency__user_assignments__user=self.request.user).distinct()
+            pass
+        else:
+            queryset = queryset.filter(agency__user_assignments__user=self.request.user).distinct()
+        agency = self.request.query_params.get("agency")
+        active = self.request.query_params.get("active")
+        if agency:
+            queryset = queryset.filter(agency_id=agency)
+        if active in {"true", "false"}:
+            queryset = queryset.filter(is_active=active == "true")
+        return queryset
+
+    def perform_create(self, serializer):
+        agency = serializer.validated_data["agency"]
+        require_assignment_flag(self.request.user, agency, "can_create")
+        person = serializer.save()
+        log_audit(
+            self.request.user,
+            person.agency,
+            "PERSON_CREATED",
+            "Person",
+            person.id,
+            new_values={"full_name": person.full_name, "agent_type": person.agent_type, "is_active": person.is_active},
+        )
+
+    def perform_update(self, serializer):
+        person = self.get_object()
+        require_assignment_flag(self.request.user, person.agency, "can_edit")
+        new_agency = serializer.validated_data.get("agency", person.agency)
+        require_assignment_flag(self.request.user, new_agency, "can_edit")
+        old_values = {"agency": person.agency_id, "full_name": person.full_name, "agent_type": person.agent_type, "is_active": person.is_active}
+        updated = serializer.save()
+        log_audit(
+            self.request.user,
+            updated.agency,
+            "PERSON_UPDATED",
+            "Person",
+            updated.id,
+            old_values=old_values,
+            new_values={"agency": updated.agency_id, "full_name": updated.full_name, "agent_type": updated.agent_type, "is_active": updated.is_active},
+        )
+
+    def perform_destroy(self, instance):
+        require_assignment_flag(self.request.user, instance.agency, "can_delete")
+        old_active = instance.is_active
+        instance.is_active = False
+        instance.save(update_fields=["is_active", "updated_at"])
+        log_audit(
+            self.request.user,
+            instance.agency,
+            "PERSON_DEACTIVATED",
+            "Person",
+            instance.id,
+            old_values={"is_active": old_active},
+            new_values={"is_active": False},
+            description=f"Person deactivated: {instance.full_name}",
+        )
 
 
 class TPMCodeViewSet(BaseSearchViewSet):
     serializer_class = TPMCodeSerializer
-    permission_classes = [SuperAdminOnlyWrites]
+    permission_classes = [IsAuthenticated]
     search_fields = ["code", "person__full_name", "person__agency__name"]
     ordering_fields = ["code", "created_at"]
 
     def get_queryset(self):
         queryset = TPMCode.objects.select_related("person", "person__agency")
         if self.request.user.role == UserRole.SUPER_ADMIN:
-            return queryset
-        return queryset.filter(person__agency__user_assignments__user=self.request.user).distinct()
+            pass
+        else:
+            queryset = queryset.filter(person__agency__user_assignments__user=self.request.user).distinct()
+        agency = self.request.query_params.get("agency")
+        active = self.request.query_params.get("active")
+        if agency:
+            queryset = queryset.filter(person__agency_id=agency)
+        if active in {"true", "false"}:
+            queryset = queryset.filter(is_active=active == "true")
+        return queryset
+
+    def perform_create(self, serializer):
+        person = serializer.validated_data["person"]
+        require_assignment_flag(self.request.user, person.agency, "can_create")
+        code = serializer.save()
+        log_audit(
+            self.request.user,
+            code.person.agency,
+            "TPM_CODE_CREATED",
+            "TPMCode",
+            code.id,
+            new_values={"person": code.person_id, "code": code.code, "is_active": code.is_active},
+        )
+
+    def perform_update(self, serializer):
+        code = self.get_object()
+        require_assignment_flag(self.request.user, code.person.agency, "can_edit")
+        new_person = serializer.validated_data.get("person", code.person)
+        require_assignment_flag(self.request.user, new_person.agency, "can_edit")
+        old_values = {"person": code.person_id, "code": code.code, "is_active": code.is_active}
+        updated = serializer.save()
+        log_audit(
+            self.request.user,
+            updated.person.agency,
+            "TPM_CODE_UPDATED",
+            "TPMCode",
+            updated.id,
+            old_values=old_values,
+            new_values={"person": updated.person_id, "code": updated.code, "is_active": updated.is_active},
+        )
+
+    def perform_destroy(self, instance):
+        require_assignment_flag(self.request.user, instance.person.agency, "can_delete")
+        old_active = instance.is_active
+        instance.is_active = False
+        instance.save(update_fields=["is_active", "updated_at"])
+        log_audit(
+            self.request.user,
+            instance.person.agency,
+            "TPM_CODE_DEACTIVATED",
+            "TPMCode",
+            instance.id,
+            old_values={"is_active": old_active},
+            new_values={"is_active": False},
+            description=f"TPM code deactivated: {instance.code}",
+        )
 
 
 class GameViewSet(BaseSearchViewSet):
@@ -642,7 +759,8 @@ class OmittedTerminalViewSet(BaseSearchViewSet):
         sheet = instance.daily_sheet
         old_values = {"tpm_code": instance.tpm_code.code, "reason": instance.reason}
         object_id = instance.id
-        instance.delete()
+        instance.is_active = False
+        instance.save(update_fields=["is_active", "updated_at"])
         log_audit(self.request.user, sheet.agency, AuditAction.OMITTED_TERMINAL_REMOVED, "OmittedTerminal", object_id, old_values=old_values, daily_sheet=sheet)
 
 
@@ -653,6 +771,12 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = AuditLog.objects.select_related("user", "agency", "daily_sheet")
         user = self.request.user
-        if user.role == UserRole.SUPER_ADMIN:
-            return queryset
-        return queryset.filter(agency__user_assignments__user=user, agency__user_assignments__can_view_history=True).distinct()
+        if user.role != UserRole.SUPER_ADMIN:
+            queryset = queryset.filter(agency__user_assignments__user=user, agency__user_assignments__can_view_history=True).distinct()
+        agency = self.request.query_params.get("agency")
+        daily_sheet = self.request.query_params.get("daily_sheet")
+        if agency:
+            queryset = queryset.filter(agency_id=agency)
+        if daily_sheet:
+            queryset = queryset.filter(daily_sheet_id=daily_sheet)
+        return queryset

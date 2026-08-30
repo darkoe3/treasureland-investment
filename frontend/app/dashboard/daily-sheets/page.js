@@ -1,7 +1,11 @@
-import PlaceholderPage from "../../../components/PlaceholderPage";
+import DailySheetsClient from "../../../components/DailySheetsClient";
 import { requireDashboardUser } from "../../../lib/require-user";
+import { authenticatedBackendRequest } from "../../../lib/server-api";
+
+export const dynamic = "force-dynamic";
 
 export default async function DailySheetsPage() {
-  await requireDashboardUser("/dashboard/daily-sheets");
-  return <PlaceholderPage title="Daily Sheets" description="Daily sheet review and status tracking live here. Transaction-entry forms are intentionally out of scope for Phase 3." />;
+  const user = await requireDashboardUser("/dashboard/daily-sheets");
+  const agenciesPayload = await authenticatedBackendRequest("/agencies/").catch(() => []);
+  return <DailySheetsClient user={user} initialAgencies={agenciesPayload.results || agenciesPayload} />;
 }

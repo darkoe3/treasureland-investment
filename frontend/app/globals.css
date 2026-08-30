@@ -627,6 +627,56 @@ th {
   margin-top: 10px;
 }
 
+.button-row.compact {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mini-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--gold-100);
+  color: var(--navy-950);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 5px 8px;
+}
+
+.mini-chip.muted {
+  background: var(--surface-soft);
+  color: var(--ink-500);
+  text-decoration: line-through;
+}
+
+.summary-strip,
+.summary-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.summary-strip span,
+.summary-list span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--ink-700);
+  font-weight: 800;
+  padding: 9px 10px;
+}
+
+.wide-table table {
+  min-width: 980px;
+}
+
 .mobile-overlay {
   position: fixed;
   inset: 0;

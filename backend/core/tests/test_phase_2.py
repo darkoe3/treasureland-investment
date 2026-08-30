@@ -194,8 +194,7 @@ class Phase2ModelTests(Phase2Mixin, TestCase):
         self.assertEqual(totals["subagent_sales"], Decimal("50000.00"))
         self.assertEqual(totals["subagent_share"], Decimal("1000.00"))
         self.assertEqual(totals["organisation_share_on_subagent_sales"], Decimal("1500.00"))
-        self.assertEqual(totals["commission_minus_tax"], Decimal("7400.00"))
-        self.assertEqual(totals["premier_office_payment"], Decimal("134600.00"))
+        self.assertEqual(totals["tax"], Decimal("100.00"))
         self.assertEqual(totals["variance"], Decimal("-500.00"))
         self.assertEqual(totals["variance_status"], "SHORTFALL")
 

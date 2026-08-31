@@ -493,6 +493,31 @@ test("phase 4 screens include loading empty error workflow and unsaved-change st
   assert.match(source, /canApprove|canReturn|canReopen/);
 });
 
+test("phase 4 daily sheet summary keeps horizontal overflow inside the table wrapper", async () => {
+  const component = await file("components/DailySheetDetailClient.js");
+  const css = await file("app/globals.css");
+
+  assert.match(component, /className="table-wrap summary-table-wrap"/);
+  assert.match(component, /tabIndex="0"/);
+  assert.match(component, /aria-label="Daily Sheet Summary table with horizontal scrolling"/);
+  assert.match(component, /className="summary-table"/);
+  assert.match(component, /520 \+ sheet\.sheet_games\.length \* 132/);
+
+  assert.match(css, /\.dashboard-frame\s*\{[^}]*max-width:\s*100vw;[^}]*min-width:\s*0;[^}]*grid-template-columns:\s*280px minmax\(0, 1fr\);/s);
+  assert.match(css, /\.dashboard-main\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s);
+  assert.match(css, /\.dashboard-content\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s);
+  assert.match(css, /\.page-stack\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s);
+  assert.match(css, /\.panel\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s);
+  assert.match(css, /\.content-grid,\s*\n\.form-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1\.35fr\) minmax\(320px, 0\.65fr\);[^}]*min-width:\s*0;[^}]*max-width:\s*100%;/s);
+  assert.match(css, /\.table-wrap\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;[^}]*overflow-x:\s*auto;[^}]*overscroll-behavior-inline:\s*contain;/s);
+  assert.match(css, /\.summary-table\s*\{[^}]*width:\s*max-content;/s);
+  assert.match(css, /\.summary-table th\s*\{[^}]*overflow-wrap:\s*anywhere;/s);
+  assert.match(css, /\.responsive-table:not\(\.summary-table-wrap\) table/);
+  assert.match(css, /\.scroll-hint/);
+  assert.doesNotMatch(css, /zoom\s*:/);
+  assert.doesNotMatch(css, /transform\s*:\s*scale/);
+});
+
 test("mocked outgoing backend requests use normalized urls and preserve bodies", async () => {
   const calls = [];
   const mockFetch = async (url, options) => {

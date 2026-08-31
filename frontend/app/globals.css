@@ -26,6 +26,7 @@
 
 html {
   background: var(--surface-soft);
+  max-width: 100%;
 }
 
 body {
@@ -33,6 +34,8 @@ body {
   background: var(--surface-soft);
   color: var(--ink-900);
   font-family: Arial, Helvetica, sans-serif;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 a {
@@ -308,13 +311,19 @@ button:disabled {
 
 .dashboard-frame {
   min-height: 100vh;
+  width: 100%;
+  max-width: 100vw;
+  min-width: 0;
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
+  overflow-x: clip;
 }
 
 .dashboard-sidebar {
   position: sticky;
   top: 0;
+  width: 280px;
+  min-width: 0;
   height: 100vh;
   background: var(--navy-950);
   color: white;
@@ -351,9 +360,13 @@ button:disabled {
 
 .dashboard-main {
   min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 .dashboard-header {
+  min-width: 0;
+  max-width: 100%;
   min-height: 76px;
   background: white;
   border-bottom: 1px solid var(--line);
@@ -376,6 +389,10 @@ button:disabled {
 .page-heading h1 {
   margin: 0;
   font-size: 1.45rem;
+}
+
+.page-heading {
+  min-width: 0;
 }
 
 .user-cluster {
@@ -416,17 +433,23 @@ button:disabled {
 
 .dashboard-content {
   padding: 28px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 .page-stack {
   display: grid;
   gap: 22px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
+  min-width: 0;
 }
 
 .metric-card {
@@ -455,10 +478,14 @@ button:disabled {
   grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
   gap: 18px;
   align-items: start;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .panel {
   padding: 20px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .panel-heading,
@@ -469,6 +496,11 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.panel-heading,
+.button-row {
+  flex-wrap: wrap;
 }
 
 .panel-heading h2,
@@ -491,7 +523,12 @@ button:disabled {
 
 .table-wrap {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
@@ -673,8 +710,38 @@ th {
   padding: 9px 10px;
 }
 
-.wide-table table {
-  min-width: 980px;
+.scroll-hint {
+  display: none;
+  margin: 8px 0 10px;
+  color: var(--ink-500);
+  font-size: 0.84rem;
+}
+
+.summary-table-wrap {
+  border-radius: 8px;
+  scrollbar-gutter: stable;
+}
+
+.summary-table-wrap:focus-visible {
+  outline: 3px solid rgba(11, 59, 193, 0.36);
+  outline-offset: 2px;
+}
+
+.summary-table {
+  width: max-content;
+}
+
+.summary-table th {
+  max-width: 150px;
+  overflow-wrap: anywhere;
+}
+
+.summary-table td {
+  overflow-wrap: anywhere;
+}
+
+.summary-table .danger-button {
+  white-space: nowrap;
 }
 
 .mobile-overlay {
@@ -710,7 +777,7 @@ th {
   .dashboard-frame,
   .content-grid,
   .form-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .brand-block.login {
@@ -727,6 +794,10 @@ th {
 
   .dashboard-header {
     padding: 12px 18px;
+  }
+
+  .scroll-hint {
+    display: block;
   }
 
   .metric-grid {
@@ -776,21 +847,21 @@ th {
     grid-template-columns: 1fr;
   }
 
-  .responsive-table table,
-  .responsive-table thead,
-  .responsive-table tbody,
-  .responsive-table th,
-  .responsive-table td,
-  .responsive-table tr {
+  .responsive-table:not(.summary-table-wrap) table,
+  .responsive-table:not(.summary-table-wrap) thead,
+  .responsive-table:not(.summary-table-wrap) tbody,
+  .responsive-table:not(.summary-table-wrap) th,
+  .responsive-table:not(.summary-table-wrap) td,
+  .responsive-table:not(.summary-table-wrap) tr {
     display: block;
     min-width: 0;
   }
 
-  .responsive-table thead {
+  .responsive-table:not(.summary-table-wrap) thead {
     display: none;
   }
 
-  .responsive-table tr {
+  .responsive-table:not(.summary-table-wrap) tr {
     border: 1px solid var(--line);
     border-radius: 8px;
     margin-bottom: 12px;
@@ -798,7 +869,7 @@ th {
     background: white;
   }
 
-  .responsive-table td {
+  .responsive-table:not(.summary-table-wrap) td {
     border: 0;
     display: grid;
     grid-template-columns: 120px minmax(0, 1fr);
@@ -806,7 +877,7 @@ th {
     padding: 8px 0;
   }
 
-  .responsive-table td::before {
+  .responsive-table:not(.summary-table-wrap) td::before {
     content: attr(data-label);
     color: var(--ink-500);
     font-weight: 800;

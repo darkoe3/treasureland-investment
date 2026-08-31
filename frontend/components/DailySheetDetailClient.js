@@ -235,8 +235,9 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
 
       <section className="panel">
         <div className="panel-heading"><h2>Daily Sheet Summary</h2><span>{transactions.length} transaction rows</span></div>
-        <div className="table-wrap responsive-table wide-table">
-          <table>
+        <p className="scroll-hint">Scroll the summary table horizontally to view all game columns.</p>
+        <div className="table-wrap summary-table-wrap" tabIndex="0" role="region" aria-label="Daily Sheet Summary table with horizontal scrolling">
+          <table className="summary-table" style={{ minWidth: `max(980px, ${520 + sheet.sheet_games.length * 132}px)` }}>
             <thead><tr><th>No</th><th>Name</th><th>TPM Code</th>{sheet.sheet_games.map((game) => <th key={game.id}>{game.game_name_snapshot}</th>)}<th>NET Sales</th><th>To Pay</th><th>Total</th><th></th></tr></thead>
             <tbody>
               {!transactions.length ? <tr><td colSpan={7 + sheet.sheet_games.length} className="empty-cell">No transactions entered yet.</td></tr> : null}

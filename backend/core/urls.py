@@ -15,6 +15,8 @@ from .views import (
     TPMDailyTransactionViewSet,
     UserAgencyAssignmentViewSet,
     WeeklyGameScheduleViewSet,
+    agency_summary_report_export_view,
+    agency_summary_report_view,
     current_user_view,
     health_view,
     logout_view,
@@ -39,5 +41,7 @@ urlpatterns = [
     path("auth/refresh/", RefreshView.as_view(), name="token_refresh"),
     path("auth/logout/", logout_view, name="token_blacklist"),
     path("auth/me/", current_user_view, name="current_user"),
+    path("reports/agency-summary/", agency_summary_report_view, name="agency_summary_report"),
+    path("reports/agency-summary/export/", agency_summary_report_export_view, name="agency_summary_report_export"),
     path("", include(router.urls)),
 ]

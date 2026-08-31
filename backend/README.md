@@ -23,12 +23,12 @@ Organisation Share = Subagent NET Sales x 3%
 
 Gross Sales = sum of NET Sales
 Total To Pay = sum of To Pay
-Commission Minus Tax = Commission - Tax
 Variance = Incoming Funds - Total To Pay
-Premier Office Payment = Incoming Funds - Commission Minus Tax
 ```
 
 `variance_status` is `BALANCED`, `SHORTFALL` or `EXCESS`.
+
+Manual tax is recorded for reporting and reconciliation only. It does not reduce To Pay.
 
 ## Status Workflow
 
@@ -60,10 +60,21 @@ Premier Office Payment = Incoming Funds - Commission Minus Tax
 - `POST /api/accountants/{id}/reset-password/`
 - `POST /api/accountants/{id}/activate/`
 - `POST /api/accountants/{id}/deactivate/`
+- `GET /api/reports/agency-summary/?agency={id}&period=daily&date=YYYY-MM-DD`
+- `GET /api/reports/agency-summary/?agency={id}&period=weekly&date=YYYY-MM-DD`
+- `GET /api/reports/agency-summary/?agency={id}&period=monthly&month=1-12&year=YYYY`
+- `GET /api/reports/agency-summary/?agency={id}&period=custom&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+- `GET /api/reports/agency-summary/export/` with the same query parameters
 
 Accountant management action URLs are hyphenated DRF action paths. Use `set-agencies` and `reset-password`, not the Python method names `set_agencies` or `reset_password`, and keep Django's trailing slash.
 
 Daily sheets support `agency`, `date`, `date_from`, `date_to`, `status` and `created_by` query filters.
+
+Reports are Super Admin-only and default to `status=APPROVED`. Repeated `status` query parameters are allowed for operational/non-final reports. Accountants receive `403`, even when `can_export=True`.
+
+Report game columns are the union of included `DailySheetGame` snapshots. Stable game IDs are preferred; normalized snapshot names are the fallback for legacy records. Ordering is display order, normalized name and stable key.
+
+Excel exports are generated with `openpyxl`, use numeric monetary cells, sanitize filenames and worksheet names, and prefix user-controlled text that begins with `=`, `+`, `-` or `@` to prevent formula injection.
 
 ## Example Transaction Request
 
@@ -169,7 +180,7 @@ Manual checks for the training manual:
 - Confirm accountants see only assigned agencies.
 - Confirm Super Admin can assign separate permission flags per agency.
 
-## Phase 4 Notes
+## Phase 4 And 5 Notes
 
 Phase 4 completes daily operations using the existing core models. Accountants can manage people, TPM codes, sheets, transaction rows and omissions only for assigned agencies where the relevant permission flag allows it. The backend enforces object-level agency checks.
 
@@ -185,3 +196,5 @@ python manage.py check
 python manage.py test
 ```
 - Confirm accountant management audit logs do not expose password values.
+- Confirm report audit logs include metadata only, not full report contents.
+- Phase 5 adds migration `0006_alter_auditlog_action.py` for report preview/export audit action choices. No destructive schema or data migration is required.

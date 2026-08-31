@@ -66,9 +66,15 @@ Super Admin users can open:
 
 The screens call Super Admin-only Django endpoints through the controlled Next.js backend proxy. Agency permission flags are configured independently per agency.
 
-## Out-of-Scope Phase 3 Pages
+## Phase 5 Reports
 
-Daily transaction entry and people/TPM management are implemented in Phase 4. Excel export and complete reporting screens remain out of scope.
+`/dashboard/reports` is a Super Admin-only reporting screen. Accountants receive an access-denied page and the Reports navigation item is not shown to them, even when an agency assignment has `can_export`.
+
+The page supports daily, weekly, monthly and custom inclusive date ranges. Weekly display resolves Monday through Sunday; monthly display resolves the calendar month, including leap years. Statuses default to Approved only. Including Draft, Submitted, Returned or Reopened shows an operational/non-final warning.
+
+Preview requests use `GET /api/backend/reports/agency-summary/`. Excel downloads use `GET /api/backend/reports/agency-summary/export/` and are forwarded through the same-origin BFF as binary `.xlsx` responses. The BFF allowlist permits only those exact report paths and GET methods, preserves backend status codes, preserves `Content-Type` and safe `Content-Disposition`, and does not expose JWTs to browser JavaScript.
+
+Report data is kept in React state only. It is not written to `localStorage` or `sessionStorage`.
 
 ## Phase 4 Screens
 
@@ -76,7 +82,7 @@ Daily transaction entry and people/TPM management are implemented in Phase 4. Ex
 - `/dashboard/daily-sheets`: list, filter and create daily sheets.
 - `/dashboard/daily-sheets/[id]`: enter transactions, record omissions, update manual tax and actual received, review totals and run workflow actions.
 
-All browser requests use `/api/backend/...`; the controlled proxy allowlist permits only exact Phase 4 paths and methods.
+All browser requests use `/api/backend/...`; the controlled proxy allowlist permits only exact operational and report paths and methods.
 
 Run local verification:
 
@@ -97,6 +103,7 @@ npm run build
 - Controlled proxy path rejection: the Next.js 16 catch-all route awaits `context.params` and normalizes the mounted `/api/backend` prefix out of `params.path` before comparing against the allowlist. Set `TL_PROXY_DEBUG=1` temporarily to log method, catch-all segments, normalized path and final backend URL; request bodies, cookies and tokens are not logged.
 - Partial accountant saves: if profile fields save but agency permissions fail, the form reports a partial save and keeps the selected agency permissions on screen for retry.
 - Upstream errors: expected JSON validation errors are shown; unexpected HTML/debug responses are replaced with a generic message.
+- Excel download errors: report export errors preserve the backend status and JSON message; successful downloads preserve the workbook content type and filename.
 - Empty agency permissions: the accountant form accepts both plain API arrays and paginated `{results: [...]}` responses. Missing `is_active` is treated as active; explicit `is_active: false` is hidden.
 - Failed agency loading: edit forms keep profile saving available but do not replace agency assignments until the agency list loads successfully.
 
@@ -107,4 +114,7 @@ npm run build
 - `/dashboard` redirects unauthenticated users to `/login?next=/dashboard`.
 - Super Admin can list, create, edit, deactivate, activate and reset passwords for accountants.
 - Accountants see only assigned-agency navigation and receive access denied on accountant-management routes.
+- Accountants receive access denied on Reports and 403 from direct report API/export attempts.
+- Super Admin can generate Approved official reports and labelled operational/non-final reports with other statuses.
+- Wide report tables scroll internally without widening the dashboard shell.
 - Logout clears auth cookies and returns to `/login`.

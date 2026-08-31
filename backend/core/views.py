@@ -27,6 +27,7 @@ from .models import (
     json_safe_value,
 )
 from .permissions import IsSuperAdmin, SuperAdminOnlyWrites, SuperAdminOrReadOnlyAccountant
+from .reports import build_report, serialize_report, workbook_response
 from .serializers import (
     AgencySerializer,
     AccountantCreateSerializer,
@@ -81,6 +82,20 @@ def logout_view(request):
 def current_user_view(request):
     user = User.objects.prefetch_related("agency_assignments__agency").get(pk=request.user.pk)
     return Response(CurrentUserSerializer(user).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def agency_summary_report_view(request):
+    report = build_report(request.query_params, request.user, AuditAction.REPORT_PREVIEWED)
+    return Response(serialize_report(report))
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def agency_summary_report_export_view(request):
+    report = build_report(request.query_params, request.user, AuditAction.REPORT_EXPORTED)
+    return workbook_response(report)
 
 
 class BaseSearchViewSet(viewsets.ModelViewSet):

@@ -1,7 +1,12 @@
-import PlaceholderPage from "../../../components/PlaceholderPage";
-import { requireDashboardUser } from "../../../lib/require-user";
+import AccessDenied from "../../../components/AccessDenied";
+import ReportsClient from "../../../components/ReportsClient";
+import { authenticatedBackendRequest, safeCurrentUser } from "../../../lib/server-api";
 
 export default async function ReportsPage() {
-  await requireDashboardUser("/dashboard/reports");
-  return <PlaceholderPage title="Reports" description="Reporting navigation is permission-aware, but complete reporting screens and Excel export are intentionally out of scope for Phase 3." />;
+  const user = await safeCurrentUser();
+  if (!user || user.role !== "SUPER_ADMIN") {
+    return <AccessDenied />;
+  }
+  const payload = await authenticatedBackendRequest("/agencies/");
+  return <ReportsClient agencies={payload.results || payload} />;
 }

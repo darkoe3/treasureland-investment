@@ -46,6 +46,29 @@ Accountants submit draft, returned or reopened sheets after all terminals are en
 
 Screenshot placeholder: Super Admin review actions.
 
+## Reports And Excel Export
+
+Reports are available to Super Admin users only. Open `Reports` from the dashboard sidebar, choose one agency, then choose Daily, Weekly, Monthly or Custom range.
+
+Daily reports use the selected date. Weekly reports use the Monday through Sunday week containing the selected date. Monthly reports use the first through last day of the selected month. Custom reports use the exact inclusive start and end dates you choose; if the start date is after the end date the system asks you to correct it.
+
+Reports default to Approved sheets. This is the official report view. If you include Draft, Submitted, Returned or Reopened sheets, the screen and Excel file are labelled operational/non-final. Use operational reports for checking work in progress, not final financial reporting.
+
+After selecting filters, choose `Generate report` to preview the report. Summary cards show daily sheet count, transaction rows, distinct people, distinct TPM Codes, NET Sales, commission, To Pay, sub-agent share, organisation share, manual tax, actual received, difference and omitted terminals. Positive, zero and negative differences are styled separately.
+
+The Daily Reconciliation table shows one row per included sheet. Use it to compare calculated To Pay against the actual amount received and identify dates with a shortfall or excess.
+
+The Detailed TPM/Game Summary keeps each TPM Code as its own row. If one person has more than one TPM Code, the Total for that person appears only on the first TPM row so it is not counted twice. Wide game tables scroll horizontally inside the table area.
+
+Choose `Download Excel` to save an `.xlsx` workbook for the same agency, date range and statuses shown on screen. Protect exported files as financial records: store them in an approved location and do not email or share them outside company policy.
+
+If a report is empty, confirm the agency, date range and status filter. Approved-only reports are empty when matching sheets have not yet been approved.
+
+Screenshot placeholder: Reports filters.
+Screenshot placeholder: Approved report preview.
+Screenshot placeholder: Operational/non-final status warning.
+Screenshot placeholder: Excel workbook opened in spreadsheet software.
+
 ## Common Validation Messages
 
 - `A daily sheet already exists for that agency and date.`

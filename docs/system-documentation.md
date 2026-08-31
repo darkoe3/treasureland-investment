@@ -1,6 +1,6 @@
 # Treasureland Investment Management System
 
-## Phase 4 Architecture
+## Phase 5 Architecture
 
 Phase 4 keeps the existing split architecture:
 
@@ -24,7 +24,7 @@ The backend remains authoritative for permissions, workflow status and all money
 - `TPMDailyTransaction`: one row per TPM code per daily sheet.
 - `TransactionGameSale`: per-game sales amounts for a transaction.
 - `OmittedTerminal`: active or historical omitted-terminal reason for a sheet.
-- `AuditLog`: immutable operational history.
+- `AuditLog`: immutable operational and report history.
 
 ## Permission Rules
 
@@ -34,7 +34,7 @@ Super Admin can access and manage all agencies. Accountants can access only assi
 - `can_edit`: edit people, TPM codes, editable sheets and omissions.
 - `can_delete`: safely deactivate people/TPM codes or remove editable transaction rows.
 - `can_view_history`: view audit logs for that agency.
-- `can_export`: stored for later phases only.
+- `can_export`: does not grant Phase 5 report access. Reports and Excel exports are Super Admin-only.
 
 ## Daily Sheet Lifecycle
 
@@ -53,6 +53,20 @@ Accountants may edit only assigned-agency sheets in `DRAFT`, `RETURNED` or `REOP
 - Difference = actual amount received - calculated agency To Pay.
 
 All backend calculations use `Decimal` with `ROUND_HALF_UP`.
+
+## Phase 5 Reports
+
+Super Admin users can open `/dashboard/reports` and call `GET /api/reports/agency-summary/` or `GET /api/reports/agency-summary/export/`. Accountants receive `403` responses for both preview and export, even when an agency assignment has `can_export=true`. The frontend also hides Reports from accountant navigation, but backend enforcement is authoritative.
+
+Report parameters are `agency`, `period`, period-specific dates and optional repeated `status` values. `period=daily` uses one selected date. `period=weekly` resolves the selected date to Monday through Sunday in `Africa/Accra`. `period=monthly` uses the first through last calendar day, including leap years. `period=custom` uses an inclusive `start_date` and `end_date` and rejects missing or reversed dates.
+
+Official reports default to `APPROVED` sheets only. If any non-approved status is selected, the preview and workbook label the result as an operational/non-final report and show the exact statuses used.
+
+Daily reports use the games snapshotted on the selected sheet. Weekly, monthly and custom reports use the union of snapshotted games from included sheets. Columns are ordered by historical display order, then normalized game name, then stable key. Stable game IDs are used first; if old snapshots ever lack an identity, the documented fallback is a normalized game name. Historical snapshots are not rewritten.
+
+Each detail row represents one TPM Code. A person with multiple TPM Codes appears on multiple adjacent rows; the combined person Total is shown only on the first row to avoid double counting. Final totals sum TPM-level To Pay values, not repeated person Total values.
+
+Excel exports contain workbook metadata, summary metrics, daily reconciliation, detailed TPM/game rows and a totals row. User-controlled text is written as text and prefixed when necessary to prevent spreadsheet formula injection. Filenames and worksheet names are sanitized. Workbooks contain no macros, external links, JWTs, database URLs or internal object IDs.
 
 ## API Endpoints
 
@@ -74,15 +88,17 @@ All backend calculations use `Decimal` with `ROUND_HALF_UP`.
 - `GET|POST /api/omitted-terminals/`
 - `GET|PATCH|DELETE /api/omitted-terminals/{id}/`
 - `GET /api/audit-logs/`
+- `GET /api/reports/agency-summary/`
+- `GET /api/reports/agency-summary/export/`
 
 ## Audit Behavior
 
-Important actions create immutable `AuditLog` entries: sheet creation, transaction changes, omitted-terminal changes, workflow actions, accountant assignment changes, person changes and TPM code changes.
+Important actions create immutable `AuditLog` entries: sheet creation, transaction changes, omitted-terminal changes, workflow actions, accountant assignment changes, person changes, TPM code changes, report previews and report exports. Report audit metadata includes agency, period, resolved dates and statuses, but not report contents.
 
 ## Deployment And Migration Notes
 
 Phase 4 adds migration `0005_phase4_tpm_uniqueness_omission_active.py` for active omission history and case-insensitive TPM-code uniqueness. The migration is additive except replacing the old omission uniqueness constraint with an active-only uniqueness constraint. No live Render database operations are required during local development.
 
-## Out Of Scope For Phase 5
+## Known Phase 6 Limitations
 
-Reporting dashboards, Excel export, bulk import, final tax-deduction policy and deployment changes remain out of scope for Phase 4.
+PDF export, emailed reports, scheduled reports, bulk imports, destructive cleanup and automatic tax deduction remain out of scope. Deployment still uses Render for Django/PostgreSQL and Vercel for Next.js; Phase 5 requires no Render or Vercel setting changes.

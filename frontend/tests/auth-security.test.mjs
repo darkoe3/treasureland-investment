@@ -5,8 +5,8 @@ import { buildBackendUrl, normalizeBackendPath } from "../lib/backend-url.js";
 import { ApiError, backendRequestWithFetch } from "../lib/backend-request.js";
 import { normalizeProxySegments, resolveBackendProxyRequest } from "../lib/backend-proxy.js";
 import { ACCOUNTANT_ID_ERROR, saveAccountantWithAssignments } from "../lib/accountant-submit.js";
-import { apiPath, clientRequest, resetClientApiStateForTests } from "../lib/client-api.js";
-import { backendPathFromProxySegments, isAllowedBackendProxyPath } from "../lib/controlled-proxy-path.js";
+import { apiPath, clientDownload, clientRequest, resetClientApiStateForTests } from "../lib/client-api.js";
+import { backendPathFromProxySegments, isAllowedBackendProxyPath, isBinaryBackendProxyPath } from "../lib/controlled-proxy-path.js";
 import {
   actionAvailability,
   activeTpmOptions,
@@ -17,6 +17,7 @@ import {
   listFromPayload,
   searchPeople,
 } from "../lib/phase4-operations.js";
+import { buildReportQuery, filenameFromDisposition, resolvePeriodDisplay, validateReportFilters } from "../lib/report-operations.js";
 import { activeAgenciesFromPayload, buildAssignmentRows, listFromApiPayload, shouldSyncAgencyAssignments } from "../lib/resource-shapes.js";
 
 async function file(path) {
@@ -431,6 +432,16 @@ test("phase 4 proxy allowlist permits exact operations and methods only", () => 
   assert.equal(isAllowedBackendProxyPath("anything", "GET"), false);
 });
 
+test("phase 5 report proxy allowlist permits exact get-only report paths", () => {
+  assert.equal(isAllowedBackendProxyPath("reports/agency-summary", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("reports/agency-summary/export", "GET"), true);
+  assert.equal(isBinaryBackendProxyPath("reports/agency-summary/export", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("reports/agency-summary", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("reports/agency-summary/export", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("reports/agency-summary/delete", "GET"), false);
+  assert.equal(isAllowedBackendProxyPath("reports/anything", "GET"), false);
+});
+
 test("phase 4 people parsing and search handles names and tpm codes", () => {
   const people = [
     { id: 1, full_name: "Ayo", agency: 1, agency_name: "Musa 1", tpm_codes: [{ id: 4, code: "TPM-A", is_active: true }] },
@@ -491,6 +502,70 @@ test("phase 4 screens include loading empty error workflow and unsaved-change st
   assert.match(source, /form-error|form-success/);
   assert.match(source, /beforeunload/);
   assert.match(source, /canApprove|canReturn|canReopen/);
+});
+
+test("phase 5 report query construction and period display are deterministic", () => {
+  const daily = { agency: "1", period: "daily", date: "2026-08-24", statuses: ["APPROVED"] };
+  assert.equal(buildReportQuery(daily), "agency=1&period=daily&date=2026-08-24&status=APPROVED");
+  assert.deepEqual(resolvePeriodDisplay({ ...daily, period: "weekly", date: "2026-08-27" }), { start: "2026-08-24", end: "2026-08-30" });
+  assert.deepEqual(resolvePeriodDisplay({ ...daily, period: "monthly", month: "02", year: "2024" }), { start: "2024-02-01", end: "2024-02-29" });
+  assert.equal(validateReportFilters({ ...daily, period: "custom", startDate: "2026-08-31", endDate: "2026-08-24" }), "Custom start date must be on or before end date.");
+  assert.equal(filenameFromDisposition('attachment; filename="treasureland-musa-1.xlsx"'), "treasureland-musa-1.xlsx");
+});
+
+test("phase 5 reports page includes required states dynamic tables and no browser storage", async () => {
+  const source = [
+    await file("components/ReportsClient.js"),
+    await file("app/dashboard/reports/page.js"),
+    await file("components/DashboardShell.js"),
+  ].join("\n");
+  assert.match(source, /role !== "SUPER_ADMIN"/);
+  assert.match(source, /AccessDenied/);
+  assert.match(source, /Generate report/);
+  assert.match(source, /Download Excel/);
+  assert.match(source, /Operational\/non-final report/);
+  assert.match(source, /Loading report/);
+  assert.match(source, /No daily sheets match this report/);
+  assert.match(source, /form-error/);
+  assert.match(source, /report\.game_columns\.map/);
+  assert.match(source, /difference-/);
+  assert.match(source, /summary-table-wrap/);
+  assert.doesNotMatch(source, /localStorage|sessionStorage/);
+  assert.doesNotMatch(source, /can_export \? \[\{ label: "Reports"/);
+});
+
+test("phase 5 client download preserves binary headers and refresh retry", async () => {
+  resetClientApiStateForTests();
+  const body = new Blob(["xlsx"], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const { calls, fetchImpl } = mockClientFetch([
+    jsonResponse({ detail: "Access token expired." }, 401),
+    jsonResponse({ detail: "Session refreshed." }),
+    new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "content-disposition": 'attachment; filename="treasureland-report.xlsx"',
+      },
+    }),
+  ]);
+  const result = await clientDownload("/api/backend/reports/agency-summary/export/?agency=1&period=daily&date=2026-08-24", {}, fetchImpl);
+  assert.equal(calls.filter((call) => call.url === "/api/auth/refresh").length, 1);
+  assert.equal(result.contentType, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  assert.equal(result.contentDisposition, 'attachment; filename="treasureland-report.xlsx"');
+  assert.equal(await result.blob.text(), "xlsx");
+});
+
+test("phase 5 backend proxy marks report export as binary and preserves error status path", async () => {
+  const { result, calls } = await resolveProxy({
+    method: "GET",
+    segments: ["reports", "agency-summary", "export"],
+    path: "/api/backend/reports/agency-summary/export/?agency=1&period=daily&date=2026-08-24",
+    backendPayload: { detail: "Forbidden" },
+    backendStatus: 403,
+  });
+  assert.equal(result.status, 403);
+  assert.equal(calls[0].options.binary, true);
+  assert.equal(calls[0].backendPath, "/reports/agency-summary/export?agency=1&period=daily&date=2026-08-24");
 });
 
 test("phase 4 daily sheet summary keeps horizontal overflow inside the table wrapper", async () => {

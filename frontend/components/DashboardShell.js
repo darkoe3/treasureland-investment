@@ -33,14 +33,12 @@ const superAdminItems = [
 ];
 
 function accountantItems(user) {
-  const canReport = user.agency_assignments?.some((item) => item.can_export);
   const canHistory = user.agency_assignments?.some((item) => item.can_view_history);
   return [
     { label: "Overview", href: "/dashboard", icon: Home },
     { label: "Daily Sheets", href: "/dashboard/daily-sheets", icon: ClipboardList },
     { label: "New Daily Sheet", href: "/dashboard/daily-sheets/new", icon: FileText },
     { label: "Assigned Agencies", href: "/dashboard/assigned-agencies", icon: Building2 },
-    ...(canReport ? [{ label: "Reports", href: "/dashboard/reports", icon: BarChart3 }] : []),
     ...(canHistory ? [{ label: "History", href: "/dashboard/history", icon: FileClock }] : []),
   ];
 }

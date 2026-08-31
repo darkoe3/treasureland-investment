@@ -2,7 +2,7 @@ import "server-only";
 
 import { cookies } from "next/headers";
 import { ACCESS_COOKIE, REFRESH_COOKIE, clearAuthCookies, setAuthCookies } from "./auth-cookies";
-import { ApiError, backendRequestWithFetch, backendRequestWithFetchResponse } from "./backend-request";
+import { ApiError, backendRawResponseWithFetch, backendRequestWithFetch, backendRequestWithFetchResponse } from "./backend-request";
 
 export { apiBaseUrl, buildBackendUrl } from "./backend-url";
 export { ApiError } from "./backend-request";
@@ -90,6 +90,33 @@ export async function authenticatedBackendRequestWithStatus(path, options = {}, 
     }
     throw error;
   }
+}
+
+export async function authenticatedBackendRawResponse(path, options = {}, allowRefresh = false) {
+  const store = await cookies();
+  const access = store.get(ACCESS_COOKIE)?.value;
+  if (!access) {
+    throw new ApiError("Missing access token.", 401);
+  }
+  const requestOptions = {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Authorization: `Bearer ${access}`,
+    },
+  };
+  const response = await backendRawResponseWithFetch(path, requestOptions);
+  if (allowRefresh && response.status === 401) {
+    const freshAccess = await refreshTokens(store);
+    return backendRawResponseWithFetch(path, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${freshAccess}`,
+      },
+    });
+  }
+  return response;
 }
 
 export async function getCurrentUser(allowRefresh = false) {

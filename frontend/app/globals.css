@@ -664,6 +664,48 @@ th {
   margin-top: 10px;
 }
 
+.report-filters,
+.status-filter-grid {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.status-filter-grid {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.report-period-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.report-period-strip span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--ink-700);
+  font-weight: 800;
+  padding: 9px 10px;
+}
+
+.report-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.difference-positive {
+  color: var(--success);
+}
+
+.difference-negative {
+  color: var(--danger);
+}
+
+.difference-zero {
+  color: var(--ink-700);
+}
+
 .button-row.compact {
   justify-content: flex-start;
   flex-wrap: wrap;

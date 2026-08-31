@@ -45,9 +45,19 @@ function isAccountantPathAllowed(path, method) {
   return false;
 }
 
+function isReportPathAllowed(path, method) {
+  if (method !== "GET") {
+    return false;
+  }
+  return path === "reports/agency-summary" || path === "reports/agency-summary/export";
+}
+
 export function isAllowedBackendProxyPath(path, method = "GET") {
   const normalizedMethod = String(method || "GET").toUpperCase();
   const cleanPath = cleanProxyPath(path);
+  if (isReportPathAllowed(cleanPath, normalizedMethod)) {
+    return true;
+  }
   if (isAccountantPathAllowed(cleanPath, normalizedMethod)) {
     return true;
   }
@@ -77,4 +87,8 @@ export function isAllowedBackendProxyPath(path, method = "GET") {
 export function backendPathFromProxySegments(segments = [], search = "") {
   const path = segments.join("/").replace(/^\/+/, "").replace(/\/+$/, "");
   return `/${path}${search || ""}`;
+}
+
+export function isBinaryBackendProxyPath(path, method = "GET") {
+  return cleanProxyPath(path) === "reports/agency-summary/export" && String(method || "GET").toUpperCase() === "GET";
 }

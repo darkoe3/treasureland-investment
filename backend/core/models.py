@@ -277,6 +277,8 @@ class AuditAction(models.TextChoices):
     SHEET_REOPENED = "SHEET_REOPENED", "Sheet reopened"
     INCOMING_FUNDS_CHANGED = "INCOMING_FUNDS_CHANGED", "Incoming funds changed"
     TAX_CHANGED = "TAX_CHANGED", "Tax changed"
+    REPORT_PREVIEWED = "REPORT_PREVIEWED", "Report previewed"
+    REPORT_EXPORTED = "REPORT_EXPORTED", "Report exported"
 
 
 class DailySheet(TimeStampedModel):

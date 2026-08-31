@@ -61,3 +61,27 @@ export async function backendRequestWithFetch(path, options = {}, fetchImpl = fe
   const response = await backendRequestWithFetchResponse(path, options, fetchImpl, timeoutMs);
   return response.payload;
 }
+
+export async function backendRawResponseWithFetch(path, options = {}, fetchImpl = fetch, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchImpl(buildBackendUrl(path), {
+      ...options,
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        Accept: options.accept || "*/*",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new ApiError("The server took too long to respond.", 504, { detail: "The server took too long to respond." }, false);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

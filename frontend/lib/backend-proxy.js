@@ -1,5 +1,5 @@
 import { buildBackendUrl } from "./backend-url.js";
-import { backendPathFromProxySegments, isAllowedBackendProxyPath } from "./controlled-proxy-path.js";
+import { backendPathFromProxySegments, isAllowedBackendProxyPath, isBinaryBackendProxyPath } from "./controlled-proxy-path.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -58,10 +58,14 @@ export async function resolveBackendProxyRequest(request, context, { cookieStore
   const response = await backendRequest(backendPath, {
     method,
     body: body || undefined,
+    binary: isBinaryBackendProxyPath(normalizedPath, method),
   });
   return {
     status: response?.status || 200,
     payload: response?.payload ?? response ?? {},
+    body: response?.body,
+    contentType: response?.contentType,
+    contentDisposition: response?.contentDisposition,
     diagnostics,
   };
 }

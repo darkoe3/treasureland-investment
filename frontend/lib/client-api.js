@@ -85,6 +85,18 @@ async function sendRequest(fetchImpl, path, options, method, csrfHeader) {
   });
 }
 
+async function sendDownloadRequest(fetchImpl, path, options, method, csrfHeader) {
+  return fetchImpl(path, {
+    ...options,
+    method,
+    headers: {
+      Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/json",
+      ...csrfHeader,
+      ...(options.headers || {}),
+    },
+  });
+}
+
 export async function clientRequest(path, options = {}, fetchImpl = fetch) {
   const method = (options.method || "GET").toUpperCase();
   const csrfHeader = ["GET", "HEAD", "OPTIONS"].includes(method) ? {} : { "x-csrf-token": await getCsrfToken(fetchImpl) };
@@ -106,6 +118,33 @@ export async function clientRequest(path, options = {}, fetchImpl = fetch) {
     throw new ClientApiError(payload?.detail || "Request failed.", response.status, payload);
   }
   return payload;
+}
+
+export async function clientDownload(path, options = {}, fetchImpl = fetch) {
+  const method = (options.method || "GET").toUpperCase();
+  const csrfHeader = ["GET", "HEAD", "OPTIONS"].includes(method) ? {} : { "x-csrf-token": await getCsrfToken(fetchImpl) };
+  let response = await sendDownloadRequest(fetchImpl, path, options, method, csrfHeader);
+
+  if (response.status === 401 && canRefreshRequest(path)) {
+    try {
+      await refreshSession(fetchImpl, csrfHeader);
+    } catch {
+      redirectToLogin();
+      throw new ClientApiError("Session expired. Please sign in again.", 401, { detail: "Session expired." });
+    }
+    response = await sendDownloadRequest(fetchImpl, path, options, method, csrfHeader);
+  }
+
+  if (!response.ok) {
+    const payload = await parse(response);
+    throw new ClientApiError(payload?.detail || "Request failed.", response.status, payload);
+  }
+  const blob = await response.blob();
+  return {
+    blob,
+    contentType: response.headers.get("content-type") || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    contentDisposition: response.headers.get("content-disposition") || "",
+  };
 }
 
 export function resetClientApiStateForTests() {

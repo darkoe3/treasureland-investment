@@ -196,13 +196,14 @@ class Weekday(models.IntegerChoices):
 class WeeklyGameSchedule(TimeStampedModel):
     game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="weekly_schedules")
     weekday = models.PositiveSmallIntegerField(choices=Weekday.choices)
-    closing_time = models.TimeField()
-    draw_time = models.TimeField()
+    is_whole_day = models.BooleanField(default=False)
+    closing_time = models.TimeField(null=True, blank=True)
+    draw_time = models.TimeField(null=True, blank=True)
     display_order = models.PositiveSmallIntegerField(default=0)
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        ordering = ["weekday", "display_order", "closing_time"]
+        ordering = ["weekday", "display_order", "id"]
         constraints = [
             models.UniqueConstraint(
                 fields=["game", "weekday"],
@@ -216,6 +217,12 @@ class WeeklyGameSchedule(TimeStampedModel):
         ]
 
     def clean(self):
+        if self.is_whole_day:
+            if self.closing_time is not None or self.draw_time is not None:
+                raise ValidationError({"is_whole_day": "Whole Day schedules must not have closing or draw times."})
+            return
+        if self.closing_time is None or self.draw_time is None:
+            raise ValidationError({"closing_time": "Timed schedules must include both closing and draw times."})
         if self.draw_time <= self.closing_time:
             raise ValidationError({"draw_time": "Draw time must be later than closing time."})
 
@@ -279,6 +286,14 @@ class AuditAction(models.TextChoices):
     TAX_CHANGED = "TAX_CHANGED", "Tax changed"
     REPORT_PREVIEWED = "REPORT_PREVIEWED", "Report previewed"
     REPORT_EXPORTED = "REPORT_EXPORTED", "Report exported"
+    SCHEDULE_CREATED = "SCHEDULE_CREATED", "Schedule created"
+    SCHEDULE_UPDATED = "SCHEDULE_UPDATED", "Schedule updated"
+    SCHEDULE_ACTIVATED = "SCHEDULE_ACTIVATED", "Schedule activated"
+    SCHEDULE_DEACTIVATED = "SCHEDULE_DEACTIVATED", "Schedule deactivated"
+    IMPORT_PREVIEWED = "IMPORT_PREVIEWED", "Import previewed"
+    IMPORT_CONFIRMED = "IMPORT_CONFIRMED", "Import confirmed"
+    IMPORT_CANCELLED = "IMPORT_CANCELLED", "Import cancelled"
+    IMPORT_FAILED = "IMPORT_FAILED", "Import failed"
 
 
 class DailySheet(TimeStampedModel):
@@ -338,13 +353,14 @@ class DailySheet(TimeStampedModel):
             weekday=self.transaction_date.isoweekday(),
             is_active=True,
             game__is_active=True,
-        ).order_by("display_order", "closing_time", "id")
+        ).order_by("display_order", "id")
         DailySheetGame.objects.bulk_create(
             [
                 DailySheetGame(
                     daily_sheet=self,
                     game=schedule.game,
                     game_name_snapshot=schedule.game.name,
+                    is_whole_day_snapshot=schedule.is_whole_day,
                     closing_time_snapshot=schedule.closing_time,
                     draw_time_snapshot=schedule.draw_time,
                     display_order=schedule.display_order,
@@ -395,13 +411,14 @@ class DailySheetGame(models.Model):
     daily_sheet = models.ForeignKey(DailySheet, on_delete=models.CASCADE, related_name="sheet_games")
     game = models.ForeignKey(Game, on_delete=models.PROTECT, related_name="daily_sheet_games")
     game_name_snapshot = models.CharField(max_length=120)
-    closing_time_snapshot = models.TimeField()
-    draw_time_snapshot = models.TimeField()
+    is_whole_day_snapshot = models.BooleanField(default=False)
+    closing_time_snapshot = models.TimeField(null=True, blank=True)
+    draw_time_snapshot = models.TimeField(null=True, blank=True)
     display_order = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        ordering = ["daily_sheet", "display_order", "closing_time_snapshot", "id"]
+        ordering = ["daily_sheet", "display_order", "id"]
         constraints = [
             models.UniqueConstraint(fields=["daily_sheet", "game"], name="unique_daily_sheet_game"),
         ]
@@ -411,6 +428,45 @@ class DailySheetGame(models.Model):
 
     def __str__(self):
         return f"{self.daily_sheet} - {self.game_name_snapshot}"
+
+
+class DailySheetImportStatus(models.TextChoices):
+    PREVIEWED = "PREVIEWED", "Previewed"
+    CONFIRMED = "CONFIRMED", "Confirmed"
+    CANCELLED = "CANCELLED", "Cancelled"
+    FAILED = "FAILED", "Failed"
+    EXPIRED = "EXPIRED", "Expired"
+
+
+class DailySheetImportBatch(TimeStampedModel):
+    uploader = models.ForeignKey(User, on_delete=models.PROTECT, related_name="daily_sheet_import_batches")
+    agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="daily_sheet_import_batches")
+    transaction_date = models.DateField(db_index=True)
+    original_filename = models.CharField(max_length=255)
+    file_hash = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(max_length=20, choices=DailySheetImportStatus.choices, default=DailySheetImportStatus.PREVIEWED)
+    preview_payload = models.JSONField(default=dict)
+    warnings = models.JSONField(default=list)
+    errors = models.JSONField(default=list)
+    existing_sheet = models.ForeignKey(DailySheet, on_delete=models.SET_NULL, null=True, blank=True, related_name="import_batches")
+    existing_transaction_count = models.PositiveIntegerField(default=0)
+    confirmed_sheet = models.ForeignKey(DailySheet, on_delete=models.SET_NULL, null=True, blank=True, related_name="confirmed_import_batches")
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["uploader", "status"]),
+            models.Index(fields=["agency", "transaction_date"]),
+        ]
+
+    @property
+    def is_expired(self):
+        return self.expires_at <= timezone.now()
+
+    def __str__(self):
+        return f"{self.original_filename} - {self.agency.name} - {self.transaction_date}"
 
 
 class TPMDailyTransaction(TimeStampedModel):

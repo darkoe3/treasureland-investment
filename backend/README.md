@@ -52,6 +52,10 @@ Manual tax is recorded for reporting and reconciliation only. It does not reduce
 - `GET|POST /api/omitted-terminals/`
 - `GET|PATCH|PUT|DELETE /api/omitted-terminals/{id}/`
 - `GET /api/games/for-date/?date=YYYY-MM-DD`
+- `POST /api/daily-sheet-imports/preview/`
+- `GET /api/daily-sheet-imports/{id}/`
+- `POST /api/daily-sheet-imports/{id}/confirm/`
+- `POST /api/daily-sheet-imports/{id}/cancel/`
 - `GET /api/audit-logs/`
 - `GET /api/audit-logs/{id}/`
 - `GET|POST /api/accountants/`
@@ -75,6 +79,20 @@ Reports are Super Admin-only and default to `status=APPROVED`. Repeated `status`
 Report game columns are the union of included `DailySheetGame` snapshots. Stable game IDs are preferred; normalized snapshot names are the fallback for legacy records. Ordering is display order, normalized name and stable key.
 
 Excel exports are generated with `openpyxl`, use numeric monetary cells, sanitize filenames and worksheet names, and prefix user-controlled text that begins with `=`, `+`, `-` or `@` to prevent formula injection.
+
+## Daily Sheet Excel Import
+
+Accountants with `can_create` for an assigned agency and Super Admin users can preview one `.xlsx` workbook under `POST /api/daily-sheet-imports/preview/`. The parser supports the shared five-sheet agency workbook structure:
+
+- `ENTER GAME DATA HERE`: selected raw-sales source. `B2` is advisory workbook date, `B5:B224` is `SUB AGT NOS`, `C:I` are raw game sales, and row 3 supplies game headers.
+- `REGISTER SUB-AGENT`: maps `SUB AGT NOS` to `TERMINAL NOS`; `TERMINAL NOS` is the system `TPMCode.code`.
+- `MUSA RESULTS`, `Premier Games` and `Sheet2`: recognized but not imported as authoritative transaction data.
+
+The import reads only raw game-sales amounts. Django recalculates NET Sales, 5% commission, 95% To Pay, sub-agent share, organisation share, tax and difference using the existing model properties. Workbook formulas and cached legacy totals are advisory only.
+
+Preview creates a server-side `DailySheetImportBatch` containing safe metadata, normalized rows, warnings and blocking errors. The raw workbook is not stored. Confirmation uses the stored batch, not browser-submitted transaction rows, and writes atomically. If no sheet exists, confirmation creates a Draft sheet and snapshots the current active games for that date, including Whole Day games. If an editable Draft already has transactions, confirmation requires `replace_existing=true` and replaces all rows instead of merging. Submitted and Approved sheets are protected, and any changed target sheet or changed row count after preview requires a fresh preview.
+
+Security limits include `.xlsx` signature checks, 5 MB upload size, bounded sheet/row/column inspection, ZIP decompression limits, macro/external-link/embedded-content rejection, formula rejection in transactional sales cells, sanitized filenames, metadata-only audit records and no logging of workbook contents, cookies, JWTs or credentials.
 
 ## Example Transaction Request
 

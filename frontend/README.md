@@ -81,8 +81,19 @@ Report data is kept in React state only. It is not written to `localStorage` or 
 - `/dashboard/people`: search, filter, create and edit people; add and safely deactivate TPM codes.
 - `/dashboard/daily-sheets`: list, filter and create daily sheets.
 - `/dashboard/daily-sheets/[id]`: enter transactions, record omissions, update manual tax and actual received, review totals and run workflow actions.
+- `/dashboard/daily-sheets/import`: upload an approved `.xlsx` daily-sheet workbook, preview validation results and confirm import into Draft sheets.
 
 All browser requests use `/api/backend/...`; the controlled proxy allowlist permits only exact operational and report paths and methods.
+
+## Daily Sheet Excel Import
+
+The Daily Sheets page includes `Upload Excel`. The import screen asks for agency, transaction date and one `.xlsx` file up to 5 MB. Accountants see only agencies where they have `can_create`; Super Admin users can select any active agency.
+
+Preview uploads multipart form data through the controlled backend proxy to `POST /api/daily-sheet-imports/preview/`. The browser displays agency/date, safe filename, valid rows, ignored blank/zero rows, canonical game mappings, per-row game amounts, NET Sales, To Pay, warnings, blocking errors and existing Draft replacement status. Confirmation remains disabled while blocking errors exist. Existing Draft replacements require an explicit checkbox, and workbook date mismatches require explicit acknowledgement.
+
+Confirmation calls `POST /api/daily-sheet-imports/{id}/confirm/` with acknowledgement flags only; normalized rows stay server-side in the import batch. A successful import redirects to the normal daily-sheet detail page for review, where manual entry and the existing submit/return/reopen/approve workflow continue unchanged. The preview can be cancelled with `POST /api/daily-sheet-imports/{id}/cancel/`.
+
+The proxy allowlist permits only the exact import endpoints and methods. Multipart bodies are forwarded as `FormData` without forcing JSON content type, CSRF is still required for mutations, one-refresh retry preserves the file and form fields, and JWTs remain HTTP-only cookies.
 
 Run local verification:
 
@@ -104,6 +115,7 @@ npm run build
 - Partial accountant saves: if profile fields save but agency permissions fail, the form reports a partial save and keeps the selected agency permissions on screen for retry.
 - Upstream errors: expected JSON validation errors are shown; unexpected HTML/debug responses are replaced with a generic message.
 - Excel download errors: report export errors preserve the backend status and JSON message; successful downloads preserve the workbook content type and filename.
+- Excel import errors: confirm the file is `.xlsx`, under 5 MB, has the five required worksheets, uses `SUB AGT NOS` from `ENTER GAME DATA HERE`, maps those values to `TERMINAL NOS` in `REGISTER SUB-AGENT`, and uses row-3 game headers that match the selected date's daily-sheet game snapshots.
 - Empty agency permissions: the accountant form accepts both plain API arrays and paginated `{results: [...]}` responses. Missing `is_active` is treated as active; explicit `is_active: false` is hidden.
 - Failed agency loading: edit forms keep profile saving available but do not replace agency assignments until the agency list loads successfully.
 

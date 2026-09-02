@@ -73,12 +73,13 @@ async function refreshSession(fetchImpl, csrfHeader) {
 }
 
 async function sendRequest(fetchImpl, path, options, method, csrfHeader) {
+  const multipart = typeof FormData !== "undefined" && options.body instanceof FormData;
   return fetchImpl(path, {
     ...options,
     method,
     headers: {
       Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.body && !multipart ? { "Content-Type": "application/json" } : {}),
       ...csrfHeader,
       ...(options.headers || {}),
     },

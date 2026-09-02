@@ -18,6 +18,7 @@ import {
   searchPeople,
 } from "../lib/phase4-operations.js";
 import { buildReportQuery, filenameFromDisposition, resolvePeriodDisplay, validateReportFilters } from "../lib/report-operations.js";
+import { emptyScheduleForm, schedulePayload, validateScheduleForm, withScheduleMode } from "../lib/game-schedule-operations.js";
 import { activeAgenciesFromPayload, buildAssignmentRows, listFromApiPayload, shouldSyncAgencyAssignments } from "../lib/resource-shapes.js";
 
 async function file(path) {
@@ -303,6 +304,28 @@ test("client PATCH and POST bodies survive refresh retry", async () => {
   }
 });
 
+test("client multipart import upload survives refresh retry without JSON content type", async () => {
+  resetClientApiStateForTests();
+  const form = new FormData();
+  form.set("agency", "1");
+  form.set("transaction_date", "2026-08-27");
+  form.set("file", new Blob(["xlsx"], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "daily.xlsx");
+  const { calls, fetchImpl } = mockClientFetch([
+    jsonResponse({ csrfToken: "csrf-token" }),
+    jsonResponse({ detail: "Access token expired." }, 401),
+    jsonResponse({ detail: "Session refreshed." }),
+    jsonResponse({ id: 10 }),
+  ]);
+
+  await clientRequest("/api/backend/daily-sheet-imports/preview/", { method: "POST", body: form }, fetchImpl);
+
+  assert.equal(calls[1].options.body, form);
+  assert.equal(calls[3].options.body, form);
+  assert.equal(calls[1].options.headers["x-csrf-token"], "csrf-token");
+  assert.equal(calls[3].options.headers["Content-Type"], undefined);
+  assert.equal(calls[3].options.headers.Authorization, undefined);
+});
+
 test("client refresh retry relies on rotated http-only cookies without exposing tokens", async () => {
   resetClientApiStateForTests();
   const { calls, fetchImpl } = mockClientFetch([
@@ -440,6 +463,145 @@ test("phase 5 report proxy allowlist permits exact get-only report paths", () =>
   assert.equal(isAllowedBackendProxyPath("reports/agency-summary/export", "POST"), false);
   assert.equal(isAllowedBackendProxyPath("reports/agency-summary/delete", "GET"), false);
   assert.equal(isAllowedBackendProxyPath("reports/anything", "GET"), false);
+});
+
+test("weekly schedule proxy allowlist permits exact paths and methods only", () => {
+  assert.equal(isAllowedBackendProxyPath("games", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("weekly-game-schedules", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("weekly-game-schedules", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("weekly-game-schedules/7", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("weekly-game-schedules/7", "PATCH"), true);
+  assert.equal(isAllowedBackendProxyPath("weekly-game-schedules/7", "DELETE"), true);
+  assert.equal(isAllowedBackendProxyPath("weekly-game-schedules", "DELETE"), false);
+  assert.equal(isAllowedBackendProxyPath("weekly-game-schedules/abc", "PATCH"), false);
+  assert.equal(isAllowedBackendProxyPath("weekly-game-schedules/7/activate", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("games", "POST"), false);
+});
+
+test("weekly schedule proxy keeps csrf enforcement before unsafe forwarding", async () => {
+  const { result, calls } = await resolveProxy({
+    segments: ["weekly-game-schedules"],
+    body: JSON.stringify({ game: 1, weekday: 1 }),
+    validateCsrf: csrfFail,
+  });
+
+  assert.equal(result.status, 403);
+  assert.deepEqual(result.payload, { detail: "Invalid security token." });
+  assert.equal(result.diagnostics.allowed, true);
+  assert.equal(calls.length, 0);
+});
+
+test("daily sheet import proxy allowlist permits exact paths and methods only", () => {
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports/preview", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports/12", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports/12/confirm", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports/12/cancel", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports/preview", "GET"), false);
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports/12/confirm", "GET"), false);
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports/12/delete", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("daily-sheet-imports/abc/confirm", "POST"), false);
+});
+
+test("daily sheet import proxy preserves csrf and multipart request body", async () => {
+  const form = new FormData();
+  form.set("agency", "1");
+  form.set("transaction_date", "2026-08-27");
+  form.set("file", new Blob(["xlsx"]), "daily.xlsx");
+  const request = new Request("http://localhost/api/backend/daily-sheet-imports/preview/", {
+    method: "POST",
+    body: form,
+    headers: { "x-csrf-token": "csrf-token" },
+  });
+  const calls = [];
+
+  const result = await resolveBackendProxyRequest(
+    request,
+    { params: Promise.resolve({ path: ["daily-sheet-imports", "preview"] }) },
+    {
+      cookieStore: cookieStore(),
+      validateCsrf: csrfPass,
+      backendRequest: async (backendPath, options) => {
+        calls.push({ backendPath, options });
+        return { status: 201, payload: { id: 12 } };
+      },
+    },
+  );
+
+  assert.equal(result.status, 201);
+  assert.equal(calls[0].backendPath, "/daily-sheet-imports/preview");
+  assert.equal(calls[0].options.method, "POST");
+  assert.ok(calls[0].options.body instanceof FormData);
+
+  const blocked = await resolveProxy({
+    segments: ["daily-sheet-imports", "12", "confirm"],
+    body: JSON.stringify({ replace_existing: true }),
+    validateCsrf: csrfFail,
+  });
+  assert.equal(blocked.result.status, 403);
+  assert.equal(blocked.calls.length, 0);
+});
+
+test("daily sheet import screen validates gates and avoids browser storage", async () => {
+  const source = await file("components/DailySheetImportClient.js");
+  const page = await file("app/dashboard/daily-sheets/import/page.js");
+  const dailySheets = await file("components/DailySheetsClient.js");
+  const css = await file("app/globals.css");
+
+  assert.match(dailySheets, /Upload Excel/);
+  assert.match(page, /DailySheetImportClient/);
+  assert.match(source, /Choose a \.xlsx file no larger than 5 MB\./);
+  assert.match(source, /requires_date_mismatch_ack/);
+  assert.match(source, /replaceExisting/);
+  assert.match(source, /Confirm Import/);
+  assert.match(source, /router\.push\(`\/dashboard\/daily-sheets\/\$\{payload\.daily_sheet\}`\)/);
+  assert.match(source, /previewPayload\.game_columns/);
+  assert.match(source, /batch\.errors\?\.length/);
+  assert.doesNotMatch(source, /localStorage|sessionStorage|Authorization|tl_access|tl_refresh/);
+  assert.match(css, /\.import-preview-wrap\s*\{[^}]*overflow-x:\s*auto;/s);
+  assert.match(css, /@media \(max-width: 680px\)[\s\S]*\.metric-grid,\s*\n\s*\.field-grid/s);
+});
+
+test("weekly schedule Timed and Whole Day form validation is deterministic", () => {
+  const blank = emptyScheduleForm();
+  assert.equal(validateScheduleForm(blank), "Select a game.");
+  const timed = { ...blank, game: "4", weekday: "1", display_order: "1", closing_time: "12:30", draw_time: "12:45" };
+  assert.equal(validateScheduleForm(timed), "");
+  assert.deepEqual(schedulePayload(timed), {
+    game: 4,
+    weekday: 1,
+    display_order: 1,
+    is_whole_day: false,
+    closing_time: "12:30",
+    draw_time: "12:45",
+    is_active: true,
+  });
+  assert.equal(validateScheduleForm({ ...timed, draw_time: "" }), "Timed schedules require both Closing Time and Draw Time.");
+  assert.equal(validateScheduleForm({ ...timed, draw_time: "12:00" }), "Draw Time must be later than Closing Time.");
+});
+
+test("weekly schedule Whole Day mode clears time fields", () => {
+  const form = { ...emptyScheduleForm(), game: "4", closing_time: "12:30", draw_time: "12:45" };
+  const wholeDay = withScheduleMode(form, true);
+
+  assert.equal(wholeDay.closing_time, "");
+  assert.equal(wholeDay.draw_time, "");
+  assert.equal(validateScheduleForm({ ...wholeDay, weekday: "1", display_order: "1" }), "");
+  assert.equal(schedulePayload({ ...wholeDay, weekday: "1", display_order: "1" }).closing_time, null);
+});
+
+test("weekly schedule screen hides mutation controls from accountants and keeps responsive layout", async () => {
+  const component = await file("components/GameScheduleClient.js");
+  const css = await file("app/globals.css");
+
+  assert.match(component, /canMutate = user\.role === "SUPER_ADMIN"/);
+  assert.match(component, /canMutate \? \(/);
+  assert.match(component, /Timed/);
+  assert.match(component, /Whole Day/);
+  assert.match(component, /window\.confirm/);
+  assert.match(component, /weekly-game-schedules/);
+  assert.match(css, /\.schedule-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(300px, 360px\);[^}]*max-width:\s*100%;/s);
+  assert.match(css, /@media \(max-width: 980px\)[\s\S]*\.schedule-layout\s*\{[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\);/);
 });
 
 test("phase 4 people parsing and search handles names and tpm codes", () => {

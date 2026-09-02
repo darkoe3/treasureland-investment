@@ -23,6 +23,7 @@ The backend remains authoritative for permissions, workflow status and all money
 - `DailySheetGame`: immutable snapshot of games scheduled for the sheet date.
 - `TPMDailyTransaction`: one row per TPM code per daily sheet.
 - `TransactionGameSale`: per-game sales amounts for a transaction.
+- `DailySheetImportBatch`: server-side Excel-import preview state containing safe metadata, normalized rows and warning/error summaries; it does not store the raw workbook.
 - `OmittedTerminal`: active or historical omitted-terminal reason for a sheet.
 - `AuditLog`: immutable operational and report history.
 
@@ -42,6 +43,8 @@ Statuses are `DRAFT`, `SUBMITTED`, `APPROVED`, `RETURNED` and `REOPENED`.
 
 Accountants may edit only assigned-agency sheets in `DRAFT`, `RETURNED` or `REOPENED` status where permission flags allow it. Super Admin alone may approve, return and reopen. Returned comments and reopen reasons are stored separately.
 
+Excel import is an alternate way to populate an editable daily sheet. It never overwrites Submitted or Approved sheets. If an editable Draft already contains transaction rows, confirmation must explicitly replace the existing rows; imports do not silently merge. Creating a sheet by import snapshots the current active weekday games, including Whole Day entries. Later schedule edits do not rewrite historical `DailySheetGame` snapshots.
+
 ## Calculations
 
 - NET Sales = sum of all game sales for the TPM code.
@@ -53,6 +56,16 @@ Accountants may edit only assigned-agency sheets in `DRAFT`, `RETURNED` or `REOP
 - Difference = actual amount received - calculated agency To Pay.
 
 All backend calculations use `Decimal` with `ROUND_HALF_UP`.
+
+## Daily Sheet Excel Import
+
+All five agencies use the same workbook structure as `MUSA Sales Summary Sheet Calculator.xlsx`. The backend imports only `ENTER GAME DATA HERE`: `B2` is the advisory workbook date, `B5:B224` is `SUB AGT NOS`, row 3 supplies game headers, and `C:I` contain raw game-sales amounts. `REGISTER SUB-AGENT` maps `SUB AGT NOS` to `TERMINAL NOS`, and `TERMINAL NOS` is matched to system `TPMCode.code`. `MUSA RESULTS`, `Premier Games` and `Sheet2` are recognized but not used as authoritative payment data.
+
+Game headers are trimmed, matched case-insensitively and normalized through approved aliases such as `F/chance` to `Fairchance`, `Inter` to `International`, `MK II` to `Mark II`, `c/master` to `Club Master`, `o6` to `06` and `msp` to `Monday Special`. Every nonblank sales header must match a `DailySheetGame` snapshot for the selected date. Blank optional H/I headers are ignored only when they have no sales values.
+
+Preview validates workbook structure, file signature, size, sheet count, row/column limits, macro/external-link/embedded-content absence, identifiers, duplicate rows, formulas in sales cells, negative or invalid money values, selected-date mismatch and existing-sheet replacement state. Blocking errors disable confirmation. Warnings include blank/zero ignored rows, workbook/system name differences and numeric identifiers that may have lost leading zeroes.
+
+Confirmation uses the server-side `DailySheetImportBatch` and writes atomically. Django recalculates all transaction totals, commission, To Pay, shares, tax and differences from imported raw sales. The workbook's legacy formulas and cached totals are advisory only.
 
 ## Phase 5 Reports
 
@@ -76,6 +89,10 @@ Excel exports contain workbook metadata, summary metrics, daily reconciliation, 
 - `GET|POST /api/tpm-codes/`
 - `GET|PATCH|DELETE /api/tpm-codes/{id}/`
 - `GET /api/games/for-date/?date=YYYY-MM-DD`
+- `POST /api/daily-sheet-imports/preview/`
+- `GET /api/daily-sheet-imports/{id}/`
+- `POST /api/daily-sheet-imports/{id}/confirm/`
+- `POST /api/daily-sheet-imports/{id}/cancel/`
 - `GET|POST /api/daily-sheets/`
 - `GET|PATCH|DELETE /api/daily-sheets/{id}/`
 - `GET /api/daily-sheets/{id}/summary/`
@@ -93,12 +110,12 @@ Excel exports contain workbook metadata, summary metrics, daily reconciliation, 
 
 ## Audit Behavior
 
-Important actions create immutable `AuditLog` entries: sheet creation, transaction changes, omitted-terminal changes, workflow actions, accountant assignment changes, person changes, TPM code changes, report previews and report exports. Report audit metadata includes agency, period, resolved dates and statuses, but not report contents.
+Important actions create immutable `AuditLog` entries: sheet creation, transaction changes, omitted-terminal changes, workflow actions, accountant assignment changes, person changes, TPM code changes, import preview/confirm/cancel/failure, report previews and report exports. Import audit metadata includes safe filename, file hash, agency, date and counts only; it does not include workbook row contents, cookies, tokens or credentials.
 
 ## Deployment And Migration Notes
 
 Phase 4 adds migration `0005_phase4_tpm_uniqueness_omission_active.py` for active omission history and case-insensitive TPM-code uniqueness. The migration is additive except replacing the old omission uniqueness constraint with an active-only uniqueness constraint. No live Render database operations are required during local development.
 
-## Known Phase 6 Limitations
+## Known Limitations
 
-PDF export, emailed reports, scheduled reports, bulk imports, destructive cleanup and automatic tax deduction remain out of scope. Deployment still uses Render for Django/PostgreSQL and Vercel for Next.js; Phase 5 requires no Render or Vercel setting changes.
+PDF export, emailed reports, scheduled reports, destructive cleanup and automatic tax deduction remain out of scope. Excel import supports the confirmed five-sheet daily-sales workbook only; unrelated workbook formats are rejected. Deployment still uses Render for Django/PostgreSQL and Vercel for Next.js.

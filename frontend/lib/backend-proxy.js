@@ -54,7 +54,8 @@ export async function resolveBackendProxyRequest(request, context, { cookieStore
     return { status: 404, payload: { detail: "API path is not allowed." }, diagnostics };
   }
 
-  const body = method === "GET" || method === "HEAD" ? undefined : await request.text();
+  const contentType = request.headers.get("content-type") || "";
+  const body = method === "GET" || method === "HEAD" ? undefined : contentType.includes("multipart/form-data") ? await request.formData() : await request.text();
   const response = await backendRequest(backendPath, {
     method,
     body: body || undefined,

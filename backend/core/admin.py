@@ -5,6 +5,7 @@ from .models import (
     Agency,
     AuditLog,
     DailySheet,
+    DailySheetImportBatch,
     DailySheetGame,
     Game,
     OmittedTerminal,
@@ -85,16 +86,16 @@ class GameAdmin(admin.ModelAdmin):
 
 @admin.register(WeeklyGameSchedule)
 class WeeklyGameScheduleAdmin(admin.ModelAdmin):
-    list_display = ("game", "weekday", "closing_time", "draw_time", "display_order", "is_active")
-    list_filter = ("weekday", "is_active", "game")
+    list_display = ("game", "weekday", "is_whole_day", "closing_time", "draw_time", "display_order", "is_active")
+    list_filter = ("weekday", "is_whole_day", "is_active", "game")
     search_fields = ("game__name",)
-    ordering = ("weekday", "display_order", "closing_time")
+    ordering = ("weekday", "display_order", "id")
 
 
 class DailySheetGameInline(admin.TabularInline):
     model = DailySheetGame
     extra = 0
-    readonly_fields = ("game_name_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
+    readonly_fields = ("game_name_snapshot", "is_whole_day_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
 
 
 @admin.register(DailySheet)
@@ -129,10 +130,21 @@ class DailySheetAdmin(admin.ModelAdmin):
 
 @admin.register(DailySheetGame)
 class DailySheetGameAdmin(admin.ModelAdmin):
-    list_display = ("daily_sheet", "game_name_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
+    list_display = ("daily_sheet", "game_name_snapshot", "is_whole_day_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
     list_filter = ("daily_sheet__agency", "game")
     search_fields = ("game_name_snapshot", "daily_sheet__agency__name")
     date_hierarchy = "created_at"
+
+
+@admin.register(DailySheetImportBatch)
+class DailySheetImportBatchAdmin(admin.ModelAdmin):
+    list_display = ("original_filename", "agency", "transaction_date", "status", "uploader", "created_at", "confirmed_at")
+    list_filter = ("status", "agency", "transaction_date", "created_at")
+    search_fields = ("original_filename", "file_hash", "uploader__email", "agency__name")
+    readonly_fields = ("uploader", "agency", "transaction_date", "original_filename", "file_hash", "status", "preview_payload", "warnings", "errors", "existing_sheet", "existing_transaction_count", "confirmed_sheet", "confirmed_at", "expires_at", "created_at", "updated_at")
+
+    def has_add_permission(self, request):
+        return False
 
 
 class TransactionGameSaleInline(admin.TabularInline):

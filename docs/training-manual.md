@@ -26,6 +26,21 @@ Open a sheet, search by name or TPM code, select the terminal, then enter sales 
 
 Screenshot placeholder: Transaction entry.
 
+## Importing Game Sales From Excel
+
+Open `Daily Sheets`, then choose `Upload Excel`. Select the authorised agency, transaction date and one `.xlsx` workbook. The workbook must use the approved five-sheet format: `ENTER GAME DATA HERE`, `REGISTER SUB-AGENT`, `MUSA RESULTS`, `Premier Games` and `Sheet2`.
+
+The importer reads raw sales from `ENTER GAME DATA HERE`. Use rows 5 through 224 only. `SUB AGT NOS` in column B is matched through `REGISTER SUB-AGENT` to `TERMINAL NOS`, which is the system TPM Code. Row 3 supplies the game names for columns C through I.
+
+Choose `Preview upload` before anything is saved. Review the agency, date, file name, row count, ignored blank or zero rows, TPM Code, system person name, workbook name, game amounts, NET Sales, To Pay, warnings and blocking errors. Warnings should be checked, but blocking errors must be corrected before import can be confirmed.
+
+If the workbook date differs from the selected date, tick the acknowledgement only when the selected date is the correct business date. If an editable Draft already contains transaction rows, tick the replacement checkbox only when those rows should be replaced by the upload. Submitted and Approved sheets cannot be overwritten.
+
+Choose `Confirm Import` to create or update the Draft sheet, then review the normal daily-sheet detail page before submitting. Manual transaction entry remains available when a workbook is not used.
+
+Screenshot placeholder: Excel import upload.
+Screenshot placeholder: Excel import preview.
+
 ## Marking Omitted Terminals
 
 The sheet shows expected active terminals that have not been entered. Choose `Mark omitted`, enter a reason, and save. A terminal cannot have both a transaction and an active omitted record.
@@ -73,6 +88,11 @@ Screenshot placeholder: Excel workbook opened in spreadsheet software.
 
 - `A daily sheet already exists for that agency and date.`
 - `Sale amount cannot be negative.`
+- `Only .xlsx files are supported.`
+- `Game {name} is not scheduled for the selected date.`
+- `Sales row is missing SUB AGT NOS.`
+- `TERMINAL NOS {code} does not match a system TPM code.`
+- `Set replace_existing=true to replace existing transactions.`
 - `Every active TPM code must be entered or omitted with an explanation.`
 - `A TPM code cannot be both entered and omitted.`
 - `This sheet is locked against changes.`

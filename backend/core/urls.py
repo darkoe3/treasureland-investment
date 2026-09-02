@@ -6,6 +6,7 @@ from .views import (
     AccountantViewSet,
     AuditLogViewSet,
     DailySheetViewSet,
+    DailySheetImportBatchViewSet,
     GameViewSet,
     LoginView,
     OmittedTerminalViewSet,
@@ -31,6 +32,7 @@ router.register("tpm-codes", TPMCodeViewSet, basename="tpm-code")
 router.register("games", GameViewSet, basename="game")
 router.register("weekly-game-schedules", WeeklyGameScheduleViewSet, basename="weekly-game-schedule")
 router.register("daily-sheets", DailySheetViewSet, basename="daily-sheet")
+router.register("daily-sheet-imports", DailySheetImportBatchViewSet, basename="daily-sheet-import")
 router.register("tpm-daily-transactions", TPMDailyTransactionViewSet, basename="tpm-daily-transaction")
 router.register("omitted-terminals", OmittedTerminalViewSet, basename="omitted-terminal")
 router.register("audit-logs", AuditLogViewSet, basename="audit-log")

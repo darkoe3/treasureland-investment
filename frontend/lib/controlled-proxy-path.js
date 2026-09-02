@@ -1,11 +1,12 @@
 const COLLECTION_METHODS = {
   agencies: new Set(["GET"]),
+  games: new Set(["GET"]),
   people: new Set(["GET", "POST"]),
   "tpm-codes": new Set(["GET", "POST"]),
   "daily-sheets": new Set(["GET", "POST"]),
   "tpm-daily-transactions": new Set(["GET", "POST"]),
   "omitted-terminals": new Set(["GET", "POST"]),
-  "weekly-game-schedules": new Set(["GET"]),
+  "weekly-game-schedules": new Set(["GET", "POST"]),
   "audit-logs": new Set(["GET"]),
 };
 
@@ -15,6 +16,7 @@ const DETAIL_METHODS = {
   "daily-sheets": new Set(["GET", "PATCH", "DELETE"]),
   "tpm-daily-transactions": new Set(["GET", "PATCH", "DELETE"]),
   "omitted-terminals": new Set(["GET", "PATCH", "DELETE"]),
+  "weekly-game-schedules": new Set(["GET", "PATCH", "DELETE"]),
 };
 
 const ACCOUNTANT_ACTION_METHODS = new Map([
@@ -52,6 +54,20 @@ function isReportPathAllowed(path, method) {
   return path === "reports/agency-summary" || path === "reports/agency-summary/export";
 }
 
+function isDailySheetImportPathAllowed(path, method) {
+  const parts = cleanProxyPath(path).split("/").filter(Boolean);
+  if (parts.length === 2 && parts[0] === "daily-sheet-imports" && parts[1] === "preview") {
+    return method === "POST";
+  }
+  if (parts.length === 2 && parts[0] === "daily-sheet-imports" && /^\d+$/.test(parts[1])) {
+    return method === "GET";
+  }
+  if (parts.length === 3 && parts[0] === "daily-sheet-imports" && /^\d+$/.test(parts[1])) {
+    return new Set(["confirm", "cancel"]).has(parts[2]) && method === "POST";
+  }
+  return false;
+}
+
 export function isAllowedBackendProxyPath(path, method = "GET") {
   const normalizedMethod = String(method || "GET").toUpperCase();
   const cleanPath = cleanProxyPath(path);
@@ -59,6 +75,9 @@ export function isAllowedBackendProxyPath(path, method = "GET") {
     return true;
   }
   if (isAccountantPathAllowed(cleanPath, normalizedMethod)) {
+    return true;
+  }
+  if (isDailySheetImportPathAllowed(cleanPath, normalizedMethod)) {
     return true;
   }
   const parts = cleanPath.split("/").filter(Boolean);

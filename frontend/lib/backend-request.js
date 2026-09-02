@@ -26,6 +26,10 @@ async function parseResponse(response) {
   }
 }
 
+function hasMultipartBody(body) {
+  return typeof FormData !== "undefined" && body instanceof FormData;
+}
+
 export async function backendRequestWithFetchResponse(path, options = {}, fetchImpl = fetch, timeoutMs = 10000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -36,7 +40,7 @@ export async function backendRequestWithFetchResponse(path, options = {}, fetchI
       signal: controller.signal,
       headers: {
         Accept: "application/json",
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.body && !hasMultipartBody(options.body) ? { "Content-Type": "application/json" } : {}),
         ...(options.headers || {}),
       },
     });
@@ -72,7 +76,7 @@ export async function backendRawResponseWithFetch(path, options = {}, fetchImpl 
       signal: controller.signal,
       headers: {
         Accept: options.accept || "*/*",
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.body && !hasMultipartBody(options.body) ? { "Content-Type": "application/json" } : {}),
         ...(options.headers || {}),
       },
     });

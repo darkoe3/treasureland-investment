@@ -76,6 +76,7 @@ export default function DailySheetsClient({ user, initialAgencies = [] }) {
             {["DRAFT", "SUBMITTED", "APPROVED", "RETURNED", "REOPENED"].map((status) => <option key={status}>{status}</option>)}
           </select>
           <button className="secondary-button" type="submit">Apply</button>
+          <Link className="primary-button" href="/dashboard/daily-sheets/import"><Plus size={16} />Upload Excel</Link>
         </form>
       </section>
 

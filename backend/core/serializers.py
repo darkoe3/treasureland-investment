@@ -12,6 +12,7 @@ from .models import (
     Agency,
     AuditLog,
     DailySheet,
+    DailySheetImportBatch,
     DailySheetGame,
     DailySheetStatus,
     Game,
@@ -301,6 +302,7 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
             "game_name",
             "weekday",
             "weekday_display",
+            "is_whole_day",
             "closing_time",
             "draw_time",
             "display_order",
@@ -309,6 +311,43 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("created_at", "updated_at")
+
+    def validate_weekday(self, value):
+        if value not in dict(WeeklyGameSchedule._meta.get_field("weekday").choices):
+            raise serializers.ValidationError("Use a valid weekday value from 1 to 7.")
+        return value
+
+    def validate_display_order(self, value):
+        if value < 1:
+            raise serializers.ValidationError("Display order must be 1 or greater.")
+        return value
+
+    def validate(self, attrs):
+        is_whole_day = attrs.get("is_whole_day", getattr(self.instance, "is_whole_day", False))
+        closing_time = attrs.get("closing_time", getattr(self.instance, "closing_time", None))
+        draw_time = attrs.get("draw_time", getattr(self.instance, "draw_time", None))
+        game = attrs.get("game", getattr(self.instance, "game", None))
+        weekday = attrs.get("weekday", getattr(self.instance, "weekday", None))
+        is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
+
+        if is_whole_day:
+            if closing_time is not None or draw_time is not None:
+                raise serializers.ValidationError({"is_whole_day": "Whole Day schedules must not include times."})
+            attrs["closing_time"] = None
+            attrs["draw_time"] = None
+        else:
+            if closing_time is None or draw_time is None:
+                raise serializers.ValidationError({"closing_time": "Timed schedules must include both closing and draw times."})
+            if draw_time <= closing_time:
+                raise serializers.ValidationError({"draw_time": "Draw time must be later than closing time."})
+
+        if game and weekday and is_active:
+            duplicate = WeeklyGameSchedule.objects.filter(game=game, weekday=weekday, is_active=True)
+            if self.instance:
+                duplicate = duplicate.exclude(pk=self.instance.pk)
+            if duplicate.exists():
+                raise serializers.ValidationError({"game": "This game already has an active schedule for that weekday."})
+        return attrs
 
 
 class DailySheetGameSerializer(serializers.ModelSerializer):
@@ -319,10 +358,41 @@ class DailySheetGameSerializer(serializers.ModelSerializer):
             "daily_sheet",
             "game",
             "game_name_snapshot",
+            "is_whole_day_snapshot",
             "closing_time_snapshot",
             "draw_time_snapshot",
             "display_order",
             "created_at",
+        )
+        read_only_fields = fields
+
+
+class DailySheetImportBatchSerializer(serializers.ModelSerializer):
+    agency_name = serializers.CharField(source="agency.name", read_only=True)
+    uploader_email = serializers.EmailField(source="uploader.email", read_only=True)
+
+    class Meta:
+        model = DailySheetImportBatch
+        fields = (
+            "id",
+            "uploader",
+            "uploader_email",
+            "agency",
+            "agency_name",
+            "transaction_date",
+            "original_filename",
+            "file_hash",
+            "status",
+            "preview_payload",
+            "warnings",
+            "errors",
+            "existing_sheet",
+            "existing_transaction_count",
+            "confirmed_sheet",
+            "confirmed_at",
+            "expires_at",
+            "created_at",
+            "updated_at",
         )
         read_only_fields = fields
 
@@ -636,7 +706,7 @@ class DailySheetSerializer(serializers.ModelSerializer):
                 "game_name": game.game_name_snapshot,
                 "total": totals.get(game.id, money("0")),
             }
-            for game in obj.sheet_games.all().order_by("display_order", "closing_time_snapshot", "id")
+            for game in obj.sheet_games.all().order_by("display_order", "id")
         ]
 
     def get_person_totals(self, obj):

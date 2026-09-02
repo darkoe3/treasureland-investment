@@ -1,8 +1,14 @@
+from datetime import timedelta
+from decimal import Decimal
+
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
+from django.utils.text import get_valid_filename
 from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
@@ -13,6 +19,8 @@ from .models import (
     AuditAction,
     AuditLog,
     DailySheet,
+    DailySheetImportBatch,
+    DailySheetImportStatus,
     DailySheetStatus,
     Game,
     OmittedTerminal,
@@ -25,7 +33,9 @@ from .models import (
     UserRole,
     WeeklyGameSchedule,
     json_safe_value,
+    money,
 )
+from .importers import parse_daily_sheet_workbook
 from .permissions import IsSuperAdmin, SuperAdminOnlyWrites, SuperAdminOrReadOnlyAccountant
 from .reports import build_report, serialize_report, workbook_response
 from .serializers import (
@@ -38,6 +48,7 @@ from .serializers import (
     AuditLogSerializer,
     CurrentUserSerializer,
     DailySheetGameSerializer,
+    DailySheetImportBatchSerializer,
     DailySheetSerializer,
     EmailTokenObtainPairSerializer,
     GameSerializer,
@@ -509,7 +520,7 @@ class GameViewSet(BaseSearchViewSet):
             weekday=selected_date.isoweekday(),
             is_active=True,
             game__is_active=True,
-        ).order_by("display_order", "closing_time", "id")
+        ).order_by("display_order", "id")
         return Response(WeeklyGameScheduleSerializer(schedules, many=True).data)
 
 
@@ -519,6 +530,287 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
     queryset = WeeklyGameSchedule.objects.select_related("game")
     search_fields = ["game__name"]
     ordering_fields = ["weekday", "display_order", "closing_time"]
+
+    def get_queryset(self):
+        queryset = WeeklyGameSchedule.objects.select_related("game").order_by("weekday", "display_order", "id")
+        active = self.request.query_params.get("active")
+        weekday = self.request.query_params.get("weekday")
+        if active in {"true", "false"}:
+            queryset = queryset.filter(is_active=active == "true")
+        if weekday:
+            if not weekday.isdigit() or int(weekday) not in range(1, 8):
+                raise ValidationError({"weekday": "Use a valid weekday value from 1 to 7."})
+            queryset = queryset.filter(weekday=int(weekday))
+        return queryset
+
+    def _values_for_audit(self, schedule):
+        return {
+            "game": schedule.game_id,
+            "game_name": schedule.game.name,
+            "weekday": schedule.weekday,
+            "is_whole_day": schedule.is_whole_day,
+            "closing_time": schedule.closing_time,
+            "draw_time": schedule.draw_time,
+            "display_order": schedule.display_order,
+            "is_active": schedule.is_active,
+        }
+
+    def perform_create(self, serializer):
+        schedule = serializer.save()
+        log_audit(
+            self.request.user,
+            None,
+            AuditAction.SCHEDULE_CREATED,
+            "WeeklyGameSchedule",
+            schedule.id,
+            new_values=self._values_for_audit(schedule),
+            description=f"Schedule created: {schedule.game.name} on {schedule.get_weekday_display()}",
+        )
+
+    def perform_update(self, serializer):
+        schedule = self.get_object()
+        old_values = self._values_for_audit(schedule)
+        updated = serializer.save()
+        action = AuditAction.SCHEDULE_UPDATED
+        if old_values["is_active"] is False and updated.is_active is True:
+            action = AuditAction.SCHEDULE_ACTIVATED
+        elif old_values["is_active"] is True and updated.is_active is False:
+            action = AuditAction.SCHEDULE_DEACTIVATED
+        log_audit(
+            self.request.user,
+            None,
+            action,
+            "WeeklyGameSchedule",
+            updated.id,
+            old_values=old_values,
+            new_values=self._values_for_audit(updated),
+            description=f"Schedule updated: {updated.game.name} on {updated.get_weekday_display()}",
+        )
+
+    def perform_destroy(self, instance):
+        old_values = self._values_for_audit(instance)
+        instance.is_active = False
+        instance.save(update_fields=["is_active", "updated_at"])
+        log_audit(
+            self.request.user,
+            None,
+            AuditAction.SCHEDULE_DEACTIVATED,
+            "WeeklyGameSchedule",
+            instance.id,
+            old_values=old_values,
+            new_values=self._values_for_audit(instance),
+            description=f"Schedule deactivated: {instance.game.name} on {instance.get_weekday_display()}",
+        )
+
+
+class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
+    serializer_class = DailySheetImportBatchSerializer
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        queryset = DailySheetImportBatch.objects.select_related("uploader", "agency", "existing_sheet", "confirmed_sheet")
+        if self.request.user.role == UserRole.SUPER_ADMIN:
+            return queryset
+        return queryset.filter(uploader=self.request.user)
+
+    def _metadata(self, batch):
+        return {
+            "agency": batch.agency_id,
+            "transaction_date": batch.transaction_date,
+            "file_name": batch.original_filename,
+            "file_hash": batch.file_hash,
+            "status": batch.status,
+            "valid_row_count": batch.preview_payload.get("valid_row_count", 0),
+            "ignored_blank_rows": batch.preview_payload.get("ignored_blank_rows", 0),
+            "ignored_zero_rows": batch.preview_payload.get("ignored_zero_rows", 0),
+            "warning_count": len(batch.warnings or []),
+            "error_count": len(batch.errors or []),
+            "existing_sheet": batch.existing_sheet_id,
+            "existing_transaction_count": batch.existing_transaction_count,
+        }
+
+    def _current_schedule_snapshot(self, transaction_date):
+        schedules = (
+            WeeklyGameSchedule.objects.select_for_update()
+            .select_related("game")
+            .filter(weekday=transaction_date.isoweekday(), is_active=True, game__is_active=True)
+            .order_by("display_order", "id")
+        )
+        return [
+            {
+                "game_name": schedule.game.name,
+                "is_whole_day": schedule.is_whole_day,
+                "closing_time": schedule.closing_time.isoformat() if schedule.closing_time else None,
+                "draw_time": schedule.draw_time.isoformat() if schedule.draw_time else None,
+                "display_order": schedule.display_order,
+            }
+            for schedule in schedules
+        ]
+
+    def _sheet_schedule_snapshot(self, sheet):
+        return [
+            {
+                "game_name": game.game_name_snapshot,
+                "is_whole_day": game.is_whole_day_snapshot,
+                "closing_time": game.closing_time_snapshot.isoformat() if game.closing_time_snapshot else None,
+                "draw_time": game.draw_time_snapshot.isoformat() if game.draw_time_snapshot else None,
+                "display_order": game.display_order,
+            }
+            for game in sheet.sheet_games.select_for_update().order_by("display_order", "id")
+        ]
+
+    def _agency_from_request(self, request):
+        agency_id = request.data.get("agency")
+        if not str(agency_id or "").isdigit():
+            raise ValidationError({"agency": "Select a valid agency."})
+        try:
+            agency = Agency.objects.get(pk=int(agency_id), is_active=True)
+        except Agency.DoesNotExist as exc:
+            raise ValidationError({"agency": "Select an active agency."}) from exc
+        require_assignment_flag(request.user, agency, "can_create")
+        return agency
+
+    @action(detail=False, methods=["post"], url_path="preview")
+    def preview(self, request):
+        agency = self._agency_from_request(request)
+        date_text = request.data.get("transaction_date")
+        try:
+            selected_date = timezone.datetime.fromisoformat(str(date_text)).date()
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"transaction_date": "Use YYYY-MM-DD."}) from exc
+        uploaded_file = request.FILES.get("file")
+        if not uploaded_file:
+            raise ValidationError({"file": "Upload one .xlsx workbook."})
+        try:
+            parsed = parse_daily_sheet_workbook(uploaded_file, agency, selected_date)
+        except DjangoValidationError as exc:
+            batch = DailySheetImportBatch.objects.create(
+                uploader=request.user,
+                agency=agency,
+                transaction_date=selected_date,
+                original_filename=get_valid_filename(getattr(uploaded_file, "name", "upload.xlsx"))[:255],
+                file_hash="",
+                status=DailySheetImportStatus.FAILED,
+                preview_payload={},
+                warnings=[],
+                errors=[{"message": str(exc.messages[0] if hasattr(exc, "messages") else exc)}],
+                expires_at=timezone.now() + timedelta(hours=2),
+            )
+            log_audit(request.user, agency, AuditAction.IMPORT_FAILED, "DailySheetImportBatch", batch.id, new_values=self._metadata(batch), description="Daily sheet import preview failed.")
+            return Response(self.get_serializer(batch).data, status=status.HTTP_400_BAD_REQUEST)
+
+        existing_sheet = None
+        if parsed.payload.get("existing_sheet"):
+            existing_sheet = DailySheet.objects.get(pk=parsed.payload["existing_sheet"])
+        batch = DailySheetImportBatch.objects.create(
+            uploader=request.user,
+            agency=agency,
+            transaction_date=selected_date,
+            original_filename=parsed.payload["file_name"],
+            file_hash=parsed.payload["file_hash"],
+            status=DailySheetImportStatus.PREVIEWED,
+            preview_payload=parsed.payload,
+            warnings=parsed.warnings,
+            errors=parsed.errors,
+            existing_sheet=existing_sheet,
+            existing_transaction_count=parsed.payload["existing_transaction_count"],
+            expires_at=timezone.now() + timedelta(hours=2),
+        )
+        log_audit(request.user, agency, AuditAction.IMPORT_PREVIEWED, "DailySheetImportBatch", batch.id, new_values=self._metadata(batch), description="Daily sheet import previewed.")
+        return Response(self.get_serializer(batch).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="confirm")
+    def confirm(self, request, pk=None):
+        batch = self.get_object()
+        require_assignment_flag(request.user, batch.agency, "can_create")
+        replace_existing = request.data.get("replace_existing") is True
+        acknowledge_date_mismatch = request.data.get("acknowledge_date_mismatch") is True
+
+        with transaction.atomic():
+            batch = self.get_queryset().select_for_update().get(pk=batch.pk)
+            require_assignment_flag(request.user, batch.agency, "can_create")
+            if batch.status != DailySheetImportStatus.PREVIEWED:
+                raise ValidationError({"status": "Only previewed imports can be confirmed."})
+            if batch.is_expired:
+                batch.status = DailySheetImportStatus.EXPIRED
+                batch.save(update_fields=["status", "updated_at"])
+                raise ValidationError({"status": "Import preview expired. Upload the workbook again."})
+            if batch.errors:
+                raise ValidationError({"errors": "Resolve blocking errors before confirming."})
+            if batch.preview_payload.get("requires_date_mismatch_ack") and not acknowledge_date_mismatch:
+                raise ValidationError({"acknowledge_date_mismatch": "Confirm the workbook date mismatch before importing."})
+
+            current_sheet = DailySheet.objects.select_for_update().filter(agency=batch.agency, transaction_date=batch.transaction_date).first()
+            preview_sheet_id = batch.preview_payload.get("existing_sheet")
+            if (current_sheet.id if current_sheet else None) != preview_sheet_id:
+                raise ValidationError({"daily_sheet": "Target daily sheet changed after preview. Create a fresh preview."})
+            if current_sheet:
+                if not current_sheet.is_accountant_editable:
+                    raise ValidationError({"daily_sheet": "Submitted or approved sheets cannot be overwritten."})
+                if self._sheet_schedule_snapshot(current_sheet) != batch.preview_payload.get("schedule_snapshot", []):
+                    raise ValidationError({"daily_sheet": "Daily sheet game snapshots changed after preview. Create a fresh preview."})
+                current_count = current_sheet.transactions.select_for_update().count()
+                if current_count != batch.existing_transaction_count:
+                    raise ValidationError({"daily_sheet": "Daily sheet transactions changed after preview. Create a fresh preview."})
+                if current_count and not replace_existing:
+                    raise ValidationError({"replace_existing": "Set replace_existing=true to replace existing transactions."})
+                sheet = current_sheet
+                sheet.transactions.all().delete()
+            else:
+                current_schedule = self._current_schedule_snapshot(batch.transaction_date)
+                if current_schedule != batch.preview_payload.get("schedule_snapshot", []):
+                    raise ValidationError({"daily_sheet": "The selected date schedule changed after preview. Create a fresh preview."})
+                sheet = DailySheet.objects.create(agency=batch.agency, transaction_date=batch.transaction_date, created_by=request.user)
+                sheet.copy_weekday_games()
+
+            sheet_games = {game.game_name_snapshot.lower(): game for game in sheet.sheet_games.select_for_update().order_by("display_order", "id")}
+            created_transactions = []
+            for row in batch.preview_payload.get("rows", []):
+                try:
+                    tpm_code = TPMCode.objects.select_related("person").get(
+                        pk=row["tpm_code_id"],
+                        person__agency=batch.agency,
+                        person__is_active=True,
+                        is_active=True,
+                    )
+                except TPMCode.DoesNotExist as exc:
+                    raise ValidationError({"tpm_code": "A TPM Code changed after preview. Create a fresh preview."}) from exc
+                txn = TPMDailyTransaction.objects.create(
+                    daily_sheet=sheet,
+                    tpm_code=tpm_code,
+                    created_by=request.user,
+                    updated_by=request.user,
+                )
+                created_transactions.append(txn)
+                TransactionGameSale.objects.bulk_create(
+                    [
+                        TransactionGameSale(
+                            transaction=txn,
+                            daily_sheet_game=sheet_game,
+                            amount=money(Decimal(row["amounts"].get(sheet_game.game_name_snapshot, "0.00"))),
+                        )
+                        for sheet_game in sheet_games.values()
+                    ]
+                )
+
+            batch.status = DailySheetImportStatus.CONFIRMED
+            batch.confirmed_sheet = sheet
+            batch.confirmed_at = timezone.now()
+            batch.save(update_fields=["status", "confirmed_sheet", "confirmed_at", "updated_at"])
+            log_audit(request.user, batch.agency, AuditAction.IMPORT_CONFIRMED, "DailySheetImportBatch", batch.id, new_values=self._metadata(batch), description="Daily sheet import confirmed.", daily_sheet=sheet)
+        return Response({"daily_sheet": sheet.id, "imported_rows": len(created_transactions)})
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel(self, request, pk=None):
+        batch = self.get_object()
+        require_assignment_flag(request.user, batch.agency, "can_create")
+        if batch.status != DailySheetImportStatus.PREVIEWED:
+            raise ValidationError({"status": "Only previewed imports can be cancelled."})
+        batch.status = DailySheetImportStatus.CANCELLED
+        batch.save(update_fields=["status", "updated_at"])
+        log_audit(request.user, batch.agency, AuditAction.IMPORT_CANCELLED, "DailySheetImportBatch", batch.id, new_values=self._metadata(batch), description="Daily sheet import cancelled.")
+        return Response(self.get_serializer(batch).data)
 
 
 class DailySheetViewSet(BaseSearchViewSet):

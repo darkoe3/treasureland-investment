@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Sum
 from rest_framework import serializers
@@ -174,10 +175,6 @@ class AccountantCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("A user with this email already exists.")
         return normalized
 
-    def validate_password(self, password):
-        validate_password(password)
-        return password
-
     def validate_agency_assignments(self, assignments):
         agency_ids = [item["agency"].id for item in assignments]
         if len(agency_ids) != len(set(agency_ids)):
@@ -194,6 +191,10 @@ class AccountantCreateSerializer(serializers.ModelSerializer):
             is_superuser=False,
             **validated_data,
         )
+        try:
+            validate_password(password, user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"password": list(exc.messages)})
         user.set_password(password)
         user.save()
         assigned_by = self.context["request"].user
@@ -242,10 +243,6 @@ class AccountantSetAgenciesSerializer(serializers.Serializer):
 
 class AccountantPasswordResetSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
-
-    def validate_password(self, password):
-        validate_password(password)
-        return password
 
 
 class PersonSerializer(serializers.ModelSerializer):

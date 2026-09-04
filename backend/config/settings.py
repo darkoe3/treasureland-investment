@@ -143,6 +143,17 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "1000/hour",
+        "user": "5000/hour",
+        "login": "20/minute",
+        "token_refresh": "60/minute",
+        "password_reset": "10/hour",
+    },
 }
 
 SIMPLE_JWT = {

@@ -1,6 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -11,6 +12,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -63,10 +65,13 @@ from .serializers import (
 
 class LoginView(TokenObtainPairView):
     serializer_class = EmailTokenObtainPairSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
 
 
 class RefreshView(TokenRefreshView):
-    pass
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "token_refresh"
 
 
 @api_view(["GET"])
@@ -211,6 +216,7 @@ class UserAgencyAssignmentViewSet(BaseSearchViewSet):
 
 class AccountantViewSet(BaseSearchViewSet):
     permission_classes = [IsSuperAdmin]
+    throttle_scope = None
     search_fields = ["email", "full_name", "agency_assignments__agency__name"]
     ordering_fields = ["email", "full_name", "created_at", "is_active"]
 
@@ -330,12 +336,23 @@ class AccountantViewSet(BaseSearchViewSet):
         refreshed = self.get_queryset().get(pk=accountant.pk)
         return Response(AccountantSerializer(refreshed).data)
 
-    @action(detail=True, methods=["post"], url_path="reset-password")
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="reset-password",
+        throttle_classes=[ScopedRateThrottle],
+        throttle_scope="password_reset",
+    )
     def reset_password(self, request, pk=None):
         accountant = self.get_object()
         serializer = AccountantPasswordResetSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        accountant.set_password(serializer.validated_data["password"])
+        password = serializer.validated_data["password"]
+        try:
+            validate_password(password, accountant)
+        except DjangoValidationError as exc:
+            raise ValidationError({"password": list(exc.messages)})
+        accountant.set_password(password)
         accountant.save(update_fields=["password", "updated_at"])
         log_audit(
             request.user,

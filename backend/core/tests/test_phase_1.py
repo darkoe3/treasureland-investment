@@ -16,14 +16,18 @@ class ModelTests(TestCase):
     def test_email_based_user_creation(self):
         user = User.objects.create_user(
             email="Accountant@Example.com",
-            password="test-pass-123",
+            password="TestPass123!",
             full_name="Accountant One",
         )
 
         self.assertEqual(user.email, "Accountant@example.com")
-        self.assertTrue(user.check_password("test-pass-123"))
+        self.assertTrue(user.check_password("TestPass123!"))
         self.assertEqual(user.role, UserRole.ACCOUNTANT)
         self.assertFalse(user.is_staff)
+
+    def test_create_user_rejects_weak_passwords(self):
+        with self.assertRaises(ValidationError):
+            User.objects.create_user("weak@example.com", "123", full_name="Weak")
 
     def test_unique_agency_names_and_codes(self):
         Agency.objects.create(name="Musa 1", code="musa-1")
@@ -46,7 +50,7 @@ class ModelTests(TestCase):
             TPMCode.objects.create(person=person, code="TPM001")
 
     def test_accountant_assignment_to_multiple_agencies_and_duplicate_prevention(self):
-        accountant = User.objects.create_user("acct@example.com", "pass", full_name="Acct")
+        accountant = User.objects.create_user("acct@example.com", "AcctPass123!", full_name="Acct")
         agency_one = Agency.objects.create(name="Musa 1", code="musa-1")
         agency_two = Agency.objects.create(name="Musa 2", code="musa-2")
 
@@ -72,12 +76,12 @@ class APIPermissionTests(APITestCase):
     def setUp(self):
         self.super_admin = User.objects.create_superuser(
             email="admin@example.com",
-            password="admin-pass-123",
+            password="AdminPass123!",
             full_name="Super Admin",
         )
         self.accountant = User.objects.create_user(
             email="accountant@example.com",
-            password="acct-pass-123",
+            password="AcctPass123!",
             full_name="Accountant",
         )
         self.agency_one = Agency.objects.create(name="Musa 1", code="musa-1")

@@ -2,6 +2,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
+from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q, Sum
@@ -30,6 +31,7 @@ class UserManager(BaseUserManager):
             raise ValueError("An email address is required.")
         email = self.normalize_email(email)
         user = self.model(email=email, **extra_fields)
+        validate_password(password, user)
         user.set_password(password)
         user.save(using=self._db)
         return user

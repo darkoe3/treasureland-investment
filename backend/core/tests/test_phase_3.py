@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase
 from django.urls import resolve, reverse
 from rest_framework import status
@@ -118,6 +119,8 @@ class Phase3APITests(APITestCase):
         self.client.force_authenticate(self.super_admin)
         response = self.client.post("/api/accountants/", {"email": "weak@example.com", "full_name": "Weak", "password": "123"})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.data)
+        self.assertFalse(User.objects.filter(email="weak@example.com").exists())
 
     def test_duplicate_email_addresses_are_rejected_case_insensitively(self):
         self.client.force_authenticate(self.super_admin)
@@ -234,6 +237,7 @@ class Phase3APITests(APITestCase):
         self.client.force_authenticate(self.super_admin)
         weak = self.client.post(f"/api/accountants/{self.accountant.id}/reset-password/", {"password": "123"})
         self.assertEqual(weak.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", weak.data)
         strong = self.client.post(f"/api/accountants/{self.accountant.id}/reset-password/", {"password": "NewStrongPass123!"})
         self.assertEqual(strong.status_code, status.HTTP_200_OK)
         self.accountant.refresh_from_db()
@@ -251,3 +255,41 @@ class Phase3APITests(APITestCase):
         data = response.data["results"] if "results" in response.data else response.data
         names = {item["full_name"] for item in data}
         self.assertEqual(names, {"Visible"})
+
+
+class AuthThrottleTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.super_admin = User.objects.create_superuser("admin@example.com", "AdminPass123!", full_name="Admin")
+        self.accountant = User.objects.create_user("acct@example.com", "AcctPass123!", full_name="Acct")
+
+    def tearDown(self):
+        cache.clear()
+
+    def test_login_endpoint_is_scoped_throttled(self):
+        payload = {"email": "acct@example.com", "password": "wrong-password"}
+
+        responses = [self.client.post("/api/auth/login/", payload) for _ in range(21)]
+
+        self.assertTrue(all(response.status_code == status.HTTP_400_BAD_REQUEST for response in responses[:20]))
+        self.assertEqual(responses[-1].status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_token_refresh_endpoint_is_scoped_throttled(self):
+        payload = {"refresh": "not-a-token"}
+        responses = [self.client.post("/api/auth/refresh/", payload) for _ in range(61)]
+
+        self.assertTrue(all(response.status_code == status.HTTP_401_UNAUTHORIZED for response in responses[:60]))
+        self.assertEqual(responses[-1].status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_password_reset_endpoint_is_scoped_throttled(self):
+        self.client.force_authenticate(self.super_admin)
+        responses = [
+            self.client.post(
+                f"/api/accountants/{self.accountant.id}/reset-password/",
+                {"password": f"NewStrongPass{index}!"},
+            )
+            for index in range(11)
+        ]
+
+        self.assertTrue(all(response.status_code == status.HTTP_200_OK for response in responses[:10]))
+        self.assertEqual(responses[-1].status_code, status.HTTP_429_TOO_MANY_REQUESTS)

@@ -1,0 +1,44 @@
+name: Semgrep
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep security scan
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    if: github.actor != 'dependabot[bot]'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config=auto \
+            --error \
+            --exclude='.venv/**' \
+            --exclude='**/.venv/**' \
+            --exclude='**/node_modules/**' \
+            --exclude='**/.next/**' \
+            --exclude='**/migrations/**' \
+            --exclude='**/tests/**' \
+            --exclude='**/*test*' \
+            --exclude='**/*.test.*' \
+            --exclude='**/*.spec.*' \
+            --exclude='**/static/**' \
+            --exclude='**/public/**' \
+            --exclude='**/generated/**' \
+            --exclude='**/*.generated.*' \
+            --exclude='**/*.gen.*' \
+            backend frontend

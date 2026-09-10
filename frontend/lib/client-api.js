@@ -1,5 +1,16 @@
 "use client";
 
+export function validationMessage(payload, status) {
+  if (status >= 500) return "Upstream service error.";
+  function messages(value) {
+    if (typeof value === "string") return [value];
+    if (Array.isArray(value)) return value.flatMap(messages);
+    if (value && typeof value === "object") return Object.values(value).flatMap(messages);
+    return [];
+  }
+  return messages(payload?.detail || payload).join(" ") || "Request failed.";
+}
+
 export class ClientApiError extends Error {
   constructor(message, status, payload = null) {
     super(message);
@@ -33,7 +44,7 @@ async function parse(response) {
   try {
     return JSON.parse(text);
   } catch {
-    return { detail: text };
+    return { detail: "Unexpected server response." };
   }
 }
 
@@ -116,7 +127,7 @@ export async function clientRequest(path, options = {}, fetchImpl = fetch) {
   }
 
   if (!response.ok) {
-    throw new ClientApiError(payload?.detail || "Request failed.", response.status, payload);
+    throw new ClientApiError(validationMessage(payload, response.status), response.status, payload);
   }
   return payload;
 }
@@ -138,7 +149,7 @@ export async function clientDownload(path, options = {}, fetchImpl = fetch) {
 
   if (!response.ok) {
     const payload = await parse(response);
-    throw new ClientApiError(payload?.detail || "Request failed.", response.status, payload);
+    throw new ClientApiError(validationMessage(payload, response.status), response.status, payload);
   }
   const blob = await response.blob();
   return {

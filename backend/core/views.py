@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.text import get_valid_filename
 from rest_framework import filters, status, viewsets
@@ -470,10 +470,27 @@ class TPMCodeViewSet(BaseSearchViewSet):
             queryset = queryset.filter(is_active=active == "true")
         return queryset
 
+    def save_code(self, serializer):
+        try:
+            with transaction.atomic():
+                return serializer.save()
+        except IntegrityError:
+            # A concurrent request may have claimed the code after validation.
+            serializer.validate_code(serializer.validated_data.get("code", serializer.instance.code if serializer.instance else ""))
+            raise
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        # Lock before DRF reads the instance so confirmation and audit use the current owner.
+        TPMCode.objects.select_for_update().get(pk=self.get_object().pk)
+        return super().update(request, *args, **kwargs)
+
+    @transaction.atomic
     def perform_create(self, serializer):
         person = serializer.validated_data["person"]
         require_assignment_flag(self.request.user, person.agency, "can_create")
-        code = serializer.save()
+        serializer.validated_data.pop("confirm_reassignment", None)
+        code = self.save_code(serializer)
         log_audit(
             self.request.user,
             code.person.agency,
@@ -488,8 +505,11 @@ class TPMCodeViewSet(BaseSearchViewSet):
         require_assignment_flag(self.request.user, code.person.agency, "can_edit")
         new_person = serializer.validated_data.get("person", code.person)
         require_assignment_flag(self.request.user, new_person.agency, "can_edit")
-        old_values = {"person": code.person_id, "code": code.code, "is_active": code.is_active}
-        updated = serializer.save()
+        confirmed = serializer.validated_data.pop("confirm_reassignment", False)
+        if new_person.pk != code.person_id and not confirmed:
+            raise ValidationError({"confirm_reassignment": "Confirm reassignment to a different person."})
+        old_values = {"agency": code.person.agency_id, "person": code.person_id, "code": code.code, "is_active": code.is_active}
+        updated = self.save_code(serializer)
         log_audit(
             self.request.user,
             updated.person.agency,
@@ -497,7 +517,7 @@ class TPMCodeViewSet(BaseSearchViewSet):
             "TPMCode",
             updated.id,
             old_values=old_values,
-            new_values={"person": updated.person_id, "code": updated.code, "is_active": updated.is_active},
+            new_values={"agency": updated.person.agency_id, "person": updated.person_id, "code": updated.code, "is_active": updated.is_active},
         )
 
     def perform_destroy(self, instance):

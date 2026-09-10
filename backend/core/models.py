@@ -375,7 +375,7 @@ class DailySheet(TimeStampedModel):
     def totals(self):
         sales = (
             TransactionGameSale.objects.filter(transaction__daily_sheet=self)
-            .values("transaction_id", "transaction__tpm_code__person_id", "transaction__agent_type_snapshot")
+            .values("transaction_id", "transaction__person_id_snapshot", "transaction__agent_type_snapshot")
             .annotate(net=Sum("amount"))
         )
         gross_sales = money(sum((row["net"] or Decimal("0")) for row in sales))
@@ -474,6 +474,8 @@ class DailySheetImportBatch(TimeStampedModel):
 class TPMDailyTransaction(TimeStampedModel):
     daily_sheet = models.ForeignKey(DailySheet, on_delete=models.CASCADE, related_name="transactions")
     tpm_code = models.ForeignKey(TPMCode, on_delete=models.PROTECT, related_name="daily_transactions")
+    person_id_snapshot = models.PositiveBigIntegerField(editable=False)
+    tpm_code_snapshot = models.CharField(max_length=80, editable=False)
     person_name_snapshot = models.CharField(max_length=255)
     agent_type_snapshot = models.CharField(max_length=20, choices=AgentType.choices)
     created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_tpm_transactions")
@@ -502,7 +504,9 @@ class TPMDailyTransaction(TimeStampedModel):
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
-        if self.tpm_code_id:
+        if self._state.adding and self.tpm_code_id:
+            self.person_id_snapshot = self.tpm_code.person_id
+            self.tpm_code_snapshot = self.tpm_code.code
             self.person_name_snapshot = self.tpm_code.person.full_name
             self.agent_type_snapshot = self.tpm_code.person.agent_type
         self.full_clean()
@@ -598,7 +602,20 @@ class OmittedTerminal(TimeStampedModel):
         return f"{self.tpm_code.code} omitted from {self.daily_sheet}"
 
 
+class ImmutableAuditQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError("Audit logs are immutable.")
+
+    def delete(self):
+        raise ValidationError("Audit logs are immutable.")
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise ValidationError("Audit logs are immutable.")
+
+
 class AuditLog(models.Model):
+    objects = ImmutableAuditQuerySet.as_manager()
+
     user = models.ForeignKey(User, on_delete=models.PROTECT, related_name="audit_logs")
     agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="audit_logs", null=True, blank=True)
     daily_sheet = models.ForeignKey(DailySheet, on_delete=models.CASCADE, related_name="audit_logs", null=True, blank=True)

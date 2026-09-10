@@ -262,21 +262,27 @@ class PersonSerializer(serializers.ModelSerializer):
 
 
 class TPMCodeSerializer(serializers.ModelSerializer):
+    code = serializers.CharField(max_length=80)
+    confirm_reassignment = serializers.BooleanField(write_only=True, required=False, default=False)
     person_name = serializers.CharField(source="person.full_name", read_only=True)
     agency = serializers.IntegerField(source="person.agency_id", read_only=True)
     agency_name = serializers.CharField(source="person.agency.name", read_only=True)
 
     class Meta:
         model = TPMCode
-        fields = ("id", "person", "person_name", "agency", "agency_name", "code", "is_active", "created_at", "updated_at")
+        fields = ("id", "person", "person_name", "agency", "agency_name", "code", "is_active", "created_at", "updated_at", "confirm_reassignment")
         read_only_fields = ("created_at", "updated_at")
 
     def validate_code(self, code):
         queryset = TPMCode.objects.filter(code__iexact=code.strip())
         if self.instance:
             queryset = queryset.exclude(pk=self.instance.pk)
-        if queryset.exists():
-            raise serializers.ValidationError("A TPM code with this value already exists.")
+        existing = queryset.select_related("person").first()
+        if existing:
+            raise serializers.ValidationError(
+                f"TPM code {existing.code} already exists and is assigned to {existing.person.full_name}. "
+                "Edit the existing TPM code instead."
+            )
         return code.strip()
 
 
@@ -410,7 +416,7 @@ class TransactionGameSaleSerializer(serializers.ModelSerializer):
 
 class TPMDailyTransactionSerializer(serializers.ModelSerializer):
     sales = TransactionGameSaleSerializer(many=True)
-    tpm_code_value = serializers.CharField(source="tpm_code.code", read_only=True)
+    tpm_code_value = serializers.CharField(source="tpm_code_snapshot", read_only=True)
     net_sales = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     commission = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     to_pay = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -449,10 +455,9 @@ class TPMDailyTransactionSerializer(serializers.ModelSerializer):
         )
 
     def get_person_total(self, obj):
-        tpm_ids = TPMCode.objects.filter(person_id=obj.tpm_code.person_id).values("id")
         total = TransactionGameSale.objects.filter(
             transaction__daily_sheet=obj.daily_sheet,
-            transaction__tpm_code_id__in=tpm_ids,
+            transaction__person_id_snapshot=obj.person_id_snapshot,
         ).aggregate(total=Sum("amount"))["total"]
         return money(money(total) * Decimal("0.95"))
 
@@ -709,13 +714,13 @@ class DailySheetSerializer(serializers.ModelSerializer):
     def get_person_totals(self, obj):
         rows = (
             TransactionGameSale.objects.filter(transaction__daily_sheet=obj)
-            .values("transaction__tpm_code__person_id", "transaction__person_name_snapshot")
+            .values("transaction__person_id_snapshot", "transaction__person_name_snapshot")
             .annotate(net=Sum("amount"))
-            .order_by("transaction__person_name_snapshot", "transaction__tpm_code__person_id")
+            .order_by("transaction__person_name_snapshot", "transaction__person_id_snapshot")
         )
         return [
             {
-                "person": row["transaction__tpm_code__person_id"],
+                "person": row["transaction__person_id_snapshot"],
                 "person_name": row["transaction__person_name_snapshot"],
                 "net_sales": money(row["net"]),
                 "to_pay": money(money(row["net"] or 0) * Decimal("0.95")),

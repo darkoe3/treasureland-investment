@@ -215,12 +215,12 @@ def build_report(params, user, audit_action=AuditAction.REPORT_PREVIEWED):
         })
 
         for txn in txns_for_sheet:
-            person_id = txn.tpm_code.person_id
+            person_id = txn.person_id_snapshot
             detail_key = (person_id, txn.tpm_code_id)
             row = detail_map.setdefault(detail_key, {
                 "person": person_id,
                 "name": txn.person_name_snapshot,
-                "tpm_code": txn.tpm_code.code,
+                "tpm_code": txn.tpm_code_snapshot,
                 "games": {key: money("0") for key in game_columns},
                 "net_sales": money("0"),
                 "to_pay": money("0"),

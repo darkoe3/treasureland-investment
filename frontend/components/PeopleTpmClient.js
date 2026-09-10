@@ -13,16 +13,14 @@ export default function PeopleTpmClient({ user, initialAgencies = [] }) {
   const [query, setQuery] = useState("");
   const [agencyFilter, setAgencyFilter] = useState("");
   const [personForm, setPersonForm] = useState(emptyPerson);
-  const [codeForm, setCodeForm] = useState({ person: "", code: "" });
+  const [codeForm, setCodeForm] = useState({ person: "", code: "", is_active: true });
   const [editingCode, setEditingCode] = useState(null);
   const [state, setState] = useState({ loading: true, error: "", success: "" });
 
   async function loadPeople() {
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const params = new URLSearchParams();
-      if (query.trim()) params.set("search", query.trim());
-      const payload = await clientRequest(apiPath(`/people/${params.toString() ? `?${params}` : ""}`));
+      const payload = await clientRequest(apiPath("/people/"));
       setPeople(listFromPayload(payload));
       setState((current) => ({ ...current, loading: false }));
     } catch (error) {
@@ -34,8 +32,6 @@ export default function PeopleTpmClient({ user, initialAgencies = [] }) {
     queueMicrotask(() => {
       loadPeople();
     });
-    // Initial load only; later loads are user-triggered so search text is not refetched on every keypress.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const visiblePeople = useMemo(() => {
@@ -67,12 +63,15 @@ export default function PeopleTpmClient({ user, initialAgencies = [] }) {
 
   async function saveCode(event) {
     event.preventDefault();
+    const reassigning = editingCode && Number(editingCode.person) !== Number(codeForm.person);
+    const target = people.find((person) => person.id === Number(codeForm.person));
+    if (reassigning && !window.confirm(`Reassign TPM code ${editingCode.code} from ${editingCode.person_name} to ${target?.full_name}? Historical daily sheets will be preserved.`)) return;
     try {
       await clientRequest(apiPath(editingCode ? `/tpm-codes/${editingCode.id}/` : "/tpm-codes/"), {
         method: editingCode ? "PATCH" : "POST",
-        body: JSON.stringify({ person: Number(codeForm.person), code: codeForm.code, is_active: true }),
+        body: JSON.stringify({ person: Number(codeForm.person), code: codeForm.code, is_active: codeForm.is_active, confirm_reassignment: Boolean(reassigning) }),
       });
-      setCodeForm({ person: "", code: "" });
+      setCodeForm({ person: "", code: "", is_active: true });
       setEditingCode(null);
       setState({ loading: false, error: "", success: editingCode ? "TPM code updated." : "TPM code added." });
       await loadPeople();
@@ -145,15 +144,21 @@ export default function PeopleTpmClient({ user, initialAgencies = [] }) {
           <label className="field-group">Person
             <select required value={codeForm.person} onChange={(event) => setCodeForm({ ...codeForm, person: event.target.value })}>
               <option value="">Select person</option>
-              {people.map((person) => <option key={person.id} value={person.id}>{person.full_name} - {person.agency_name}</option>)}
+              {people.filter((person) => canForAgency(user, person.agency, editingCode ? "can_edit" : "can_create")).map((person) => <option key={person.id} value={person.id}>{person.full_name} - {person.agency_name}</option>)}
             </select>
           </label>
           <label className="field-group">TPM Code
             <input required value={codeForm.code} onChange={(event) => setCodeForm({ ...codeForm, code: event.target.value })} />
           </label>
+          <label className="field-group">TPM status
+            <select aria-label="TPM status" value={codeForm.is_active ? "true" : "false"} onChange={(event) => setCodeForm({ ...codeForm, is_active: event.target.value === "true" })}>
+              <option value="true">Active</option>
+              <option value="false">Inactive</option>
+            </select>
+          </label>
           <div className="button-row">
             <button className="primary-button" type="submit"><Plus size={16} />{editingCode ? "Save code" : "Add code"}</button>
-            {editingCode ? <button className="secondary-button" type="button" onClick={() => { setEditingCode(null); setCodeForm({ person: "", code: "" }); }}>Cancel</button> : null}
+            {editingCode ? <button className="secondary-button" type="button" onClick={() => { setEditingCode(null); setCodeForm({ person: "", code: "", is_active: true }); }}>Cancel</button> : null}
           </div>
         </form>
       </section>
@@ -172,14 +177,14 @@ export default function PeopleTpmClient({ user, initialAgencies = [] }) {
                   <td data-label="Agency">{person.agency_name}</td>
                   <td data-label="Status"><span className={`status-pill ${person.is_active ? "submitted" : "empty"}`}>{person.is_active ? "Active" : "Inactive"}</span></td>
                   <td data-label="TPM Codes">
-                    <div className="chip-wrap">{(person.tpm_codes || []).map((code) => <span className={`mini-chip ${code.is_active ? "" : "muted"}`} key={code.id}>{code.code}</span>)}</div>
+                    <div className="chip-wrap">{(person.tpm_codes || []).map((code) => <span className={`mini-chip ${code.is_active ? "" : "muted"}`} key={code.id}>{code.code}{code.is_active ? "" : " (Inactive)"}</span>)}</div>
                   </td>
                   <td data-label="Actions">
                     <div className="button-row compact">
                       <button className="icon-button" title="Edit person" type="button" onClick={() => setPersonForm(person)}><Edit3 size={16} /></button>
                       {(person.tpm_codes || []).map((code) => (
                         <span className="button-row compact" key={code.id}>
-                          <button className="icon-button" title={`Edit ${code.code}`} type="button" onClick={() => { setEditingCode(code); setCodeForm({ person: person.id, code: code.code }); }} disabled={!code.is_active}>
+                          <button className="icon-button" title={`Edit/Reassign ${code.code}`} aria-label={`Edit/Reassign ${code.code}`} type="button" onClick={() => { setEditingCode({ ...code, person: person.id, person_name: person.full_name }); setCodeForm({ person: person.id, code: code.code, is_active: code.is_active }); }} disabled={!canForAgency(user, person.agency, "can_edit")}>
                             <Edit3 size={16} />
                           </button>
                           <button className="icon-button" title={`Deactivate ${code.code}`} type="button" onClick={() => deactivateCode(code)} disabled={!code.is_active}>

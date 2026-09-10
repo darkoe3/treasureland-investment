@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "node --test tests/*.test.mjs",
     "test:auth": "node --test tests/auth-security.test.mjs"
   },
   "dependencies": {

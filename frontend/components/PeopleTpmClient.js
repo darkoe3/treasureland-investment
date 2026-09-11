@@ -1,203 +1,193 @@
 "use client";
 
-import { Edit3, Plus, Power, Save, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ArrowRightLeft, Building2, CheckCircle2, Edit3, LoaderCircle, Plus, Power, RotateCcw, Save, Search, Users, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiPath, clientRequest } from "../lib/client-api";
-import { canForAgency, listFromPayload, searchPeople } from "../lib/phase4-operations";
+import { canForAgency, filterByVisibleAgency, listFromPayload } from "../lib/phase4-operations";
+import { changeCodeStatus, codeActions, defaultPeopleFilters, fieldErrors, filterPeople, submitPeopleEditor } from "../lib/people-tpm-operations";
 
-const emptyPerson = { id: null, agency: "", full_name: "", agent_type: "MAIN_AGENT", is_active: true };
+const request = (path, options) => clientRequest(apiPath(path), options);
+const actionDetails = { edit: [Edit3, "Edit", "secondary"], reassign: [ArrowRightLeft, "Reassign", "secondary"], deactivate: [Power, "Deactivate", "warning"], reactivate: [CheckCircle2, "Reactivate", "success"] };
+
+function Badge({ active }) {
+  return <span className={`people-status ${active ? "is-active" : "is-inactive"}`}><span aria-hidden="true" />{active ? "Active" : "Inactive"}</span>;
+}
+
+function Field({ name, label, errors, children }) {
+  const error = errors[name];
+  const attributes = { id: `people-${name}`, "aria-invalid": Boolean(error), "aria-describedby": error ? `people-${name}-error` : undefined };
+  return <div className="people-field"><label htmlFor={attributes.id}>{label}</label>{children(attributes)}{error ? <p className="people-field-error" id={`people-${name}-error`}>{error}</p> : null}</div>;
+}
 
 export default function PeopleTpmClient({ user, initialAgencies = [] }) {
-  const [agencies] = useState(initialAgencies);
   const [people, setPeople] = useState([]);
-  const [query, setQuery] = useState("");
-  const [agencyFilter, setAgencyFilter] = useState("");
-  const [personForm, setPersonForm] = useState(emptyPerson);
-  const [codeForm, setCodeForm] = useState({ person: "", code: "", is_active: true });
-  const [editingCode, setEditingCode] = useState(null);
+  const [filters, setFilters] = useState({ ...defaultPeopleFilters });
+  const [editor, setEditor] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [errors, setErrors] = useState({});
   const [state, setState] = useState({ loading: true, error: "", success: "" });
+  const [pending, setPending] = useState(false);
+  const busy = useRef(false);
+  const trigger = useRef(null);
+  const editorHeading = useRef(null);
+  const pageHeading = useRef(null);
+  const alert = useRef(null);
 
   async function loadPeople() {
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const payload = await clientRequest(apiPath("/people/"));
+      const payload = await request("/people/");
       setPeople(listFromPayload(payload));
       setState((current) => ({ ...current, loading: false }));
     } catch (error) {
-      setState({ loading: false, error: error.message, success: "" });
+      setState((current) => ({ ...current, loading: false, error: error.message }));
     }
   }
 
+  useEffect(() => { queueMicrotask(loadPeople); }, []);
   useEffect(() => {
-    queueMicrotask(() => {
-      loadPeople();
-    });
-  }, []);
+    if (editor) {
+      editorHeading.current?.focus();
+      editorHeading.current?.scrollIntoView({ block: "start", behavior: "instant" });
+    }
+  }, [editor]);
+  useEffect(() => { if (state.error) alert.current?.focus(); }, [state.error]);
 
-  const visiblePeople = useMemo(() => {
-    const filtered = agencyFilter ? people.filter((person) => Number(person.agency) === Number(agencyFilter)) : people;
-    return searchPeople(filtered, query);
-  }, [people, agencyFilter, query]);
+  const agencies = filterByVisibleAgency(initialAgencies, user, "id");
+  const accessiblePeople = useMemo(() => filterByVisibleAgency(people, user), [people, user]);
+  const visiblePeople = useMemo(() => filterPeople(accessiblePeople, filters), [accessiblePeople, filters]);
+  const codeCount = visiblePeople.reduce((total, person) => total + person.visibleCodes.length, 0);
+  const canCreate = agencies.some((agency) => canForAgency(user, agency.id, "can_create"));
+  const blocked = pending || state.loading;
+  const actionsBlocked = blocked || Boolean(editor);
+  useEffect(() => {
+    if (!editor && !blocked && trigger.current) {
+      (trigger.current.isConnected ? trigger.current : pageHeading.current)?.focus();
+      trigger.current = null;
+    }
+  }, [editor, blocked]);
+  const selectableAgencies = agencies.filter((agency) => canForAgency(user, agency.id, editor?.person ? "can_edit" : "can_create"));
+  const selectablePeople = accessiblePeople.filter((person) => canForAgency(user, person.agency, editor?.code ? "can_edit" : "can_create") && (editor?.kind !== "reassign" || person.id !== editor.person.id));
+  const target = accessiblePeople.find((person) => person.id === Number(draft.person));
+  const editorTitle = editor?.kind === "person" ? `${editor.person ? "Edit" : "Add"} Person` : editor?.kind === "reassign" ? "Reassign TPM Code" : `${editor?.code ? "Edit" : "Add"} TPM Code`;
 
-  async function savePerson(event) {
+  function openEditor(kind, person = null, code = null, event) {
+    if (busy.current || state.loading || editor) return;
+    trigger.current = event.currentTarget;
+    setErrors({});
+    setState((current) => ({ ...current, error: "", success: "" }));
+    setDraft(kind === "person"
+      ? { full_name: person?.full_name || "", agency: person?.agency || "", agent_type: person?.agent_type || "MAIN_AGENT", is_active: person?.is_active ?? true }
+      : { person: kind === "reassign" ? "" : person?.id || "", code: code?.code || "", is_active: code?.is_active ?? true });
+    setEditor({ kind, person, code });
+  }
+
+  function closeEditor() {
+    setEditor(null);
+    setErrors({});
+  }
+
+  async function save(event) {
     event.preventDefault();
-    const editing = Boolean(personForm.id);
+    if (busy.current) return;
+    busy.current = true;
+    setPending(true);
+    setErrors({});
+    setState((current) => ({ ...current, error: "", success: "" }));
     try {
-      const payload = {
-        agency: Number(personForm.agency),
-        full_name: personForm.full_name,
-        agent_type: personForm.agent_type,
-        is_active: Boolean(personForm.is_active),
-      };
-      await clientRequest(apiPath(editing ? `/people/${personForm.id}/` : "/people/"), {
-        method: editing ? "PATCH" : "POST",
-        body: JSON.stringify(payload),
-      });
-      setPersonForm(emptyPerson);
-      setState({ loading: false, error: "", success: editing ? "Person updated." : "Person created." });
-      await loadPeople();
+      const success = await submitPeopleEditor(editor, draft, accessiblePeople, request, (message) => window.confirm(message));
+      if (success) {
+        closeEditor();
+        setState((current) => ({ ...current, success }));
+        await loadPeople();
+      }
     } catch (error) {
-      setState({ loading: false, error: error.message, success: "" });
+      setErrors(fieldErrors(error));
+      setState((current) => ({ ...current, error: error.message }));
+    } finally {
+      busy.current = false;
+      setPending(false);
     }
   }
 
-  async function saveCode(event) {
-    event.preventDefault();
-    const reassigning = editingCode && Number(editingCode.person) !== Number(codeForm.person);
-    const target = people.find((person) => person.id === Number(codeForm.person));
-    if (reassigning && !window.confirm(`Reassign TPM code ${editingCode.code} from ${editingCode.person_name} to ${target?.full_name}? Historical daily sheets will be preserved.`)) return;
+  async function setCodeStatus(person, code) {
+    if (busy.current) return;
+    busy.current = true;
+    setPending(true);
+    setState((current) => ({ ...current, error: "", success: "" }));
     try {
-      await clientRequest(apiPath(editingCode ? `/tpm-codes/${editingCode.id}/` : "/tpm-codes/"), {
-        method: editingCode ? "PATCH" : "POST",
-        body: JSON.stringify({ person: Number(codeForm.person), code: codeForm.code, is_active: codeForm.is_active, confirm_reassignment: Boolean(reassigning) }),
-      });
-      setCodeForm({ person: "", code: "", is_active: true });
-      setEditingCode(null);
-      setState({ loading: false, error: "", success: editingCode ? "TPM code updated." : "TPM code added." });
-      await loadPeople();
+      const success = await changeCodeStatus(person, code, request, (message) => window.confirm(message));
+      if (success) {
+        setState((current) => ({ ...current, success }));
+        await loadPeople();
+      }
     } catch (error) {
-      setState({ loading: false, error: error.message, success: "" });
+      setState((current) => ({ ...current, error: error.message }));
+    } finally {
+      busy.current = false;
+      setPending(false);
     }
   }
 
-  async function deactivateCode(code) {
-    if (!window.confirm(`Deactivate TPM code ${code.code}? Transaction history will be preserved.`)) return;
-    await clientRequest(apiPath(`/tpm-codes/${code.id}/`), { method: "DELETE" });
-    setState({ loading: false, error: "", success: "TPM code deactivated." });
-    await loadPeople();
-  }
-
-  const selectableAgencies = agencies.filter((agency) => canForAgency(user, agency.id, personForm.id ? "can_edit" : "can_create"));
+  const updateDraft = (name, value) => setDraft((current) => ({ ...current, [name]: value }));
+  const updateFilter = (name, value) => setFilters((current) => ({ ...current, [name]: value }));
+  const resetFilters = () => setFilters({ ...defaultPeopleFilters });
 
   return (
-    <div className="page-stack">
-      <section className="panel">
-        <div className="toolbar">
-          <label className="search-box">
-            <Search size={18} aria-hidden="true" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name or TPM code" />
-          </label>
-          <select value={agencyFilter} onChange={(event) => setAgencyFilter(event.target.value)} aria-label="Filter by agency">
-            <option value="">All accessible agencies</option>
-            {agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}
-          </select>
-          <button className="secondary-button" type="button" onClick={loadPeople}>Refresh</button>
+    <div className="people-page">
+      <header className="people-page-header">
+        <div><p className="people-eyebrow">People directory</p><h1 ref={pageHeading} tabIndex={-1}>People &amp; TPM Codes</h1><p>Each person can have multiple TPM codes. Manage their details, codes and assignments here.</p></div>
+        <div className="people-actions">
+          {canCreate ? <button className="people-button primary" disabled={actionsBlocked} onClick={(event) => openEditor("person", null, null, event)}><Users size={18} aria-hidden="true" />Add Person</button> : null}
+          {canCreate ? <button className="people-button primary" disabled={actionsBlocked || !accessiblePeople.some((person) => canForAgency(user, person.agency, "can_create"))} onClick={(event) => openEditor("code", null, null, event)}><Plus size={18} aria-hidden="true" />Add TPM Code</button> : null}
         </div>
-        {state.error ? <p className="form-error">{state.error}</p> : null}
-        {state.success ? <p className="form-success">{state.success}</p> : null}
+      </header>
+
+      <section className="people-filters" aria-label="Search and filters">
+        <div className="people-field people-search"><label htmlFor="people-search">Search people or TPM codes</label><div><Search size={18} aria-hidden="true" /><input id="people-search" type="search" placeholder="Name or TPM code" value={filters.query} onChange={(event) => updateFilter("query", event.target.value)} /></div></div>
+        <div className="people-field"><label htmlFor="people-agency-filter">Agency</label><select id="people-agency-filter" value={filters.agency} onChange={(event) => updateFilter("agency", event.target.value)}><option value="">All accessible agencies</option>{agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></div>
+        <div className="people-field"><label htmlFor="people-status-filter">Person status</label><select id="people-status-filter" value={filters.status} onChange={(event) => updateFilter("status", event.target.value)}><option value="all">All statuses</option><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+        <label className="people-checkbox"><input type="checkbox" checked={filters.showInactive} onChange={(event) => updateFilter("showInactive", event.target.checked)} />Show inactive TPM codes</label>
+        <button className="people-button secondary" onClick={resetFilters}><RotateCcw size={16} aria-hidden="true" />Reset filters</button>
       </section>
 
-      <section className="form-grid">
-        <form className="panel form-panel" onSubmit={savePerson}>
-          <div className="panel-heading"><h2>{personForm.id ? "Edit Person" : "Create Person"}</h2></div>
-          <div className="field-grid">
-            <label className="field-group">Agency
-              <select required value={personForm.agency} onChange={(event) => setPersonForm({ ...personForm, agency: event.target.value })}>
-                <option value="">Select agency</option>
-                {selectableAgencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}
-              </select>
-            </label>
-            <label className="field-group">Status
-              <select value={personForm.is_active ? "true" : "false"} onChange={(event) => setPersonForm({ ...personForm, is_active: event.target.value === "true" })}>
-                <option value="true">Active</option>
-                <option value="false">Inactive</option>
-              </select>
-            </label>
-            <label className="field-group">Name
-              <input required value={personForm.full_name} onChange={(event) => setPersonForm({ ...personForm, full_name: event.target.value })} />
-            </label>
-            <label className="field-group">Agent status
-              <select value={personForm.agent_type} onChange={(event) => setPersonForm({ ...personForm, agent_type: event.target.value })}>
-                <option value="MAIN_AGENT">Main Agent</option>
-                <option value="SUBAGENT">Sub-agent</option>
-              </select>
-            </label>
-          </div>
-          <div className="button-row">
-            <button className="primary-button" type="submit"><Save size={16} />Save person</button>
-            {personForm.id ? <button className="secondary-button" type="button" onClick={() => setPersonForm(emptyPerson)}>Cancel</button> : null}
-          </div>
-        </form>
+      {state.success ? <p className="people-alert people-alert-success form-success" role="status"><CheckCircle2 size={20} aria-hidden="true" />{state.success}</p> : null}
+      {state.error ? <div className="people-alert people-alert-error form-error" role="alert" tabIndex={-1} ref={alert}>{state.error}</div> : null}
+      <span className="sr-only" role="status">{pending ? "Saving changes. Please wait." : ""}</span>
 
-        <form className="panel form-panel" onSubmit={saveCode}>
-          <div className="panel-heading"><h2>{editingCode ? "Edit TPM Code" : "Add TPM Code"}</h2></div>
-          <label className="field-group">Person
-            <select required value={codeForm.person} onChange={(event) => setCodeForm({ ...codeForm, person: event.target.value })}>
-              <option value="">Select person</option>
-              {people.filter((person) => canForAgency(user, person.agency, editingCode ? "can_edit" : "can_create")).map((person) => <option key={person.id} value={person.id}>{person.full_name} - {person.agency_name}</option>)}
-            </select>
-          </label>
-          <label className="field-group">TPM Code
-            <input required value={codeForm.code} onChange={(event) => setCodeForm({ ...codeForm, code: event.target.value })} />
-          </label>
-          <label className="field-group">TPM status
-            <select aria-label="TPM status" value={codeForm.is_active ? "true" : "false"} onChange={(event) => setCodeForm({ ...codeForm, is_active: event.target.value === "true" })}>
-              <option value="true">Active</option>
-              <option value="false">Inactive</option>
-            </select>
-          </label>
-          <div className="button-row">
-            <button className="primary-button" type="submit"><Plus size={16} />{editingCode ? "Save code" : "Add code"}</button>
-            {editingCode ? <button className="secondary-button" type="button" onClick={() => { setEditingCode(null); setCodeForm({ person: "", code: "", is_active: true }); }}>Cancel</button> : null}
-          </div>
+      {editor ? <section className="people-editor" aria-labelledby="people-editor-title">
+        <div className="people-section-heading"><div><p className="people-eyebrow">{editor.kind === "person" ? "Person details" : "TPM code details"}</p><h2 id="people-editor-title" ref={editorHeading} tabIndex={-1}>{editorTitle}</h2></div><button className="people-button secondary" type="button" disabled={pending} onClick={closeEditor}><X size={16} aria-hidden="true" />Cancel</button></div>
+        {editor.code ? <dl className="people-assignment-summary"><div><dt>TPM code</dt><dd>{editor.code.code}</dd></div><div><dt>Current person</dt><dd>{editor.person.full_name}</dd></div><div><dt>Current agency</dt><dd>{editor.person.agency_name}</dd></div><div><dt>Current status</dt><dd><Badge active={editor.code.is_active} /></dd></div></dl> : null}
+        <form onSubmit={save} aria-busy={pending}>
+          <fieldset disabled={pending} className="people-form-fields">
+            <legend className="sr-only">{editorTitle}</legend>
+            {editor.kind === "person" ? <>
+              <Field name="full_name" label="Full name" errors={errors}>{(attrs) => <input {...attrs} required maxLength={255} value={draft.full_name} onChange={(event) => updateDraft("full_name", event.target.value)} />}</Field>
+              <Field name="agency" label="Agency" errors={errors}>{(attrs) => <select {...attrs} required value={draft.agency} onChange={(event) => updateDraft("agency", event.target.value)}><option value="">Select agency</option>{selectableAgencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select>}</Field>
+              <Field name="agent_type" label="Agent type" errors={errors}>{(attrs) => <select {...attrs} value={draft.agent_type} onChange={(event) => updateDraft("agent_type", event.target.value)}><option value="MAIN_AGENT">Main Agent</option><option value="SUBAGENT">Sub-agent</option></select>}</Field>
+            </> : <>
+              {!editor.code || editor.kind === "reassign" ? <Field name="person" label={editor.kind === "reassign" ? "New person" : "Person"} errors={errors}>{(attrs) => <select {...attrs} required value={draft.person} onChange={(event) => updateDraft("person", event.target.value)}><option value="">Select person</option>{selectablePeople.map((person) => <option key={person.id} value={person.id}>{person.full_name} — {person.agency_name}</option>)}</select>}</Field> : null}
+              {editor.kind !== "reassign" ? <Field name="code" label="TPM code" errors={errors}>{(attrs) => <input {...attrs} required maxLength={80} value={draft.code} onChange={(event) => updateDraft("code", event.target.value)} />}</Field> : <div className="people-field"><span>New agency</span><p className="people-readonly">{target?.agency_name || "Select a new person to see their agency."}</p></div>}
+            </>}
+            {editor.kind === "person" || !editor.code || editor.kind === "reassign" ? <Field name="is_active" label={editor.kind === "person" ? "Person status" : "TPM status after saving"} errors={errors}>{(attrs) => <select {...attrs} value={draft.is_active ? "true" : "false"} onChange={(event) => updateDraft("is_active", event.target.value === "true")}><option value="true">Active</option><option value="false">Inactive</option></select>}</Field> : null}
+          </fieldset>
+          {editor.kind === "reassign" ? <p className="people-help">You will confirm the new assignment before saving. Historical daily sheets will be preserved.</p> : null}
+          {errors.confirm_reassignment ? <p className="people-field-error">{errors.confirm_reassignment}</p> : null}
+          <div className="people-actions people-editor-footer"><button className="people-button primary" type="submit" disabled={pending || (editor.kind === "reassign" && !draft.person)}>{pending ? <LoaderCircle size={17} aria-hidden="true" /> : <Save size={17} aria-hidden="true" />}{pending ? "Saving…" : "Save"}</button><button className="people-button secondary" type="button" disabled={pending} onClick={closeEditor}>Cancel</button></div>
         </form>
-      </section>
+      </section> : null}
 
-      <section className="panel">
-        <div className="panel-heading"><h2>People & TPM Codes</h2><span>{visiblePeople.length} shown</span></div>
-        <div className="table-wrap responsive-table">
-          <table>
-            <thead><tr><th>Name</th><th>Agency</th><th>Status</th><th>TPM Codes</th><th>Actions</th></tr></thead>
-            <tbody>
-              {state.loading ? <tr><td colSpan="5" className="empty-cell">Loading people...</td></tr> : null}
-              {!state.loading && !visiblePeople.length ? <tr><td colSpan="5" className="empty-cell">No people match your filters.</td></tr> : null}
-              {visiblePeople.map((person) => (
-                <tr key={person.id}>
-                  <td data-label="Name">{person.full_name}<br /><small>{person.agent_type === "SUBAGENT" ? "Sub-agent" : "Main Agent"}</small></td>
-                  <td data-label="Agency">{person.agency_name}</td>
-                  <td data-label="Status"><span className={`status-pill ${person.is_active ? "submitted" : "empty"}`}>{person.is_active ? "Active" : "Inactive"}</span></td>
-                  <td data-label="TPM Codes">
-                    <div className="chip-wrap">{(person.tpm_codes || []).map((code) => <span className={`mini-chip ${code.is_active ? "" : "muted"}`} key={code.id}>{code.code}{code.is_active ? "" : " (Inactive)"}</span>)}</div>
-                  </td>
-                  <td data-label="Actions">
-                    <div className="button-row compact">
-                      <button className="icon-button" title="Edit person" type="button" onClick={() => setPersonForm(person)}><Edit3 size={16} /></button>
-                      {(person.tpm_codes || []).map((code) => (
-                        <span className="button-row compact" key={code.id}>
-                          <button className="icon-button" title={`Edit/Reassign ${code.code}`} aria-label={`Edit/Reassign ${code.code}`} type="button" onClick={() => { setEditingCode({ ...code, person: person.id, person_name: person.full_name }); setCodeForm({ person: person.id, code: code.code, is_active: code.is_active }); }} disabled={!canForAgency(user, person.agency, "can_edit")}>
-                            <Edit3 size={16} />
-                          </button>
-                          <button className="icon-button" title={`Deactivate ${code.code}`} type="button" onClick={() => deactivateCode(code)} disabled={!code.is_active}>
-                            <Power size={16} />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <section aria-labelledby="people-results-title" aria-busy={state.loading}>
+        <div className="people-section-heading people-results-heading"><div><h2 id="people-results-title">People directory</h2><p role="status">{state.loading ? "Loading people…" : `${visiblePeople.length} matching people · ${codeCount} matching TPM codes`}</p></div><button className="people-button secondary" disabled={blocked} onClick={loadPeople}><RotateCcw size={16} aria-hidden="true" />{state.loading ? "Refreshing…" : "Refresh"}</button></div>
+        {!state.loading && !visiblePeople.length ? <div className="people-empty"><Users size={32} aria-hidden="true" /><h3>No people match your filters.</h3><p>Try a different name, TPM code or agency, or reset your filters.</p><button className="people-button secondary" onClick={resetFilters}>Reset filters</button></div> : null}
+        <div className="people-cards">
+          {visiblePeople.map((person) => <article className="people-card" key={person.id} aria-labelledby={`person-${person.id}`}>
+            <header className="people-card-header"><div className="people-identity"><h3 id={`person-${person.id}`}>{person.full_name}</h3><p><Building2 size={15} aria-hidden="true" />{person.agency_name}</p><div className="people-person-meta"><Badge active={person.is_active} /><span>{person.agent_type === "SUBAGENT" ? "Sub-agent" : "Main Agent"}</span><span>{person.tpm_codes?.length || 0} TPM codes</span></div></div><div className="people-actions">{canForAgency(user, person.agency, "can_edit") ? <button className="people-button secondary" disabled={actionsBlocked} onClick={(event) => openEditor("person", person, null, event)}><Edit3 size={16} aria-hidden="true" />Edit person</button> : null}{canForAgency(user, person.agency, "can_create") ? <button className="people-button primary" disabled={actionsBlocked} onClick={(event) => openEditor("code", person, null, event)}><Plus size={16} aria-hidden="true" />Add TPM Code</button> : null}</div></header>
+            <ul className="people-code-list" aria-label={`TPM codes for ${person.full_name}`}>
+              {person.visibleCodes.map((code) => <li className="people-code-row" key={code.id}><div className="people-code-identity"><span className="people-code-label">TPM code</span><strong>{code.code}</strong><Badge active={code.is_active} /></div><div className="people-actions" role="group" aria-label={`Actions for TPM code ${code.code}`}>{codeActions(user, person, code).map((action) => { const [Icon, label, style] = actionDetails[action]; return <button key={action} className={`people-button ${style}`} disabled={actionsBlocked} aria-label={`${label} TPM code ${code.code}`} onClick={(event) => action === "edit" || action === "reassign" ? openEditor(action === "edit" ? "code" : "reassign", person, code, event) : setCodeStatus(person, code)}><Icon size={16} aria-hidden="true" />{label}</button>; })}</div></li>)}
+            </ul>
+            {!person.visibleCodes.length ? <p className="people-no-codes">{person.tpm_codes?.length ? "No TPM codes match the current filters. Show inactive codes to see more." : "No TPM codes assigned yet."}</p> : null}
+          </article>)}
         </div>
       </section>
     </div>

@@ -1036,3 +1036,149 @@ th {
     font-weight: 800;
   }
 }
+
+/* People & TPM Codes: scoped directory, filters and editor. */
+.people-page {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink-900);
+}
+.people-page *, .people-page-header > *, .people-code-row > * { min-width: 0; }
+.people-page h1, .people-page h2, .people-page h3, .people-page p { margin: 0; }
+.people-page h1 { font-size: clamp(1.5rem, 2.6vw, 2rem); line-height: 1.2; }
+.people-page h2 { font-size: 1.2rem; }
+.people-page h3 { font-size: 1.08rem; }
+.people-page p, .people-page dd, .people-page h3, .people-page strong { overflow-wrap: anywhere; }
+.people-page-header, .people-section-heading, .people-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.people-page-header > div:first-child { flex: 1 1 340px; }
+.people-page-header p:not(.people-eyebrow) { color: var(--ink-700); line-height: 1.6; margin-top: 10px; max-width: 62ch; }
+.people-page .people-eyebrow { color: var(--blue-800); font-size: .75rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; margin-bottom: 8px; }
+.people-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
+.people-button {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  max-width: 100%;
+  padding: 9px 13px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: .88rem;
+  font-weight: 700;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background-color .15s, border-color .15s;
+}
+.people-button svg { flex: 0 0 auto; }
+.people-button.primary { background: var(--blue-700); color: white; }
+.people-button.primary:hover:not(:disabled) { background: var(--blue-800); }
+.people-button.secondary { background: white; color: var(--ink-700); border-color: #c8d2e2; }
+.people-button.secondary:hover:not(:disabled) { background: #edf2fa; border-color: #8f9fb8; }
+.people-button.warning { background: #fff1ee; color: #a12b21; border-color: #efc5c0; }
+.people-button.warning:hover:not(:disabled) { background: #ffe1db; }
+.people-button.success { background: #eaf7ef; color: #14643b; border-color: #b7ddc8; }
+.people-button.success:hover:not(:disabled) { background: #d7efdf; }
+.people-page :focus-visible { outline: 3px solid var(--blue-700); outline-offset: 3px; }
+.people-button:disabled { opacity: .6; cursor: not-allowed; }
+.people-filters, .people-editor, .people-card, .people-empty {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 3px 12px rgba(20, 33, 61, .035);
+  min-width: 0;
+  max-width: 100%;
+}
+.people-filters {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) minmax(150px, 1fr) minmax(130px, 1fr);
+  align-items: end;
+  gap: 16px;
+  padding: 20px;
+}
+.people-filters > .people-button { justify-self: end; grid-column: 3; }
+.people-field { display: grid; align-content: start; gap: 7px; }
+.people-field > label, .people-field > span { font-size: .84rem; color: var(--ink-700); font-weight: 700; }
+.people-field input, .people-field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  border: 1px solid #bfcbdc;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: white;
+  color: var(--ink-900);
+  font-size: 1rem;
+}
+.people-field [aria-invalid="true"] { border-color: var(--danger); }
+.people-field input:disabled, .people-field select:disabled { background: var(--surface-soft); }
+.people-search > div { position: relative; }
+.people-search svg { position: absolute; top: 13px; left: 12px; color: var(--ink-500); pointer-events: none; }
+.people-search input { padding-left: 38px; }
+.people-checkbox { display: flex; gap: 9px; align-items: center; min-height: 42px; font-size: .88rem; color: var(--ink-700); grid-column: span 2; }
+.people-checkbox input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--blue-700); }
+.people-alert { display: flex; gap: 10px; align-items: center; padding: 14px 16px; border-radius: 8px; line-height: 1.5; overflow-wrap: anywhere; }
+.people-alert svg { flex: 0 0 auto; }
+.people-alert-success { background: #eaf7ef; color: #14643b; border: 1px solid #b7ddc8; }
+.people-alert-error { background: #fff1ee; color: #a12b21; border: 1px solid #efc5c0; }
+.people-page .people-field-error { color: var(--danger); font-size: .84rem; line-height: 1.5; }
+.people-editor { padding: 24px; border-top: 3px solid var(--blue-700); }
+.people-editor h2 { scroll-margin-top: 140px; }
+.people-assignment-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; padding: 16px; border-radius: 8px; background: var(--surface-soft); }
+.people-assignment-summary dt { color: var(--ink-700); font-size: .8rem; margin-bottom: 6px; }
+.people-assignment-summary dd { margin: 0; font-weight: 700; }
+.people-form-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; border: 0; padding: 0; margin: 24px 0 0; }
+.people-page .people-readonly { padding: 11px 0; color: var(--ink-700); }
+.people-page .people-help { margin-top: 18px; color: var(--ink-700); font-size: .9rem; line-height: 1.6; }
+.people-editor-footer { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.people-results-heading { margin-bottom: 16px; }
+.people-results-heading p { margin-top: 6px; color: var(--ink-700); font-size: .88rem; }
+.people-cards { display: grid; gap: 16px; }
+.people-card-header { padding: 20px; background: #fafbfe; border-radius: 12px 12px 0 0; }
+.people-identity { flex: 1 1 240px; }
+.people-identity > p { display: flex; align-items: flex-start; gap: 6px; margin-top: 7px; color: var(--ink-700); font-size: .88rem; }
+.people-identity > p svg { flex: 0 0 auto; margin-top: 2px; }
+.people-person-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px; color: var(--ink-700); font-size: .8rem; }
+.people-status { display: inline-flex; align-items: center; gap: 6px; width: fit-content; padding: 4px 9px; border-radius: 20px; font-size: .75rem; font-weight: 700; line-height: 1.4; white-space: nowrap; }
+.people-status > span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.people-status.is-active { color: #14643b; background: #e4f3e9; }
+.people-status.is-inactive { color: #46546b; background: #e9edf3; }
+.people-code-list { list-style: none; margin: 0; padding: 0 20px; }
+.people-code-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 0; border-top: 1px solid var(--line); }
+.people-code-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex: 1 1 200px; }
+.people-code-identity strong { font-family: ui-monospace, monospace; font-size: .95rem; }
+.people-code-label { color: var(--ink-700); font-size: .76rem; flex-basis: 100%; }
+.people-page .people-no-codes { color: var(--ink-700); font-size: .88rem; padding: 16px 20px; }
+.people-empty { display: grid; justify-items: center; text-align: center; gap: 14px; padding: 40px 20px; }
+.people-empty p { color: var(--ink-700); line-height: 1.6; }
+@media (min-width: 1400px) {
+  .people-filters { grid-template-columns: minmax(200px, 2fr) minmax(150px, 1fr) minmax(125px, 1fr) minmax(165px, 1fr) auto; }
+  .people-checkbox, .people-filters > .people-button { grid-column: auto; }
+}
+@media (max-width: 1100px) {
+  .people-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .people-search { grid-column: 1 / -1; }
+  .people-checkbox, .people-filters > .people-button { grid-column: auto; }
+  .people-checkbox { align-self: center; }
+}
+@media (max-width: 600px) {
+  .people-page { gap: 18px; }
+  .people-page-header, .people-card-header, .people-code-row { align-items: stretch; }
+  .people-page-header > div, .people-card-header > div, .people-code-row > div { flex-basis: 100%; }
+  .people-filters, .people-form-fields, .people-assignment-summary { grid-template-columns: minmax(0, 1fr); }
+  .people-filters, .people-editor, .people-card-header { padding: 16px; }
+  .people-filters > .people-button { justify-self: stretch; }
+  .people-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .people-code-list { padding: 0 16px; }
+  .people-button { min-height: 44px; padding: 9px 10px; }
+  .people-editor h2 { scroll-margin-top: 160px; }
+}

@@ -59,6 +59,9 @@ function isDailySheetImportPathAllowed(path, method) {
   if (parts.length === 2 && parts[0] === "daily-sheet-imports" && parts[1] === "preview") {
     return method === "POST";
   }
+  if (parts.length === 2 && parts[0] === "daily-sheet-imports" && parts[1] === "template") {
+    return method === "GET";
+  }
   if (parts.length === 2 && parts[0] === "daily-sheet-imports" && /^\d+$/.test(parts[1])) {
     return method === "GET";
   }
@@ -109,5 +112,7 @@ export function backendPathFromProxySegments(segments = [], search = "") {
 }
 
 export function isBinaryBackendProxyPath(path, method = "GET") {
-  return cleanProxyPath(path) === "reports/agency-summary/export" && String(method || "GET").toUpperCase() === "GET";
+  const cleanPath = cleanProxyPath(path);
+  const normalizedMethod = String(method || "GET").toUpperCase();
+  return (cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template") && normalizedMethod === "GET";
 }

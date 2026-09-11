@@ -1,9 +1,9 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, FileSpreadsheet, Upload, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, Upload, XCircle } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiPath, clientRequest } from "../lib/client-api";
+import { apiPath, clientDownload, clientRequest } from "../lib/client-api";
 import { canForAgency, moneyText } from "../lib/phase4-operations";
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -28,6 +28,7 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [ackDateMismatch, setAckDateMismatch] = useState(false);
   const [state, setState] = useState({ loading: false, error: "", success: "" });
+  const [downloading, setDownloading] = useState(false);
 
   function selectFile(event) {
     const file = event.target.files?.[0] || null;
@@ -65,6 +66,29 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
       setState({ loading: false, error: error.message, success: "" });
     } finally {
       submitting.current = false;
+    }
+  }
+
+  async function downloadTemplate() {
+    if (!form.agency || !form.transaction_date || downloading) return;
+    setDownloading(true);
+    setState({ loading: false, error: "", success: "" });
+    try {
+      const query = new URLSearchParams({ agency: form.agency, transaction_date: form.transaction_date });
+      const result = await clientDownload(apiPath(`/daily-sheet-imports/template/?${query.toString()}`));
+      const url = URL.createObjectURL(result.blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `daily-sheet-template-${form.transaction_date}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setState({ loading: false, error: "", success: "Template downloaded." });
+    } catch (error) {
+      setState({ loading: false, error: error.message, success: "" });
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -130,6 +154,10 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
         <button className="primary-button" type="submit" disabled={state.loading}>
           <Upload size={16} aria-hidden="true" />
           {state.loading ? "Preparing..." : "Preview upload"}
+        </button>
+        <button className="secondary-button" type="button" disabled={!form.agency || !form.transaction_date || downloading || state.loading} onClick={downloadTemplate}>
+          <Download size={16} aria-hidden="true" />
+          {downloading ? "Preparing template..." : "Download template"}
         </button>
       </form>
 

@@ -7,7 +7,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -157,6 +157,25 @@ class DailySheetImportWorkflowTests(APITestCase):
             {"agency": self.agency.id, "transaction_date": "2026-08-27", "file": workbook_upload(rows=[{"sub": 469001, "amounts": [100, 0, 0, 0, 0]}], register_rows=[(469001, "513670124", "System Name")])},
             format="multipart",
         )
+
+    def test_accountant_can_download_date_aware_template(self):
+        self.client.force_authenticate(self.accountant)
+        response = self.client.get(
+            f"/api/daily-sheet-imports/template/?agency={self.agency.id}&transaction_date=2026-08-27"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("attachment", response["Content-Disposition"])
+        workbook = load_workbook(BytesIO(response.content), data_only=True)
+        self.assertEqual(
+            workbook.sheetnames,
+            ["ENTER GAME DATA HERE", "REGISTER SUB-AGENT", "MUSA RESULTS", "Premier Games", "Sheet2"],
+        )
+        self.assertEqual(workbook["ENTER GAME DATA HERE"]["B2"].value.date(), date(2026, 8, 27))
+        self.assertEqual(workbook["ENTER GAME DATA HERE"]["C3"].value, "Fairchance")
+        self.assertIn(workbook["REGISTER SUB-AGENT"]["B2"].value, (None, ""))
+        self.assertEqual(workbook["REGISTER SUB-AGENT"]["C2"].value, "513670124")
+        self.assertEqual(workbook["REGISTER SUB-AGENT"]["D2"].value, "System Name")
 
     def test_assigned_accountant_preview_confirm_creates_draft_atomically(self):
         preview = self.preview()

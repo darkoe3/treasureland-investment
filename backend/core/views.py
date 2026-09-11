@@ -1,8 +1,10 @@
 from datetime import timedelta
 from decimal import Decimal
+from io import BytesIO
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.http import HttpResponse
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.text import get_valid_filename
@@ -37,7 +39,7 @@ from .models import (
     json_safe_value,
     money,
 )
-from .importers import parse_daily_sheet_workbook
+from .importers import build_daily_sheet_template, parse_daily_sheet_workbook
 from .permissions import IsSuperAdmin, SuperAdminOnlyWrites, SuperAdminOrReadOnlyAccountant
 from .reports import build_report, serialize_report, workbook_response
 from .serializers import (
@@ -698,7 +700,8 @@ class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
         ]
 
     def _agency_from_request(self, request):
-        agency_id = request.data.get("agency")
+        request_data = request.query_params if request.method == "GET" else request.data
+        agency_id = request_data.get("agency")
         if not str(agency_id or "").isdigit():
             raise ValidationError({"agency": "Select a valid agency."})
         try:
@@ -707,6 +710,24 @@ class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
             raise ValidationError({"agency": "Select an active agency."}) from exc
         require_assignment_flag(request.user, agency, "can_create")
         return agency
+
+    @action(detail=False, methods=["get"], url_path="template")
+    def template(self, request):
+        agency = self._agency_from_request(request)
+        date_text = request.query_params.get("transaction_date")
+        try:
+            selected_date = timezone.datetime.fromisoformat(str(date_text)).date()
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"transaction_date": "Use YYYY-MM-DD."}) from exc
+        workbook = build_daily_sheet_template(agency, selected_date)
+        buffer = BytesIO()
+        workbook.save(buffer)
+        response = HttpResponse(
+            buffer.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="daily-sheet-template-{selected_date.isoformat()}.xlsx"'
+        return response
 
     @action(detail=False, methods=["post"], url_path="preview")
     def preview(self, request):

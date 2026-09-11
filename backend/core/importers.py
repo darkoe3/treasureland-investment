@@ -10,6 +10,7 @@ from pathlib import Path
 import openpyxl
 from django.core.exceptions import ValidationError
 from django.utils.text import get_valid_filename
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from .models import DailySheet, DailySheetGame, TPMCode, WeeklyGameSchedule, money
@@ -66,6 +67,68 @@ class WorkbookParseResult:
 
 def safe_filename(name):
     return get_valid_filename(Path(name or "upload.xlsx").name)[:255]
+
+
+def build_daily_sheet_template(agency, transaction_date):
+    workbook = openpyxl.Workbook()
+    raw_sheet = workbook.active
+    raw_sheet.title = "ENTER GAME DATA HERE"
+    registration_sheet = workbook.create_sheet("REGISTER SUB-AGENT")
+    workbook.create_sheet("MUSA RESULTS")
+    workbook.create_sheet("Premier Games")
+    workbook.create_sheet("Sheet2")
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    instruction_font = Font(italic=True, color="666666")
+
+    raw_sheet["A1"] = "Daily sheet upload template"
+    raw_sheet["A2"] = "Workbook date"
+    raw_sheet["B2"] = transaction_date
+    raw_sheet["A3"] = "SUB AGT NOS"
+    raw_sheet["B3"] = "Enter the SUB AGT NOS from the registration sheet"
+    raw_sheet["B3"].font = instruction_font
+    for column in range(2, 10):
+        cell = raw_sheet.cell(3, column)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    schedules = WeeklyGameSchedule.objects.select_related("game").filter(
+        weekday=transaction_date.isoweekday(), is_active=True, game__is_active=True,
+    ).order_by("display_order", "id")
+    for column, schedule in zip(range(3, 10), schedules):
+        raw_sheet.cell(3, column).value = schedule.game.name
+
+    raw_sheet.freeze_panes = "C5"
+    raw_sheet.column_dimensions["A"].width = 18
+    raw_sheet.column_dimensions["B"].width = 22
+    for column in range(3, 10):
+        raw_sheet.column_dimensions[get_column_letter(column)].width = 16
+    for row in range(5, 225):
+        raw_sheet.cell(row, 2).number_format = "@"
+        for column in range(3, 10):
+            raw_sheet.cell(row, column).number_format = "0.00"
+
+    registration_sheet.append(["", "SUB AGT NOS", "TERMINAL NOS", "NAME"])
+    for cell in registration_sheet[1][1:]:
+        cell.fill = header_fill
+        cell.font = header_font
+    for code in TPMCode.objects.select_related("person").filter(
+        person__agency=agency, is_active=True, person__is_active=True,
+    ).order_by("code", "id"):
+        registration_sheet.append(["", "", code.code, code.person.full_name])
+    registration_sheet.freeze_panes = "A2"
+    for column, width in {"B": 18, "C": 18, "D": 30}.items():
+        registration_sheet.column_dimensions[column].width = width
+
+    workbook["MUSA RESULTS"]["A1"] = "Not used for import."
+    workbook["Premier Games"]["A1"] = "Not used for import."
+    workbook["Sheet2"]["A1"] = "Enter SUB AGT NOS in column B of ENTER GAME DATA HERE and sales in the game columns."
+    workbook["Sheet2"]["A2"] = "Do not change TERMINAL NOS or NAME in REGISTER SUB-AGENT."
+    for sheet in workbook.worksheets:
+        sheet.sheet_view.showGridLines = False
+    return workbook
 
 
 def excel_ref(row, column):

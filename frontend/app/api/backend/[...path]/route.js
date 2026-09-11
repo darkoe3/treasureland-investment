@@ -17,7 +17,10 @@ async function proxyRequest(request, context) {
         };
       }
       // The browser owns the single refresh/retry; never retry a proxy submission here.
-      return authenticatedBackendRequestWithStatus(backendPath, options, false);
+      const requestOptions = backendPath === "/daily-sheet-imports/preview/"
+        ? { ...options, timeoutMs: 30000 }
+        : options;
+      return authenticatedBackendRequestWithStatus(backendPath, requestOptions, false);
     },
   });
 }

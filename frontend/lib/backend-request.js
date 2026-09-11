@@ -47,11 +47,12 @@ function transportError(error) {
 }
 
 export async function backendRequestWithFetchResponse(path, options = {}, fetchImpl = fetch, timeoutMs = 10000) {
+  const { timeoutMs: requestTimeoutMs = timeoutMs, ...fetchOptions } = options;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   try {
     const response = await fetchImpl(buildBackendUrl(path), {
-      ...options,
+      ...fetchOptions,
       cache: "no-store",
       signal: controller.signal,
       headers: requestHeaders(options),
@@ -76,11 +77,12 @@ export async function backendRequestWithFetch(path, options = {}, fetchImpl = fe
 }
 
 export async function backendRawResponseWithFetch(path, options = {}, fetchImpl = fetch, timeoutMs = 30000) {
+  const { timeoutMs: requestTimeoutMs = timeoutMs, ...fetchOptions } = options;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   try {
     return await fetchImpl(buildBackendUrl(path), {
-      ...options,
+      ...fetchOptions,
       cache: "no-store",
       signal: controller.signal,
       headers: requestHeaders(options),

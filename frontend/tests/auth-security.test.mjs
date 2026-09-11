@@ -76,7 +76,7 @@ test("refresh and logout handle missing or invalid sessions safely", async () =>
 test("backend proxy is allowlisted and not an open proxy", async () => {
   const source = await file("app/api/backend/[...path]/route.js");
   const allowlist = await file("lib/controlled-proxy-path.js");
-  assert.match(source, /resolveBackendProxyRequest/);
+  assert.match(source, /controlledBackendProxyResponse/);
   assert.match(allowlist, /COLLECTION_METHODS/);
   assert.match(allowlist, /DETAIL_METHODS/);
   assert.match(allowlist, /ACCOUNTANT_ACTION_METHODS/);
@@ -174,10 +174,10 @@ test("backend proxy resolver accepts promised Next params and forwards set-agenc
   assert.equal(result.status, 200);
   assert.deepEqual(result.payload, { ok: true });
   assert.equal(result.diagnostics.method, "POST");
-  assert.deepEqual(result.diagnostics.paramsPath, ["accountants", "7", "set-agencies"]);
+  assert.equal(result.diagnostics.paramsPath, undefined);
   assert.equal(result.diagnostics.normalizedPath, "accountants/7/set-agencies");
   assert.equal(result.diagnostics.allowed, true);
-  assert.equal(result.diagnostics.backendUrl, "http://127.0.0.1:8000/api/accountants/7/set-agencies/");
+  assert.equal(result.diagnostics.backendUrl, undefined);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].backendPath, "/accountants/7/set-agencies");
   assert.equal(calls[0].url, "http://127.0.0.1:8000/api/accountants/7/set-agencies/");
@@ -531,7 +531,10 @@ test("daily sheet import proxy preserves csrf and multipart request body", async
   assert.equal(result.status, 201);
   assert.equal(calls[0].backendPath, "/daily-sheet-imports/preview");
   assert.equal(calls[0].options.method, "POST");
-  assert.ok(calls[0].options.body instanceof FormData);
+  assert.ok(calls[0].options.body instanceof ArrayBuffer);
+  const forwarded = await new Response(calls[0].options.body, { headers: calls[0].options.headers }).formData();
+  assert.equal(forwarded.get("agency"), "1");
+  assert.equal(forwarded.get("file").name, "daily.xlsx");
 
   const blocked = await resolveProxy({
     segments: ["daily-sheet-imports", "12", "confirm"],

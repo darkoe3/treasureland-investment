@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle, CheckCircle2, FileSpreadsheet, Upload, XCircle } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiPath, clientRequest } from "../lib/client-api";
 import { canForAgency, moneyText } from "../lib/phase4-operations";
@@ -18,6 +18,7 @@ function listMessages(items = []) {
 
 export default function DailySheetImportClient({ user, agencies = [] }) {
   const router = useRouter();
+  const submitting = useRef(false);
   const selectableAgencies = useMemo(
     () => user.role === "SUPER_ADMIN" ? agencies : agencies.filter((agency) => canForAgency(user, agency.id, "can_create")),
     [agencies, user],
@@ -42,10 +43,12 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
 
   async function preview(event) {
     event.preventDefault();
+    if (submitting.current) return;
     if (!form.agency || !form.transaction_date || !form.file) {
       setState({ loading: false, error: "Select an agency, date and .xlsx file.", success: "" });
       return;
     }
+    submitting.current = true;
     const body = new FormData();
     body.set("agency", form.agency);
     body.set("transaction_date", form.transaction_date);
@@ -58,13 +61,16 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
       setAckDateMismatch(false);
       setState({ loading: false, error: "", success: "Preview ready." });
     } catch (error) {
-      setBatch(error.payload || null);
-      setState({ loading: false, error: error.payload ? JSON.stringify(error.payload) : error.message, success: "" });
+      setBatch(error.payload?.preview_payload ? error.payload : null);
+      setState({ loading: false, error: error.message, success: "" });
+    } finally {
+      submitting.current = false;
     }
   }
 
   async function confirmImport() {
-    if (!batch) return;
+    if (!batch?.id || submitting.current) return;
+    submitting.current = true;
     setState({ loading: true, error: "", success: "" });
     try {
       const payload = await clientRequest(apiPath(`/daily-sheet-imports/${batch.id}/confirm/`), {
@@ -74,7 +80,9 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
       setState({ loading: false, error: "", success: "Import confirmed." });
       router.push(`/dashboard/daily-sheets/${payload.daily_sheet}`);
     } catch (error) {
-      setState({ loading: false, error: error.payload ? JSON.stringify(error.payload) : error.message, success: "" });
+      setState({ loading: false, error: error.message, success: "" });
+    } finally {
+      submitting.current = false;
     }
   }
 
@@ -89,7 +97,7 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
   const hasErrors = Boolean(batch?.errors?.length);
   const needsReplace = Boolean(previewPayload.existing_transaction_count);
   const needsDateAck = Boolean(previewPayload.requires_date_mismatch_ack);
-  const canConfirm = batch && !hasErrors && (!needsReplace || replaceExisting) && (!needsDateAck || ackDateMismatch);
+  const canConfirm = batch?.id && !hasErrors && (!needsReplace || replaceExisting) && (!needsDateAck || ackDateMismatch);
 
   return (
     <div className="page-stack">

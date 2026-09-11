@@ -1,7 +1,9 @@
 "use client";
 
+import { UPLOAD_SERVICE_ERROR } from "./request-errors.js";
+
 export function validationMessage(payload, status) {
-  if (status >= 500) return "Upstream service error.";
+  if (status >= 500) return payload?.detail === UPLOAD_SERVICE_ERROR ? UPLOAD_SERVICE_ERROR : "Upstream service error.";
   function messages(value) {
     if (typeof value === "string") return [value];
     if (Array.isArray(value)) return value.flatMap(messages);
@@ -85,16 +87,27 @@ async function refreshSession(fetchImpl, csrfHeader) {
 
 async function sendRequest(fetchImpl, path, options, method, csrfHeader) {
   const multipart = typeof FormData !== "undefined" && options.body instanceof FormData;
-  return fetchImpl(path, {
-    ...options,
-    method,
-    headers: {
-      Accept: "application/json",
-      ...(options.body && !multipart ? { "Content-Type": "application/json" } : {}),
-      ...csrfHeader,
-      ...(options.headers || {}),
-    },
-  });
+  const supplied = new Headers(options.headers || {});
+  if (multipart) {
+    // Each browser attempt serializes the reusable FormData with a fresh boundary.
+    supplied.delete("content-type");
+    supplied.delete("content-length");
+  }
+  try {
+    return await fetchImpl(path, {
+      ...options,
+      method,
+      headers: {
+        Accept: "application/json",
+        ...(options.body && !multipart ? { "Content-Type": "application/json" } : {}),
+        ...Object.fromEntries(supplied),
+        ...csrfHeader,
+      },
+    });
+  } catch (error) {
+    if (multipart) throw new ClientApiError(UPLOAD_SERVICE_ERROR, 504, { detail: UPLOAD_SERVICE_ERROR });
+    throw error;
+  }
 }
 
 async function sendDownloadRequest(fetchImpl, path, options, method, csrfHeader) {
@@ -127,7 +140,8 @@ export async function clientRequest(path, options = {}, fetchImpl = fetch) {
   }
 
   if (!response.ok) {
-    throw new ClientApiError(validationMessage(payload, response.status), response.status, payload);
+    const uploadFailure = options.body instanceof FormData && response.status >= 500;
+    throw new ClientApiError(uploadFailure ? UPLOAD_SERVICE_ERROR : validationMessage(payload, response.status), response.status, payload);
   }
   return payload;
 }

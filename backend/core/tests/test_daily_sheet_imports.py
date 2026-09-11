@@ -118,6 +118,17 @@ class DailySheetImportParserTests(TestCase):
         self.assertTrue(any("Workbook name differs" in warning["message"] for warning in parsed.warnings))
         self.assertTrue(any("lost leading zeroes" in warning["message"] for warning in parsed.warnings))
 
+    def test_template_can_copy_identifier_from_matching_registration_row(self):
+        upload = workbook_upload(
+            rows=[{"sub": None, "amounts": [10, 0, 0, 0, 0]}],
+            register_rows=[(469001, "513670124", "System Name")],
+        )
+        parsed = self.parse(upload)
+
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual(parsed.payload["valid_row_count"], 1)
+        self.assertTrue(any("copied from the matching" in warning["message"] for warning in parsed.warnings))
+
     def test_invalid_negative_oversized_formula_and_date_mismatch(self):
         upload = workbook_upload(rows=[{"sub": 469001, "amounts": [-1, "text", True, 10**13]}], register_rows=[(469001, "513670124", "System Name")], raw_date=date(2026, 8, 28))
         parsed = self.parse(upload)

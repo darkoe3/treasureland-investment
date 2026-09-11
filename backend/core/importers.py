@@ -372,6 +372,27 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
         sub_cell = raw_sheet.cell(row_index, 2)
         sub_ref = excel_ref(row_index, 2)
         sub_code = normalize_identifier(sub_cell.value, sub_ref, warnings)
+        raw_sales_present = any(raw_sheet.cell(row_index, col).value not in (None, "", 0) for col in SALES_COLUMNS)
+        if not sub_code and raw_sales_present:
+            registration_row = row_index - 3
+            if registration_row >= 2:
+                registered_sub_code = normalize_identifier(
+                    registration_sheet.cell(registration_row, 2).value,
+                    excel_ref(registration_row, 2),
+                    warnings,
+                )
+                registered_terminal = normalize_identifier(
+                    registration_sheet.cell(registration_row, 3).value,
+                    excel_ref(registration_row, 3),
+                    warnings,
+                )
+                if registered_sub_code and registered_terminal and register.get(registered_sub_code, {}).get("terminal") == registered_terminal:
+                    sub_code = registered_sub_code
+                    warnings.append({
+                        "row": row_index,
+                        "cell": sub_ref,
+                        "message": "SUB AGT NOS was copied from the matching REGISTER SUB-AGENT row.",
+                    })
         amounts = {}
         row_errors = []
         row_total = money("0")
@@ -380,7 +401,6 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
             amount = decimal_from_cell(cell, excel_ref(row_index, column["column"]), row_errors)
             amounts[column["game_name"]] = str(amount)
             row_total += amount
-        raw_sales_present = any(raw_sheet.cell(row_index, col).value not in (None, "", 0) for col in SALES_COLUMNS)
         if not sub_code and not raw_sales_present:
             ignored_blank_rows += 1
             continue

@@ -3,6 +3,8 @@ import { validateCsrf } from "../../../../lib/csrf";
 import { controlledBackendProxyResponse } from "../../../../lib/backend-proxy";
 import { authenticatedBackendRequestWithStatus, authenticatedBackendRawResponse } from "../../../../lib/server-api";
 
+export const maxDuration = 60;
+
 async function proxyRequest(request, context) {
   return controlledBackendProxyResponse(request, context, {
     cookieStore: await cookies(),
@@ -18,7 +20,7 @@ async function proxyRequest(request, context) {
       }
       // The browser owns the single refresh/retry; never retry a proxy submission here.
       const requestOptions = backendPath === "/daily-sheet-imports/preview/"
-        ? { ...options, timeoutMs: 30000 }
+        ? { ...options, timeoutMs: 60000 }
         : options;
       return authenticatedBackendRequestWithStatus(backendPath, requestOptions, false);
     },

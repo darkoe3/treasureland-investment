@@ -100,6 +100,7 @@ export function isAllowedBackendProxyPath(path, method = "GET") {
       approve: new Set(["POST"]),
       return: new Set(["POST"]),
       reopen: new Set(["POST"]),
+      reset: new Set(["POST"]),
     };
     return methods[parts[2]]?.has(normalizedMethod) || false;
   }

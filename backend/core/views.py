@@ -952,11 +952,65 @@ class DailySheetViewSet(BaseSearchViewSet):
                 daily_sheet=updated,
             )
 
-    def perform_destroy(self, instance):
-        require_assignment_flag(self.request.user, instance.agency, "can_delete")
-        if self.request.user.role != UserRole.SUPER_ADMIN and not instance.is_accountant_editable:
-            raise PermissionDenied("This sheet is locked against accountant deletion.")
-        instance.delete()
+    def update(self, request, *args, **kwargs):
+        with transaction.atomic():
+            DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            return super().update(request, *args, **kwargs)
+
+    lookup_value_regex = r"[0-9]+"
+
+    def _destructive_reason(self, confirmation):
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            raise PermissionDenied("Only Super Admin may reset or delete sheets.")
+        reason = self.request.data.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValidationError({"reason": "A nonblank reason is required."})
+        if self.request.data.get(confirmation) is not True:
+            raise ValidationError({confirmation: "Explicit confirmation is required."})
+        return reason.strip()
+
+    def _safe_sheet_metadata(self, sheet, reason):
+        totals = sheet.totals()
+        return {"daily_sheet_id": sheet.pk, "agency_id": sheet.agency_id,
+                "agency_name": sheet.agency.name, "transaction_date": sheet.transaction_date,
+                "actor": self.request.user.pk, "reason": reason,
+                "previous_transaction_count": sheet.transactions.count(),
+                "previous_omission_count": sheet.omitted_terminals.count(),
+                "previous_net_sales": totals["gross_sales"],
+                "previous_to_pay": totals["total_to_pay"], "timestamp": timezone.now()}
+
+    @action(detail=True, methods=["post"], permission_classes=[IsSuperAdmin])
+    def reset(self, request, pk=None):
+        reason = self._destructive_reason("confirm_reset")
+        with transaction.atomic():
+            sheet = DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            if sheet.is_archived:
+                raise ValidationError({"detail": "Archived sheets cannot be reset."})
+            if not sheet.can_reset:
+                raise ValidationError({"detail": "Submitted sheets must first be returned; approved sheets must first be reopened."})
+            metadata = self._safe_sheet_metadata(sheet, reason)
+            sheet.transactions.all().delete()
+            sheet.omitted_terminals.all().delete()
+            sheet.incoming_funds = None
+            sheet.tax = None
+            sheet.reconciliation_note = ""
+            sheet.save(update_fields=["incoming_funds", "tax", "reconciliation_note", "updated_at"])
+            log_audit(request.user, sheet.agency, AuditAction.DAILY_SHEET_RESET,
+                      "DailySheet", sheet.pk, old_values=metadata, daily_sheet=sheet)
+            payload = self.get_serializer(sheet).data
+        return Response(payload)
+
+    def destroy(self, request, *args, **kwargs):
+        reason = self._destructive_reason("confirm_permanent_delete")
+        with transaction.atomic():
+            sheet = DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            if not sheet.can_delete:
+                raise ValidationError({"detail": "This daily sheet cannot be deleted. Reset or archive it instead."})
+            metadata = self._safe_sheet_metadata(sheet, reason)
+            log_audit(request.user, sheet.agency, AuditAction.DAILY_SHEET_DELETED,
+                      "DailySheet", sheet.pk, old_values=metadata)
+            sheet.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"])
     def summary(self, request, pk=None):
@@ -1045,7 +1099,33 @@ class DailySheetViewSet(BaseSearchViewSet):
         return Response(self.get_serializer(sheet).data)
 
 
-class TPMDailyTransactionViewSet(BaseSearchViewSet):
+class SheetChildWriteLockMixin:
+    """Serialize child writes with reset, deletion, import and workflow actions."""
+    def create(self, request, *args, **kwargs):
+        with transaction.atomic():
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            sheet = DailySheet.objects.select_for_update().get(pk=serializer.validated_data["daily_sheet"].pk)
+            # Revalidate after acquiring the lock: workflow or reset may have
+            # changed the sheet while this request waited.
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.validated_data["daily_sheet"] = sheet
+            self.perform_create(serializer)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        with transaction.atomic():
+            DailySheet.objects.select_for_update().get(pk=self.get_object().daily_sheet_id)
+            return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        with transaction.atomic():
+            DailySheet.objects.select_for_update().get(pk=self.get_object().daily_sheet_id)
+            return super().destroy(request, *args, **kwargs)
+
+
+class TPMDailyTransactionViewSet(SheetChildWriteLockMixin, BaseSearchViewSet):
     serializer_class = TPMDailyTransactionSerializer
     permission_classes = [IsAuthenticated]
     search_fields = ["tpm_code__code", "person_name_snapshot"]
@@ -1094,7 +1174,7 @@ class TPMDailyTransactionViewSet(BaseSearchViewSet):
         log_audit(self.request.user, sheet.agency, AuditAction.TRANSACTION_DELETED, "TPMDailyTransaction", object_id, old_values=old_values, daily_sheet=sheet)
 
 
-class OmittedTerminalViewSet(BaseSearchViewSet):
+class OmittedTerminalViewSet(SheetChildWriteLockMixin, BaseSearchViewSet):
     serializer_class = OmittedTerminalSerializer
     permission_classes = [IsAuthenticated]
     search_fields = ["tpm_code__code", "tpm_code__person__full_name", "reason"]

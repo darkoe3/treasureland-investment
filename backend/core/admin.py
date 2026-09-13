@@ -104,8 +104,12 @@ class DailySheetAdmin(admin.ModelAdmin):
     list_filter = ("status", "agency", "transaction_date", "created_at")
     search_fields = ("agency__name", "created_by__email", "reconciliation_note", "return_comment", "reopen_reason")
     date_hierarchy = "transaction_date"
-    readonly_fields = ("created_at", "updated_at", "gross_sales", "total_to_pay", "commission", "variance", "variance_status")
+    readonly_fields = ("is_archived", "created_at", "updated_at", "gross_sales", "total_to_pay", "commission", "variance", "variance_status")
     inlines = [DailySheetGameInline]
+
+    def has_delete_permission(self, request, obj=None):
+        # Deletion must use the reasoned, audited daily-sheet API.
+        return False
 
     @admin.display(description="Gross Sales")
     def gross_sales(self, obj):

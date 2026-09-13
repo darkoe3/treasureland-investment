@@ -1,5 +1,6 @@
 "use client";
 
+import SheetSafetyControls from "./SheetSafetyControls";
 import Link from "next/link";
 import { CheckCircle2, RotateCcw, Save, Send, Undo2, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -182,6 +183,15 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
         {message.success ? <p className="form-success">{message.success}</p> : null}
       </section>
 
+      <section className="panel">
+        <Link className="text-link" href={`/dashboard/daily-sheets/${sheet.id}`}>View</Link>
+        {mayEdit && <a className="text-link" href="#sheet-entry"> Edit</a>}
+        <SheetSafetyControls user={user} sheet={sheet} disabled={busy} onReset={async (updated) => {
+          setSheet(updated); setTransactions([]); setOmissions([]); setSelectedTpm(""); setGameSales({});
+          setManual({ incoming_funds: "", tax: "", reconciliation_note: "" }); setDirty(false);
+          await refreshAll();
+        }} />
+      </section>
       <section className="metric-grid">
         <div className="metric-card"><p>Total NET Sales</p><strong>{moneyText(sheet.gross_sales)}</strong></div>
         <div className="metric-card"><p>Total To Pay</p><strong>{moneyText(sheet.total_to_pay)}</strong></div>
@@ -189,7 +199,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
         <div className="metric-card"><p>Terminals</p><strong>{sheet.entered_terminals}/{sheet.total_terminals}</strong><p>{sheet.omitted_terminals?.count || 0} omitted</p></div>
       </section>
 
-      <section className="form-grid">
+      <section className="form-grid" id="sheet-entry">
         <form className="panel form-panel" onSubmit={saveTransaction}>
           <div className="panel-heading"><h2>Transaction Entry</h2></div>
           <label className="field-group">Search Name or TPM Code

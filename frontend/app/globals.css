@@ -1182,3 +1182,15 @@ th {
   .people-button { min-height: 44px; padding: 9px 10px; }
   .people-editor h2 { scroll-margin-top: 160px; }
 }
+
+.sheet-safety-controls { border-top: 1px solid #ddd; margin-top: 1rem; padding-top: 1rem; min-width: 0; overflow-wrap: anywhere; }
+.sheet-safety-buttons { display: flex; flex-wrap: wrap; gap: .75rem; }
+.warning-button { background: #fff3cd; color: #694500; border: 1px solid #a66c00; border-radius: .5rem; padding: .65rem 1rem; cursor: pointer; }
+.warning-button:disabled { opacity: .5; cursor: not-allowed; }
+.sheet-safety-dialog { width: min(36rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; box-sizing: border-box; border: 1px solid #ccc; border-radius: .75rem; padding: 1.5rem; margin: auto; overflow-wrap: anywhere; }
+.sheet-safety-dialog::backdrop { background: #0008; }
+.sheet-safety-dialog textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+
+@media (max-width: 760px) {
+  .responsive-table td[data-label="Actions"] .sheet-safety-controls { grid-column: 1 / -1; }
+}

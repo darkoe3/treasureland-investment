@@ -1,5 +1,6 @@
 "use client";
 
+import SheetSafetyControls from "./SheetSafetyControls";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Plus, Search } from "lucide-react";
@@ -122,7 +123,10 @@ export default function DailySheetsClient({ user, initialAgencies = [] }) {
                   <td data-label="NET Sales">{moneyText(sheet.gross_sales)}</td>
                   <td data-label="To Pay">{moneyText(sheet.total_to_pay)}</td>
                   <td data-label="Difference">{moneyText(sheet.variance)}<br /><small>{differenceLabel(sheet.variance)}</small></td>
-                  <td data-label="Open"><Link className="text-link" href={`/dashboard/daily-sheets/${sheet.id}`}>Open</Link></td>
+                  <td data-label="Actions"><Link className="text-link" href={`/dashboard/daily-sheets/${sheet.id}`}>View</Link>
+                    {sheet.can_reset && canForAgency(user, sheet.agency, "can_edit") && <Link className="text-link" href={`/dashboard/daily-sheets/${sheet.id}#sheet-entry`}> Edit</Link>}
+                    <SheetSafetyControls user={user} sheet={sheet} onReset={async (updated) => setSheets((items) => items.map((item) => item.id === updated.id ? updated : item))} onDelete={loadSheets} />
+                  </td>
                 </tr>
               ))}
             </tbody>

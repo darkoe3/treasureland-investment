@@ -554,6 +554,9 @@ class OmittedTerminalSerializer(serializers.ModelSerializer):
 
 
 class DailySheetSerializer(serializers.ModelSerializer):
+    can_reset = serializers.BooleanField(read_only=True)
+    can_delete = serializers.BooleanField(read_only=True)
+    transaction_count = serializers.IntegerField(source="transactions.count", read_only=True)
     agency_name = serializers.CharField(source="agency.name", read_only=True)
     sheet_games = DailySheetGameSerializer(many=True, read_only=True)
     gross_sales = serializers.SerializerMethodField()
@@ -575,7 +578,7 @@ class DailySheetSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailySheet
         fields = (
-            "id",
+            "id", "is_archived", "can_reset", "can_delete", "transaction_count",
             "agency",
             "agency_name",
             "transaction_date",
@@ -614,6 +617,7 @@ class DailySheetSerializer(serializers.ModelSerializer):
             "person_totals",
         )
         read_only_fields = (
+            "is_archived",
             "status",
             "return_comment",
             "reopen_reason",

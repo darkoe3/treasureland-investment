@@ -169,6 +169,21 @@ class DailySheetImportWorkflowTests(APITestCase):
             format="multipart",
         )
 
+    def test_new_import_after_reset_preserves_previous_confirmed_batch(self):
+        preview = self.preview(self.admin)
+        first_id = preview.data["id"]
+        confirmed = self.client.post(f"/api/daily-sheet-imports/{first_id}/confirm/", {}, format="json")
+        sheet_id = confirmed.data["daily_sheet"]
+        reset = self.client.post(f"/api/daily-sheets/{sheet_id}/reset/", {"reason": "Repeat workbook testing", "confirm_reset": True}, format="json")
+        self.assertEqual(reset.status_code, 200, reset.data)
+        fresh = self.preview(self.admin)
+        self.assertNotEqual(fresh.data["id"], first_id)
+        second = self.client.post(f"/api/daily-sheet-imports/{fresh.data['id']}/confirm/", {}, format="json")
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(second.data["daily_sheet"], sheet_id)
+        self.assertEqual(DailySheetImportBatch.objects.get(pk=first_id).confirmed_sheet_id, sheet_id)
+        self.assertEqual(self.client.post(f"/api/daily-sheet-imports/{first_id}/confirm/", {}, format="json").status_code, 400)
+
     def test_accountant_can_download_date_aware_template(self):
         self.client.force_authenticate(self.accountant)
         response = self.client.get(

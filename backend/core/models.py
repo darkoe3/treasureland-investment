@@ -274,6 +274,8 @@ class VarianceStatus(models.TextChoices):
 
 
 class AuditAction(models.TextChoices):
+    DAILY_SHEET_RESET = "DAILY_SHEET_RESET", "Daily sheet reset"
+    DAILY_SHEET_DELETED = "DAILY_SHEET_DELETED", "Daily sheet deleted"
     SHEET_CREATED = "SHEET_CREATED", "Sheet created"
     TRANSACTION_CREATED = "TRANSACTION_CREATED", "Transaction created"
     TRANSACTION_UPDATED = "TRANSACTION_UPDATED", "Transaction updated"
@@ -302,6 +304,7 @@ class DailySheet(TimeStampedModel):
     agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="daily_sheets")
     transaction_date = models.DateField(db_index=True)
     status = models.CharField(max_length=20, choices=DailySheetStatus.choices, default=DailySheetStatus.DRAFT)
+    is_archived = models.BooleanField(default=False)
     incoming_funds = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     tax = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     reconciliation_note = models.TextField(blank=True)
@@ -349,6 +352,28 @@ class DailySheet(TimeStampedModel):
     @property
     def is_accountant_editable(self):
         return self.status in {DailySheetStatus.DRAFT, DailySheetStatus.RETURNED, DailySheetStatus.REOPENED}
+
+    @property
+    def can_reset(self):
+        return not self.is_archived and self.is_accountant_editable
+
+    @property
+    def can_delete(self):
+        history_fields = ("submitted_by_id", "submitted_at", "approved_by_id", "approved_at",
+                          "returned_by_id", "returned_at", "reopened_by_id", "reopened_at",
+                          "return_comment", "reopen_reason", "reconciliation_note")
+        return (
+            self.status == DailySheetStatus.DRAFT and not self.is_archived
+            and self.incoming_funds is None and self.tax is None
+            and not any(getattr(self, field) for field in history_fields)
+            and not self.transactions.exists() and not self.omitted_terminals.exists()
+            and not TransactionGameSale.objects.filter(daily_sheet_game__daily_sheet=self).exists()
+            and not DailySheetImportBatch.objects.filter(
+                Q(confirmed_sheet=self) | Q(existing_sheet=self),
+                Q(status=DailySheetImportStatus.CONFIRMED) | Q(confirmed_at__isnull=False),
+            ).exists()
+            and not self.audit_logs.exclude(action=AuditAction.SHEET_CREATED).exists()
+        )
 
     def copy_weekday_games(self):
         schedules = WeeklyGameSchedule.objects.select_related("game").filter(
@@ -618,7 +643,7 @@ class AuditLog(models.Model):
 
     user = models.ForeignKey(User, on_delete=models.PROTECT, related_name="audit_logs")
     agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="audit_logs", null=True, blank=True)
-    daily_sheet = models.ForeignKey(DailySheet, on_delete=models.CASCADE, related_name="audit_logs", null=True, blank=True)
+    daily_sheet = models.ForeignKey(DailySheet, on_delete=models.SET_NULL, related_name="audit_logs", null=True, blank=True)
     action = models.CharField(max_length=40, choices=AuditAction.choices)
     model_name = models.CharField(max_length=120)
     object_id = models.CharField(max_length=80)

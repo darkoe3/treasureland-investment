@@ -70,6 +70,7 @@ test("client displays Django validation safely and supplies field messages", asy
   });
   assert.deepEqual(fieldErrors({ status: 500, payload: { detail: "private traceback" } }), {});
   assert.equal(clientApi.validationMessage({ detail: "private traceback" }, 500), "Upstream service error.");
+  assert.equal(clientApi.validationMessage({ detail: "Reference: abc123" }, 500), "Reference: abc123");
 });
 
 test("active and inactive TPM codes have separate appropriate actions", () => {

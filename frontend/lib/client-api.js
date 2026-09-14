@@ -3,7 +3,12 @@
 import { UPLOAD_SERVICE_ERROR } from "./request-errors.js";
 
 export function validationMessage(payload, status) {
-  if (status >= 500) return payload?.detail === UPLOAD_SERVICE_ERROR ? UPLOAD_SERVICE_ERROR : "Upstream service error.";
+  if (status >= 500) {
+    const detail = typeof payload?.detail === "string" ? payload.detail : "";
+    if (detail === UPLOAD_SERVICE_ERROR) return UPLOAD_SERVICE_ERROR;
+    if (detail && !/traceback|password|token|cookie|secret|database url/i.test(detail)) return detail;
+    return "Upstream service error.";
+  }
   function messages(value) {
     if (typeof value === "string") return [value];
     if (Array.isArray(value)) return value.flatMap(messages);

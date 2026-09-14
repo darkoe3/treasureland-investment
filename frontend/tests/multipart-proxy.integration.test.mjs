@@ -147,6 +147,14 @@ for (const status of [400, 401, 403, 409, 422]) {
     assert.deepEqual(await response.json(), status === 401 ? { detail: "Token expired." } : payload);
     assert.equal(f.counts().calls, 1);
   });
+
+test("real backend 500 safe reference survives unchanged", async (t) => {
+  const payload = { detail: "The import could not be confirmed. No transactions were written. Reference: abc123" };
+  const f = await fixture(t, { status: 500, payload });
+  const response = await f.upload();
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), payload);
+});
 }
 
 test("real connection failure maps to a safe 504 and retains only safe cause diagnostics", async (t) => {

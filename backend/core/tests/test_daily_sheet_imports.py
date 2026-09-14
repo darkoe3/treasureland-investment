@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from io import BytesIO, StringIO
 from zipfile import ZIP_DEFLATED, ZipFile
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -23,6 +24,7 @@ from core.models import (
     Person,
     TPMCode,
     TPMDailyTransaction,
+    TransactionGameSale,
     UserAgencyAssignment,
 )
 
@@ -218,6 +220,47 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(txn.to_pay, 95)
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.IMPORT_PREVIEWED).exists())
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.IMPORT_CONFIRMED).exists())
+
+    def test_confirmation_creates_identity_snapshots_and_multiple_game_sales(self):
+        second_person = Person.objects.create(agency=self.agency, full_name="Second Name", agent_type=AgentType.MAIN_AGENT)
+        second_tpm = TPMCode.objects.create(person=second_person, code="513670125")
+        self.client.force_authenticate(self.accountant)
+        preview = self.client.post(
+            "/api/daily-sheet-imports/preview/",
+            {"agency": self.agency.id, "transaction_date": "2026-08-27", "file": workbook_upload(
+                rows=[{"sub": 469001, "amounts": [100, 20, 3, 4, 5]}, {"sub": 469002, "amounts": [6, 7, 8, 9, 10]}],
+                register_rows=[(469001, "513670124", "System Name"), (469002, second_tpm.code, "Second Name")],
+            )},
+            format="multipart",
+        )
+        self.assertEqual(preview.status_code, status.HTTP_201_CREATED, preview.data)
+        confirmed = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json")
+        self.assertEqual(confirmed.status_code, status.HTTP_200_OK, confirmed.data)
+        transactions = TPMDailyTransaction.objects.filter(daily_sheet_id=confirmed.data["daily_sheet"])
+        self.assertEqual(transactions.count(), 2)
+        self.assertEqual(TransactionGameSale.objects.filter(transaction__in=transactions).count(), 12)
+        first = transactions.get(tpm_code=self.tpm)
+        self.assertEqual(first.person_id_snapshot, self.person.id)
+        self.assertEqual(first.tpm_code_snapshot, self.tpm.code)
+        self.assertEqual(first.person_name_snapshot, self.person.full_name)
+        self.assertEqual(first.agent_type_snapshot, self.person.agent_type)
+        self.assertTrue(AuditLog.objects.filter(action=AuditAction.IMPORT_CONFIRMED, object_id=str(preview.data["id"])).exists())
+
+    def test_unexpected_mid_confirmation_failure_rolls_back_and_marks_batch_failed(self):
+        preview = self.preview()
+        with patch("core.views.TransactionGameSale.objects.bulk_create", side_effect=RuntimeError("forced test failure")):
+            response = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertIn("The import could not be confirmed. No transactions were written. Reference:", response.data["detail"])
+        self.assertNotIn("forced test failure", response.data["detail"])
+        batch = DailySheetImportBatch.objects.get(pk=preview.data["id"])
+        self.assertEqual(batch.status, DailySheetImportStatus.FAILED)
+        self.assertEqual(batch.errors[0]["message"], "Confirmation failed.")
+        self.assertEqual(DailySheet.objects.filter(agency=self.agency, transaction_date=date(2026, 8, 27)).count(), 0)
+        self.assertEqual(TPMDailyTransaction.objects.count(), 0)
+        self.assertFalse(AuditLog.objects.filter(action=AuditAction.IMPORT_CONFIRMED).exists())
+        self.assertEqual(self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json").status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_permissions_and_batch_ownership_are_enforced(self):
         denied = self.preview(self.unassigned)

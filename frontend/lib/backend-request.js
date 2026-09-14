@@ -46,6 +46,12 @@ function transportError(error) {
   return wrapped;
 }
 
+function safeErrorPayload(payload) {
+  return payload && typeof payload === "object" && typeof payload.detail === "string" && payload.detail !== "Unexpected upstream response." && !/traceback|password|token|cookie|secret|database url/i.test(payload.detail)
+    ? payload
+    : { detail: "Upstream service error." };
+}
+
 export async function backendRequestWithFetchResponse(path, options = {}, fetchImpl = fetch, timeoutMs = 10000) {
   const { timeoutMs: requestTimeoutMs = timeoutMs, ...fetchOptions } = options;
   const controller = new AbortController();
@@ -60,8 +66,10 @@ export async function backendRequestWithFetchResponse(path, options = {}, fetchI
     const payload = await parseResponse(response);
     if (!response.ok) {
       const expectedError = response.status >= 400 && response.status < 500;
-      const message = expectedError ? payload?.detail || "Request failed." : "Upstream service error.";
-      throw new ApiError(message, response.status, expectedError ? payload : { detail: "Upstream service error." }, expectedError);
+      const exposedPayload = expectedError ? payload : safeErrorPayload(payload);
+      const message = exposedPayload?.detail || "Request failed.";
+      const exposePayload = expectedError || exposedPayload.detail !== "Upstream service error.";
+      throw new ApiError(message, response.status, exposedPayload, exposePayload);
     }
     return { status: response.status, payload, contentType: response.headers.get("content-type") };
   } catch (error) {

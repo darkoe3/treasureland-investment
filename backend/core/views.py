@@ -1,6 +1,8 @@
 from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
+import logging
+import uuid
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -63,6 +65,9 @@ from .serializers import (
     UserAgencyAssignmentSerializer,
     WeeklyGameScheduleSerializer,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class LoginView(TokenObtainPairView):
@@ -780,6 +785,37 @@ class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
+        try:
+            return self._confirm_locked(request, pk)
+        except ValidationError:
+            raise
+        except IntegrityError:
+            logger.warning(
+                "Daily sheet import confirmation conflict",
+                exc_info=True,
+                extra={"batch_id": pk, "user_id": request.user.id},
+            )
+            return Response(
+                {"detail": "The import could not be confirmed because the target data changed. Create a fresh preview."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except Exception:
+            reference = uuid.uuid4().hex[:12]
+            logger.exception(
+                "Daily sheet import confirmation failed",
+                extra={"reference": reference, "batch_id": pk, "user_id": request.user.id},
+            )
+            DailySheetImportBatch.objects.filter(pk=pk, status=DailySheetImportStatus.PREVIEWED).update(
+                status=DailySheetImportStatus.FAILED,
+                errors=[{"message": "Confirmation failed.", "reference": reference}],
+                updated_at=timezone.now(),
+            )
+            return Response(
+                {"detail": f"The import could not be confirmed. No transactions were written. Reference: {reference}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    def _confirm_locked(self, request, pk=None):
         batch = self.get_object()
         require_assignment_flag(request.user, batch.agency, "can_create")
         replace_existing = request.data.get("replace_existing") is True

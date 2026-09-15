@@ -157,6 +157,28 @@ test("real backend 500 safe reference survives unchanged", async (t) => {
 });
 }
 
+test("confirmation JSON preserves the safe Django reference through proxy and client error", async (t) => {
+  resetClientApiStateForTests();
+  t.after(resetClientApiStateForTests);
+  const payload = { detail: "The import could not be confirmed. No transactions were written. Reference: 46b65edee8e9" };
+  const f = await fixture(t, { status: 500, payload });
+  const body = JSON.stringify({ replace_existing: false, acknowledge_date_mismatch: false });
+  await assert.rejects(
+    clientRequest("/api/backend/daily-sheet-imports/12/confirm/", { method: "POST", body }, f.browserFetch),
+    (error) => {
+      assert.equal(error.status, 500);
+      assert.equal(error.message, payload.detail);
+      assert.deepEqual(error.payload, payload);
+      return true;
+    },
+  );
+  assert.equal(f.counts().calls, 1);
+  assert.equal(f.received[0].url, "/api/daily-sheet-imports/12/confirm/");
+  assert.equal(f.received[0].body.toString(), body);
+  assert.equal(f.received[0].headers.cookie, undefined);
+  assert.equal(f.received[0].headers["x-csrf-token"], undefined);
+});
+
 test("real connection failure maps to a safe 504 and retains only safe cause diagnostics", async (t) => {
   const f = await fixture(t);
   await new Promise((resolve) => f.upstream.instance.close(resolve));

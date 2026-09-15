@@ -117,7 +117,10 @@ def build_daily_sheet_template(agency, transaction_date):
     for code in TPMCode.objects.select_related("person").filter(
         person__agency=agency, is_active=True, person__is_active=True,
     ).order_by("code", "id"):
-        registration_sheet.append(["", "", code.code, code.person.full_name])
+        registration_sheet.append(["", "", str(code.code), code.person.full_name])
+    for row in registration_sheet.iter_rows(min_row=2, max_row=max(2, registration_sheet.max_row), min_col=2, max_col=3):
+        for cell in row:
+            cell.number_format = "@"
     registration_sheet.freeze_panes = "A2"
     for column, width in {"B": 18, "C": 18, "D": 30}.items():
         registration_sheet.column_dimensions[column].width = width

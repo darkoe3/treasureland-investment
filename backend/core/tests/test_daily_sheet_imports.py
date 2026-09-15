@@ -1,11 +1,13 @@
 from datetime import date, timedelta
 from io import BytesIO, StringIO
+import logging
 from zipfile import ZIP_DEFLATED, ZipFile
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 from openpyxl import Workbook, load_workbook
@@ -205,6 +207,47 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(workbook["REGISTER SUB-AGENT"]["C2"].value, "513670124")
         self.assertEqual(workbook["REGISTER SUB-AGENT"]["D2"].value, "System Name")
 
+    def test_template_identifiers_are_text_and_preserve_leading_zeroes_on_reupload(self):
+        self.tpm.code = "00513670124"
+        self.tpm.save()
+        self.client.force_authenticate(self.accountant)
+        response = self.client.get(
+            f"/api/daily-sheet-imports/template/?agency={self.agency.id}&transaction_date=2026-08-27"
+        )
+        workbook = load_workbook(BytesIO(response.content))
+        raw, register = workbook["ENTER GAME DATA HERE"], workbook["REGISTER SUB-AGENT"]
+        self.assertEqual(register["C2"].value, "00513670124")
+        self.assertEqual(register["C2"].data_type, "s")
+        for cell in [raw["B5"], raw["B224"], register["B2"], register["C2"]]:
+            self.assertEqual(cell.number_format, "@")
+        raw["B5"] = register["B2"] = "00469001"
+        raw["C5"] = 123.45
+        buffer = BytesIO()
+        workbook.save(buffer)
+        saved = load_workbook(BytesIO(buffer.getvalue()))
+        for sheet, coord in [("ENTER GAME DATA HERE", "B5"), ("REGISTER SUB-AGENT", "B2"), ("REGISTER SUB-AGENT", "C2")]:
+            self.assertEqual(saved[sheet][coord].data_type, "s")
+            self.assertEqual(saved[sheet][coord].number_format, "@")
+        parsed = parse_daily_sheet_workbook(SimpleUploadedFile("template.xlsx", buffer.getvalue()), self.agency, date(2026, 8, 27))
+        self.assertEqual(parsed.errors, [])
+        self.assertEqual(parsed.warnings, [])
+        self.assertEqual(parsed.payload["rows"][0]["sub_agent_no"], "00469001")
+        self.assertEqual(parsed.payload["rows"][0]["tpm_code"], "00513670124")
+
+    def test_legacy_numeric_identifiers_still_warn_even_with_text_number_format(self):
+        workbook = load_workbook(workbook_upload(
+            rows=[{"sub": 469001, "amounts": [100]}],
+            register_rows=[(469001, 513670124, "System Name")],
+        ))
+        for sheet, coord in [("ENTER GAME DATA HERE", "B5"), ("REGISTER SUB-AGENT", "B2"), ("REGISTER SUB-AGENT", "C2")]:
+            workbook[sheet][coord].number_format = "@"
+        buffer = BytesIO()
+        workbook.save(buffer)
+        parsed = parse_daily_sheet_workbook(SimpleUploadedFile("legacy.xlsx", buffer.getvalue()), self.agency, date(2026, 8, 27))
+        self.assertEqual(parsed.errors, [])
+        numeric_warnings = [item for item in parsed.warnings if item["message"] == "Numeric identifier may have lost leading zeroes."]
+        self.assertEqual({item["cell"] for item in numeric_warnings}, {"B5", "B2", "C2"})
+
     def test_assigned_accountant_preview_confirm_creates_draft_atomically(self):
         preview = self.preview()
         self.assertEqual(preview.status_code, status.HTTP_201_CREATED)
@@ -246,6 +289,49 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(first.agent_type_snapshot, self.person.agent_type)
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.IMPORT_CONFIRMED, object_id=str(preview.data["id"])).exists())
 
+    def test_accepted_eight_row_preview_confirms_with_snapshots_and_totals(self):
+        rows, registration = [], []
+        for index in range(8):
+            person = Person.objects.create(
+                agency=self.agency, full_name=f"Fixture Agent {index}",
+                agent_type=AgentType.SUBAGENT if index % 2 else AgentType.MAIN_AGENT,
+            )
+            code = TPMCode.objects.create(person=person, code=f"00513670{index:03d}")
+            sub = f"00469{index:03d}"
+            rows.append({"sub": sub, "amounts": [100 + index, 20, 30, 40, 50]})
+            registration.append((sub, code.code, person.full_name))
+        self.client.force_authenticate(self.accountant)
+        preview = self.client.post(
+            "/api/daily-sheet-imports/preview/",
+            {"agency": self.agency.pk, "transaction_date": "2026-08-27",
+             "file": workbook_upload(rows=rows, register_rows=registration)},
+            format="multipart",
+        )
+        self.assertEqual(preview.status_code, 201)
+        self.assertEqual(preview.data["errors"], [])
+        self.assertEqual(preview.data["warnings"], [])
+        self.assertEqual(preview.data["preview_payload"]["valid_row_count"], 8)
+        confirmed = self.client.post(
+            f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        self.assertEqual(confirmed.json()["imported_rows"], 8)
+        sheet = DailySheet.objects.get(pk=confirmed.data["daily_sheet"])
+        self.assertEqual(sheet.transactions.count(), 8)
+        self.assertEqual(TransactionGameSale.objects.filter(transaction__daily_sheet=sheet).count(), 48)
+        self.assertEqual(str(sheet.totals()["gross_sales"]), "1948.00")
+        self.assertEqual(str(sheet.totals()["total_to_pay"]), "1850.60")
+        for txn in sheet.transactions.select_related("tpm_code__person"):
+            self.assertEqual(txn.person_id_snapshot, txn.tpm_code.person_id)
+            self.assertEqual(txn.tpm_code_snapshot, txn.tpm_code.code)
+            self.assertEqual(txn.person_name_snapshot, txn.tpm_code.person.full_name)
+            self.assertEqual(txn.agent_type_snapshot, txn.tpm_code.person.agent_type)
+        batch = DailySheetImportBatch.objects.get(pk=preview.data["id"])
+        self.assertEqual(batch.status, DailySheetImportStatus.CONFIRMED)
+        self.assertEqual(batch.confirmed_sheet, sheet)
+        self.assertIsNotNone(batch.confirmed_at)
+        self.assertTrue(AuditLog.objects.filter(action=AuditAction.IMPORT_CONFIRMED, daily_sheet=sheet).exists())
+
     def test_unexpected_mid_confirmation_failure_rolls_back_and_marks_batch_failed(self):
         preview = self.preview()
         with patch("core.views.TransactionGameSale.objects.bulk_create", side_effect=RuntimeError("forced test failure")):
@@ -261,6 +347,70 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(TPMDailyTransaction.objects.count(), 0)
         self.assertFalse(AuditLog.objects.filter(action=AuditAction.IMPORT_CONFIRMED).exists())
         self.assertEqual(self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json").status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_safe_reference_is_in_plain_server_log_without_exception_or_request_data(self):
+        for exception, expected_status in [(RuntimeError, 500), (IntegrityError, 409)]:
+            with self.subTest(exception=exception):
+                preview = self.preview()
+                output = StringIO()
+                handler = logging.StreamHandler(output)  # No custom formatter or extra fields.
+                logger = logging.getLogger("core.views")
+                logger.addHandler(handler)
+                marker = "PRIVATE workbook name identifiers amounts credentials cookies tokens headers database URL SQL parameters"
+                try:
+                    with patch("core.views.TransactionGameSale.objects.bulk_create", side_effect=exception(marker)), self.assertLogs("core.views", level="WARNING") as captured:
+                        # assertLogs replaces handlers; also exercise the ordinary message formatter.
+                        logger.addHandler(handler)
+                        response = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json")
+                finally:
+                    logger.removeHandler(handler)
+                self.assertEqual(response.status_code, expected_status)
+                reference = response.data["detail"].split("Reference: ")[-1]
+                self.assertRegex(reference, r"^[0-9a-f]{12}$")
+                self.assertIn(f"reference={reference}", output.getvalue())
+                self.assertIn(f"exception={exception.__name__}", output.getvalue())
+                self.assertRegex(output.getvalue(), r"core/views.py:\d+:_confirm_locked")
+                self.assertNotIn(marker, output.getvalue())
+                self.assertNotIn(marker, response.data["detail"])
+                self.assertNotIn("Traceback", output.getvalue())
+                record = captured.records[0]
+                self.assertIsNone(record.exc_info)
+                self.assertFalse(hasattr(record, "batch_id"))
+                self.assertFalse(hasattr(record, "user_id"))
+                self.assertFalse(DailySheet.objects.exists())
+                self.assertFalse(TransactionGameSale.objects.exists())
+
+    def test_failure_after_writes_restores_replaced_transactions_and_historical_snapshots(self):
+        first = self.preview()
+        confirmed = self.client.post(f"/api/daily-sheet-imports/{first.data['id']}/confirm/", {}, format="json")
+        self.assertEqual(confirmed.status_code, 200)
+        sheet = DailySheet.objects.get(pk=confirmed.data["daily_sheet"])
+        original_transactions = list(sheet.transactions.values())
+        original_sales = list(TransactionGameSale.objects.values())
+        original_games = list(sheet.sheet_games.values())
+        preview = self.preview()
+        with patch("core.views.log_audit", side_effect=RuntimeError("forced audit failure")), self.assertLogs("core.views", level="ERROR"):
+            response = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {"replace_existing": True}, format="json")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(list(sheet.transactions.values()), original_transactions)
+        self.assertEqual(list(TransactionGameSale.objects.values()), original_sales)
+        self.assertEqual(list(sheet.sheet_games.values()), original_games)
+        batch = DailySheetImportBatch.objects.get(pk=preview.data["id"])
+        self.assertEqual(batch.status, DailySheetImportStatus.FAILED)
+        self.assertIsNone(batch.confirmed_sheet_id)
+        self.assertIsNone(batch.confirmed_at)
+        self.assertFalse(AuditLog.objects.filter(action=AuditAction.IMPORT_CONFIRMED, object_id=str(batch.pk)).exists())
+
+    def test_confirmation_rechecks_assignment_and_preserves_other_users_batch(self):
+        preview = self.preview()
+        UserAgencyAssignment.objects.filter(user=self.accountant, agency=self.agency).update(can_create=False)
+        response = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json")
+        self.assertEqual(response.status_code, 403)
+        self.client.force_authenticate(self.unassigned)
+        response = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(DailySheetImportBatch.objects.get(pk=preview.data["id"]).status, DailySheetImportStatus.PREVIEWED)
+        self.assertFalse(TPMDailyTransaction.objects.exists())
 
     def test_permissions_and_batch_ownership_are_enforced(self):
         denied = self.preview(self.unassigned)

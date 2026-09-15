@@ -6,13 +6,13 @@ import uuid
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.text import get_valid_filename
 from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -68,6 +68,26 @@ from .serializers import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def log_import_confirmation_error(exc, level):
+    reference = uuid.uuid4().hex[:12]
+    locations = []
+    traceback = exc.__traceback__
+    while traceback is not None:
+        module = traceback.tb_frame.f_globals.get("__name__", "")
+        if module.startswith("core."):
+            locations.append(
+                f"{module.replace('.', '/')}.py:{traceback.tb_lineno}:{traceback.tb_frame.f_code.co_name}"
+            )
+        traceback = traceback.tb_next
+    # Keep the reference in the message so ordinary console formatters emit it.
+    # Never log exception messages, source text, frame locals or request/batch data.
+    logger.log(
+        level, "Daily sheet import confirmation failed reference=%s exception=%s location=%s",
+        reference, type(exc).__name__, ";".join(locations),
+    )
+    return reference
 
 
 class LoginView(TokenObtainPairView):
@@ -787,25 +807,17 @@ class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
     def confirm(self, request, pk=None):
         try:
             return self._confirm_locked(request, pk)
-        except ValidationError:
+        except (APIException, Http404):
             raise
-        except IntegrityError:
-            logger.warning(
-                "Daily sheet import confirmation conflict",
-                exc_info=True,
-                extra={"batch_id": pk, "user_id": request.user.id},
-            )
+        except IntegrityError as exc:
+            reference = log_import_confirmation_error(exc, logging.WARNING)
             return Response(
-                {"detail": "The import could not be confirmed because the target data changed. Create a fresh preview."},
+                {"detail": f"The import could not be confirmed because the target data changed. Create a fresh preview. Reference: {reference}"},
                 status=status.HTTP_409_CONFLICT,
             )
-        except Exception:
-            reference = uuid.uuid4().hex[:12]
-            logger.exception(
-                "Daily sheet import confirmation failed",
-                extra={"reference": reference, "batch_id": pk, "user_id": request.user.id},
-            )
-            DailySheetImportBatch.objects.filter(pk=pk, status=DailySheetImportStatus.PREVIEWED).update(
+        except Exception as exc:
+            reference = log_import_confirmation_error(exc, logging.ERROR)
+            self.get_queryset().filter(pk=pk, status=DailySheetImportStatus.PREVIEWED).update(
                 status=DailySheetImportStatus.FAILED,
                 errors=[{"message": "Confirmation failed.", "reference": reference}],
                 updated_at=timezone.now(),
@@ -822,7 +834,9 @@ class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
         acknowledge_date_mismatch = request.data.get("acknowledge_date_mismatch") is True
 
         with transaction.atomic():
-            batch = self.get_queryset().select_for_update().get(pk=batch.pk)
+            # Nullable sheet joins cannot be locked by PostgreSQL. Lock the batch;
+            # the target sheet and its game snapshots are locked explicitly below.
+            batch = self.get_queryset().select_for_update(of=("self",)).get(pk=batch.pk)
             require_assignment_flag(request.user, batch.agency, "can_create")
             if batch.status != DailySheetImportStatus.PREVIEWED:
                 raise ValidationError({"status": "Only previewed imports can be confirmed."})

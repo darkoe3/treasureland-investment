@@ -1037,7 +1037,7 @@ th {
   }
 }
 
-/* People & TPM Codes: scoped directory, filters and editor. */
+/* People & Sub-Agent Numbers: scoped directory, filters and editor. */
 .people-page {
   display: grid;
   gap: 24px;
@@ -1194,3 +1194,22 @@ th {
 @media (max-width: 760px) {
   .responsive-table td[data-label="Actions"] .sheet-safety-controls { grid-column: 1 / -1; }
 }
+/* Terminal register: bounded grids and locally scrolling preview tables. */
+.terminal-register { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.terminal-register .panel { min-width: 0; padding: 1.25rem; margin-block: 1rem; }
+.terminal-heading, .terminal-actions { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; justify-content: space-between; }
+.terminal-actions { justify-content: flex-start; margin-block: 1rem; }
+.terminal-fields, .terminal-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; }
+.terminal-register label { display: grid; gap: .4rem; margin-block: .75rem; min-width: 0; }
+.terminal-register input, .terminal-register select, .terminal-register textarea { width: 100%; min-width: 0; max-width: 100%; padding: .65rem; border: 1px solid #94a3b8; border-radius: .4rem; }
+.terminal-register fieldset { min-width: 0; border: 0; padding: 0; }
+.terminal-register button, .terminal-actions a { padding: .6rem .8rem; border: 1px solid #94a3b8; border-radius: .4rem; }
+.terminal-register button:disabled { opacity: .5; cursor: not-allowed; }
+.terminal-register .terminal-check { display: flex; align-items: flex-start; gap: .6rem; }
+.terminal-register .terminal-check input { width: auto; flex: 0 0 auto; margin-top: .25rem; }
+.terminal-table { min-width: 0; max-width: 100%; overflow-x: auto; }
+.terminal-table table { width: 100%; border-collapse: collapse; }
+.terminal-table th, .terminal-table td { padding: .6rem; text-align: left; border-bottom: 1px solid #cbd5e1; }
+.terminal-register dd { margin: 0; font-weight: 600; }
+.terminal-register dl > div { margin-block: .5rem; }
+.terminal-register :focus-visible { outline: 3px solid #2563eb; outline-offset: 3px; }

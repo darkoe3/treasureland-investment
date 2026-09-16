@@ -202,12 +202,12 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
       <section className="form-grid" id="sheet-entry">
         <form className="panel form-panel" onSubmit={saveTransaction}>
           <div className="panel-heading"><h2>Transaction Entry</h2></div>
-          <label className="field-group">Search Name or TPM Code
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Type a person name or TPM code" disabled={!mayCreate} />
+          <label className="field-group">Search Name or Sub-Agent Number
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Type a person name or Sub-Agent Number" disabled={!mayCreate} />
           </label>
           <label className="field-group">Terminal
             <select required value={selectedTpm} onChange={(event) => setSelectedTpm(event.target.value)} disabled={!mayCreate}>
-              <option value="">Select TPM code</option>
+              <option value="">Select Sub-Agent Number</option>
               {options.map((item) => <option key={item.id} value={item.id}>{item.person_name} - {item.code}</option>)}
             </select>
           </label>
@@ -248,14 +248,14 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
         <p className="scroll-hint">Scroll the summary table horizontally to view all game columns.</p>
         <div className="table-wrap summary-table-wrap" tabIndex="0" role="region" aria-label="Daily Sheet Summary table with horizontal scrolling">
           <table className="summary-table" style={{ minWidth: `max(980px, ${520 + sheet.sheet_games.length * 132}px)` }}>
-            <thead><tr><th>No</th><th>Name</th><th>TPM Code</th>{sheet.sheet_games.map((game) => <th key={game.id}>{game.game_name_snapshot}</th>)}<th>NET Sales</th><th>To Pay</th><th>Total</th><th></th></tr></thead>
+            <thead><tr><th>No</th><th>Name</th><th>Sub-Agent Number</th><th>Terminal Number</th>{sheet.sheet_games.map((game) => <th key={game.id}>{game.game_name_snapshot}</th>)}<th>NET Sales</th><th>To Pay</th><th>Total</th><th></th></tr></thead>
             <tbody>
-              {!transactions.length ? <tr><td colSpan={7 + sheet.sheet_games.length} className="empty-cell">No transactions entered yet.</td></tr> : null}
+              {!transactions.length ? <tr><td colSpan={8 + sheet.sheet_games.length} className="empty-cell">No transactions entered yet.</td></tr> : null}
               {transactions.map((txn, index) => (
                 <tr key={txn.id}>
                   <td data-label="No">{index + 1}</td>
                   <td data-label="Name">{txn.person_name_snapshot}</td>
-                  <td data-label="TPM Code">{txn.tpm_code_value}</td>
+                  <td data-label="Sub-Agent Number">{txn.tpm_code_value}</td><td data-label="Terminal Number">{txn.terminal_number_snapshot || "Not recorded"}</td>
                   {sheet.sheet_games.map((game) => {
                     const sale = txn.sales.find((item) => Number(item.daily_sheet_game) === Number(game.id));
                     return <td key={game.id} data-label={game.game_name_snapshot}>{moneyText(sale?.amount)}</td>;

@@ -15,7 +15,7 @@ const require = createRequire(import.meta.url);
 const { transformSync } = require("next/dist/build/swc");
 const source = await readFile(new URL("../components/PeopleTpmClient.js", import.meta.url), "utf8");
 const compiled = transformSync(source, { filename: "PeopleTpmClient.js", jsc: { parser: { syntax: "ecmascript", jsx: true }, transform: { react: { runtime: "automatic" } } }, module: { type: "commonjs" } }).code;
-const detail = "TPM code 123456 already exists and is assigned to Ayo. Edit the existing TPM code instead.";
+const detail = "Sub-Agent Number 123456 already exists and is assigned to Ayo. Edit the existing Sub-Agent Number instead.";
 const admin = { role: "SUPER_ADMIN" };
 const agencies = [{ id: 1, name: "Musa" }, { id: 2, name: "Sango" }];
 const activeCode = { id: 4, code: "123456", is_active: true };
@@ -73,13 +73,13 @@ test("client displays Django validation safely and supplies field messages", asy
   assert.equal(clientApi.validationMessage({ detail: "Reference: abc123" }, 500), "Reference: abc123");
 });
 
-test("active and inactive TPM codes have separate appropriate actions", () => {
+test("active and inactive Sub-Agent Numbers have separate appropriate actions", () => {
   assert.deepEqual(codeActions(admin, person, activeCode), ["edit", "reassign", "deactivate"]);
   assert.deepEqual(codeActions(admin, person, inactiveCode), ["edit", "reassign", "reactivate"]);
   const html = harness().html();
-  for (const label of ["Edit TPM code 123456", "Reassign TPM code 123456", "Deactivate TPM code 123456", "Reactivate TPM code ABC-789"]) assert.ok(html.includes(label));
-  assert.ok(!html.includes("Deactivate TPM code ABC-789"));
-  assert.ok(!html.includes("Reactivate TPM code 123456"));
+  for (const label of ["Edit Sub-Agent Number 123456", "Reassign Sub-Agent Number 123456", "Deactivate Sub-Agent Number 123456", "Reactivate Sub-Agent Number ABC-789"]) assert.ok(html.includes(label));
+  assert.ok(!html.includes("Deactivate Sub-Agent Number ABC-789"));
+  assert.ok(!html.includes("Reactivate Sub-Agent Number 123456"));
   assert.match(html, /people-status is-inactive/);
 });
 
@@ -89,10 +89,10 @@ test("accountants only see accessible agencies and independently permitted actio
   assert.deepEqual(codeActions(accountant({ can_edit: true }), person, inactiveCode), ["edit", "reassign", "reactivate"]);
   const readonly = harness({ user: accountant() }).html();
   assert.ok(!readonly.includes("Hidden") && !readonly.includes("Sango"));
-  assert.ok(!readonly.includes("Edit TPM code") && !readonly.includes("Add Person"));
+  assert.ok(!readonly.includes("Edit Sub-Agent Number") && !readonly.includes("Add Person"));
   const editable = harness({ user: accountant({ can_edit: true }) }).html();
-  assert.ok(editable.includes("Reassign TPM code 123456"));
-  assert.ok(!editable.includes("Deactivate TPM code 123456"));
+  assert.ok(editable.includes("Reassign Sub-Agent Number 123456"));
+  assert.ok(!editable.includes("Deactivate Sub-Agent Number 123456"));
   assert.ok(!editable.includes("Add Person"));
 });
 
@@ -113,11 +113,11 @@ test("filters combine name/code, agency, person status and inactive code visibil
 test("Edit cannot change ownership; Reassign shows current and new owner details", () => {
   assert.deepEqual(editorRequest({ kind: "code", person, code: activeCode }, { code: "NEW", person: 2, is_active: false }).payload, { code: "NEW" });
   const ui = harness();
-  find(ui.render(), (n) => n.props["aria-label"] === "Edit TPM code 123456").props.onClick(clickEvent);
+  find(ui.render(), (n) => n.props["aria-label"] === "Edit Sub-Agent Number 123456").props.onClick(clickEvent);
   assert.ok(!ui.html().includes('id="people-person"'));
-  assert.match(ui.html(), /Edit TPM Code/);
+  assert.match(ui.html(), /Edit Sub-Agent Number/);
   const reassign = harness({ editor: { kind: "reassign", person, code: inactiveCode }, draft: { person: 2, is_active: true } }).html();
-  for (const label of ["Current person", "Current agency", "Current status", "New person", "New agency", "TPM status after saving", "ABC-789"]) assert.ok(reassign.includes(label));
+  for (const label of ["Current person", "Current agency", "Current status", "New person", "New agency", "Sub-Agent status after saving", "ABC-789"]) assert.ok(reassign.includes(label));
 });
 
 test("confirmation is required before reassignment and describes both people", async () => {
@@ -173,7 +173,7 @@ test("successful operations close the panel and announce success after refresh",
 });
 
 test("page-scoped layout wraps controls without scaling and provides keyboard focus", async () => {
-  const css = (await readFile(new URL("../app/globals.css", import.meta.url), "utf8")).split("/* People & TPM Codes:")[1];
+  const css = (await readFile(new URL("../app/globals.css", import.meta.url), "utf8")).split("/* People & Sub-Agent Numbers:")[1];
   assert.match(css, /min-width: 0/);
   assert.match(css, /overflow-wrap: anywhere/);
   assert.match(css, /flex-wrap: wrap/);

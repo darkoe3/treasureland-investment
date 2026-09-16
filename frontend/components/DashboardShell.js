@@ -7,6 +7,7 @@ import {
   Building2,
   CalendarDays,
   ClipboardList,
+  Monitor,
   FileClock,
   FileText,
   Home,
@@ -23,7 +24,8 @@ import LogoutButton from "./LogoutButton";
 const superAdminItems = [
   { label: "Overview", href: "/dashboard", icon: Home },
   { label: "Daily Sheets", href: "/dashboard/daily-sheets", icon: ClipboardList },
-  { label: "People & TPM Codes", href: "/dashboard/people", icon: Users },
+  { label: "Terminal Numbers", href: "/dashboard/terminal-numbers", icon: Monitor },
+  { label: "People & Sub-Agent Numbers", href: "/dashboard/people", icon: Users },
   { label: "Game Schedule", href: "/dashboard/game-schedule", icon: CalendarDays },
   { label: "Agencies", href: "/dashboard/agencies", icon: Building2 },
   { label: "Accountants", href: "/dashboard/accountants", icon: ShieldCheck },
@@ -37,6 +39,7 @@ function accountantItems(user) {
   return [
     { label: "Overview", href: "/dashboard", icon: Home },
     { label: "Daily Sheets", href: "/dashboard/daily-sheets", icon: ClipboardList },
+  { label: "Terminal Numbers", href: "/dashboard/terminal-numbers", icon: Monitor },
     { label: "New Daily Sheet", href: "/dashboard/daily-sheets/new", icon: FileText },
     { label: "Assigned Agencies", href: "/dashboard/assigned-agencies", icon: Building2 },
     ...(canHistory ? [{ label: "History", href: "/dashboard/history", icon: FileClock }] : []),

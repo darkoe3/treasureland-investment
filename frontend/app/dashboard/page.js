@@ -43,7 +43,7 @@ export default async function DashboardOverview() {
         </div>
         <div className="metric-card">
           <Users size={21} aria-hidden="true" />
-          <p>Active TPM Codes</p>
+          <p>Active Sub-Agent Numbers</p>
           <strong>{user.role === "SUPER_ADMIN" ? data.tpmCodes.filter((item) => item.is_active).length : "Assigned"}</strong>
         </div>
         <div className="metric-card">

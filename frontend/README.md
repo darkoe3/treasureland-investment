@@ -78,7 +78,7 @@ Report data is kept in React state only. It is not written to `localStorage` or 
 
 ## Phase 4 Screens
 
-- `/dashboard/people`: search, filter, create and edit people; add and safely deactivate TPM codes.
+- `/dashboard/people`: search, filter, create and edit people; add and safely deactivate Sub-Agent Numbers.
 - `/dashboard/daily-sheets`: list, filter and create daily sheets.
 - `/dashboard/daily-sheets/[id]`: enter transactions, record omissions, update manual tax and actual received, review totals and run workflow actions.
 - `/dashboard/daily-sheets/import`: upload an approved `.xlsx` daily-sheet workbook, preview validation results and confirm import into Draft sheets.
@@ -130,3 +130,15 @@ npm run build
 - Super Admin can generate Approved official reports and labelled operational/non-final reports with other statuses.
 - Wide report tables scroll internally without widening the dashboard shell.
 - Logout clears auth cookies and returns to `/login`.
+
+## Terminal Numbers
+
+`/dashboard/terminal-numbers` is visible to both roles; the backend scopes Accountant reads to assigned agencies. Super Admin has Add terminal, Edit, Deactivate/Reactivate, Reassign and View history. Edit cannot move ownership. Agency ? Person ? Sub-Agent Number choices cascade and clear stale selections. Reassign shows both agencies/people/numbers, requires a reason and explicit checkbox, and preserves historical transactions.
+
+`/dashboard/terminal-numbers/upload` is Super Admin-only. Select agency, Download template, complete the text identifier columns, and Preview upload. Row-numbered messages appear as readable text. Only a valid, unexpired preview can be explicitly confirmed. Conflict rows require manual resolution followed by a fresh preview. Cancel is audited; abandoned previews expire after one hour.
+
+The controlled proxy adds only the exact register/import routes and methods documented in the backend README. Existing HTTP-only cookies, CSRF checking, refresh rotation, multipart byte forwarding and upstream status/body handling are retained. Template downloads use the authenticated binary path. Cards wrap on narrow screens; preview tables scroll within their container.
+
+People & Sub-Agent Numbers retains existing backend `tpm_*` identifiers and shows active terminal information. Daily sheets and report details display stored Terminal Number snapshots, using `Not recorded` for historical blanks.
+
+Tests: `npm test`, `npm run lint`, `npm run build`. Register tests exercise the actual rendered component and handlers, dependencies, permissions, preview/errors, reassignment confirmation, exact proxy methods, multipart bytes and CSRF. Browser viewport verification is recorded in the implementation report.

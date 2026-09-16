@@ -1,4 +1,5 @@
 const COLLECTION_METHODS = {
+  "terminal-numbers": new Set(["GET", "POST"]),
   agencies: new Set(["GET"]),
   games: new Set(["GET"]),
   people: new Set(["GET", "POST"]),
@@ -11,6 +12,7 @@ const COLLECTION_METHODS = {
 };
 
 const DETAIL_METHODS = {
+  "terminal-numbers": new Set(["GET", "PATCH"]),
   people: new Set(["GET", "PATCH", "DELETE"]),
   "tpm-codes": new Set(["GET", "PATCH", "DELETE"]),
   "daily-sheets": new Set(["GET", "PATCH", "DELETE"]),
@@ -83,6 +85,11 @@ export function isAllowedBackendProxyPath(path, method = "GET") {
   if (isDailySheetImportPathAllowed(cleanPath, normalizedMethod)) {
     return true;
   }
+  if (/^terminal-number-imports\/(preview)$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^terminal-number-imports\/(template|\d+)$/.test(cleanPath)) return normalizedMethod === "GET";
+  if (/^terminal-number-imports\/\d+\/(confirm|cancel)$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^terminal-numbers\/\d+\/history$/.test(cleanPath)) return normalizedMethod === "GET";
+  if (/^terminal-numbers\/\d+\/(deactivate|reactivate|reassign)$/.test(cleanPath)) return normalizedMethod === "POST";
   const parts = cleanPath.split("/").filter(Boolean);
   if (cleanPath === "games/for-date") {
     return normalizedMethod === "GET";
@@ -115,5 +122,5 @@ export function backendPathFromProxySegments(segments = [], search = "") {
 export function isBinaryBackendProxyPath(path, method = "GET") {
   const cleanPath = cleanProxyPath(path);
   const normalizedMethod = String(method || "GET").toUpperCase();
-  return (cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template") && normalizedMethod === "GET";
+  return (cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template" || cleanPath === "terminal-number-imports/template") && normalizedMethod === "GET";
 }

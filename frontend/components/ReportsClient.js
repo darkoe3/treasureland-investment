@@ -28,7 +28,7 @@ const summaryLabels = {
   daily_sheet_count: "Daily sheets",
   transaction_row_count: "Transaction rows",
   distinct_people_count: "People",
-  distinct_tpm_code_count: "TPM Codes",
+  distinct_tpm_code_count: "Sub-Agent Numbers",
   total_net_sales: "NET Sales",
   total_commission: "Commission 5%",
   total_to_pay: "To Pay",
@@ -245,18 +245,18 @@ export default function ReportsClient({ agencies = [] }) {
           </section>
 
           <section className="panel">
-            <div className="panel-heading"><h2>Detailed TPM/Game Summary</h2><span>{report.details.length} TPM rows</span></div>
+            <div className="panel-heading"><h2>Detailed Sub-Agent/Game Summary</h2><span>{report.details.length} Sub-Agent rows</span></div>
             <p className="scroll-hint">Scroll the detail table horizontally to view all game columns.</p>
             <div className="table-wrap summary-table-wrap" tabIndex="0" role="region" aria-label="Detailed report table with horizontal scrolling">
               <table className="summary-table" style={{ minWidth: `max(980px, ${520 + report.game_columns.length * 132}px)` }}>
-                <thead><tr><th>No</th><th>Name</th><th>TPM Code</th>{report.game_columns.map((game) => <th key={game.key}>{game.name}</th>)}<th>NET Sales</th><th>To Pay</th><th>Total</th></tr></thead>
+                <thead><tr><th>No</th><th>Name</th><th>Sub-Agent Number</th><th>Terminal Number</th>{report.game_columns.map((game) => <th key={game.key}>{game.name}</th>)}<th>NET Sales</th><th>To Pay</th><th>Total</th></tr></thead>
                 <tbody>
-                  {!report.details.length ? <tr><td colSpan={6 + report.game_columns.length} className="empty-cell">No transaction rows match this report.</td></tr> : null}
+                  {!report.details.length ? <tr><td colSpan={7 + report.game_columns.length} className="empty-cell">No transaction rows match this report.</td></tr> : null}
                   {report.details.map((row) => (
-                    <tr key={`${row.person}-${row.tpm_code}`}>
+                    <tr key={`${row.person}-${row.tpm_code}-${row.terminal_number}`}>
                       <td>{row.no}</td>
                       <td>{row.name}</td>
-                      <td>{row.tpm_code}</td>
+                      <td>{row.tpm_code}</td><td>{row.terminal_number || "Not recorded"}</td>
                       {report.game_columns.map((game) => <td key={game.key}>{moneyText(row.games[game.key])}</td>)}
                       <td>{moneyText(row.net_sales)}</td>
                       <td>{moneyText(row.to_pay)}</td>

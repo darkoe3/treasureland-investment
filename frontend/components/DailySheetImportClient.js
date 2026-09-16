@@ -187,7 +187,7 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
               <table className="summary-table import-preview-table">
                 <thead>
                   <tr>
-                    <th>Excel Row</th><th>SUB AGT NOS</th><th>TPM Code</th><th>System Name</th><th>Workbook Name</th>
+                    <th>Excel Row</th><th>SUB AGT NOS</th><th>Sub-Agent Number</th><th>Terminal Number</th><th>System Name</th><th>Workbook Name</th>
                     {(previewPayload.game_columns || []).map((column) => <th key={column.letter}>{column.game_name}</th>)}
                     <th>NET Sales</th><th>To Pay</th>
                   </tr>
@@ -195,7 +195,7 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
                 <tbody>
                   {(previewPayload.rows || []).map((row) => (
                     <tr key={`${row.excel_row}-${row.tpm_code}`}>
-                      <td>{row.excel_row}</td><td>{row.sub_agent_no}</td><td>{row.tpm_code}</td><td>{row.person_name}</td><td>{row.workbook_name || "Missing"}</td>
+                      <td>{row.excel_row}</td><td>{row.sub_agent_no}</td><td>{row.tpm_code}</td><td>{row.terminal_number || "Not recorded"}</td><td>{row.person_name}</td><td>{row.workbook_name || "Missing"}</td>
                       {(previewPayload.game_columns || []).map((column) => <td key={column.letter}>{moneyText(row.amounts?.[column.game_name])}</td>)}
                       <td>{moneyText(row.net_sales)}</td><td>{moneyText(row.to_pay)}</td>
                     </tr>

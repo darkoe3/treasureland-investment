@@ -42,22 +42,22 @@ export function editorRequest(editor, draft) {
   if (editor.kind === "reassign") {
     return { path: `/tpm-codes/${editor.code.id}/`, method: "PATCH",
       payload: { person: Number(draft.person), is_active: draft.is_active, confirm_reassignment: true },
-      success: `TPM code ${editor.code.code} reassigned.` };
+      success: `Sub-Agent Number ${editor.code.code} reassigned.` };
   }
   return {
     path: editor.code ? `/tpm-codes/${editor.code.id}/` : "/tpm-codes/",
     method: editor.code ? "PATCH" : "POST",
     // Editing a code deliberately omits ownership and status changes.
     payload: editor.code ? { code: draft.code } : { person: Number(draft.person), code: draft.code, is_active: draft.is_active },
-    success: editor.code ? "TPM code updated." : "TPM code added.",
+    success: editor.code ? "Sub-Agent Number updated." : "Sub-Agent Number added.",
   };
 }
 
 export async function submitPeopleEditor(editor, draft, people, request, confirm) {
   if (editor.kind === "reassign") {
     const target = people.find((person) => person.id === Number(draft.person));
-    if (!target || target.id === editor.person.id) throw new Error("Select a different person for this TPM code.");
-    if (!confirm(`Reassign TPM code ${editor.code.code} from ${editor.person.full_name} (${editor.person.agency_name}) to ${target.full_name} (${target.agency_name})? It will be ${draft.is_active ? "active" : "inactive"}. Historical daily sheets will be preserved.`)) return null;
+    if (!target || target.id === editor.person.id) throw new Error("Select a different person for this Sub-Agent Number.");
+    if (!confirm(`Reassign Sub-Agent Number ${editor.code.code} from ${editor.person.full_name} (${editor.person.agency_name}) to ${target.full_name} (${target.agency_name})? It will be ${draft.is_active ? "active" : "inactive"}. Historical daily sheets will be preserved.`)) return null;
   }
   const operation = editorRequest(editor, draft);
   await request(operation.path, { method: operation.method, body: JSON.stringify(operation.payload) });
@@ -65,9 +65,9 @@ export async function submitPeopleEditor(editor, draft, people, request, confirm
 }
 
 export async function changeCodeStatus(person, code, request, confirm) {
-  if (code.is_active && !confirm(`Deactivate TPM code ${code.code} assigned to ${person.full_name}? Transaction history will be preserved.`)) return null;
+  if (code.is_active && !confirm(`Deactivate Sub-Agent Number ${code.code} assigned to ${person.full_name}? Transaction history will be preserved.`)) return null;
   await request(`/tpm-codes/${code.id}/`, code.is_active
     ? { method: "DELETE" }
     : { method: "PATCH", body: JSON.stringify({ is_active: true }) });
-  return `TPM code ${code.code} ${code.is_active ? "deactivated" : "reactivated"}.`;
+  return `Sub-Agent Number ${code.code} ${code.is_active ? "deactivated" : "reactivated"}.`;
 }

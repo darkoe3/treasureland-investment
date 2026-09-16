@@ -25,6 +25,7 @@ from core.models import (
     DailySheetImportStatus,
     Person,
     TPMCode,
+    TerminalNumber,
     TPMDailyTransaction,
     TransactionGameSale,
     UserAgencyAssignment,
@@ -203,24 +204,26 @@ class DailySheetImportWorkflowTests(APITestCase):
         )
         self.assertEqual(workbook["ENTER GAME DATA HERE"]["B2"].value.date(), date(2026, 8, 27))
         self.assertEqual(workbook["ENTER GAME DATA HERE"]["C3"].value, "Fairchance")
-        self.assertIn(workbook["REGISTER SUB-AGENT"]["B2"].value, (None, ""))
-        self.assertEqual(workbook["REGISTER SUB-AGENT"]["C2"].value, "513670124")
+        self.assertEqual(workbook["REGISTER SUB-AGENT"]["B2"].value, "513670124")
+        self.assertIn(workbook["REGISTER SUB-AGENT"]["C2"].value, (None, ""))
         self.assertEqual(workbook["REGISTER SUB-AGENT"]["D2"].value, "System Name")
 
     def test_template_identifiers_are_text_and_preserve_leading_zeroes_on_reupload(self):
         self.tpm.code = "00513670124"
         self.tpm.save()
+        TerminalNumber.objects.create(terminal_number="000777", sub_agent_number=self.tpm, person=self.person, agency=self.agency, created_by=self.admin, updated_by=self.admin)
         self.client.force_authenticate(self.accountant)
         response = self.client.get(
             f"/api/daily-sheet-imports/template/?agency={self.agency.id}&transaction_date=2026-08-27"
         )
         workbook = load_workbook(BytesIO(response.content))
         raw, register = workbook["ENTER GAME DATA HERE"], workbook["REGISTER SUB-AGENT"]
-        self.assertEqual(register["C2"].value, "00513670124")
+        self.assertEqual(register["B2"].value, "00513670124")
+        self.assertEqual(register["C2"].value, "000777")
         self.assertEqual(register["C2"].data_type, "s")
         for cell in [raw["B5"], raw["B224"], register["B2"], register["C2"]]:
             self.assertEqual(cell.number_format, "@")
-        raw["B5"] = register["B2"] = "00469001"
+        raw["B5"] = register["B2"] = "00513670124"
         raw["C5"] = 123.45
         buffer = BytesIO()
         workbook.save(buffer)
@@ -231,7 +234,8 @@ class DailySheetImportWorkflowTests(APITestCase):
         parsed = parse_daily_sheet_workbook(SimpleUploadedFile("template.xlsx", buffer.getvalue()), self.agency, date(2026, 8, 27))
         self.assertEqual(parsed.errors, [])
         self.assertEqual(parsed.warnings, [])
-        self.assertEqual(parsed.payload["rows"][0]["sub_agent_no"], "00469001")
+        self.assertEqual(parsed.payload["rows"][0]["sub_agent_no"], "00513670124")
+        self.assertEqual(parsed.payload["rows"][0]["terminal_number"], "000777")
         self.assertEqual(parsed.payload["rows"][0]["tpm_code"], "00513670124")
 
     def test_legacy_numeric_identifiers_still_warn_even_with_text_number_format(self):
@@ -309,7 +313,8 @@ class DailySheetImportWorkflowTests(APITestCase):
         )
         self.assertEqual(preview.status_code, 201)
         self.assertEqual(preview.data["errors"], [])
-        self.assertEqual(preview.data["warnings"], [])
+        self.assertEqual(len(preview.data["warnings"]), 8)
+        self.assertTrue(all("Legacy compatibility" in item["message"] for item in preview.data["warnings"]))
         self.assertEqual(preview.data["preview_payload"]["valid_row_count"], 8)
         confirmed = self.client.post(
             f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json",

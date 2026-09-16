@@ -23,7 +23,11 @@ from .views import (
     logout_view,
 )
 
+from .terminal_register import TerminalNumberViewSet, TerminalImportViewSet
+
 router = DefaultRouter()
+router.register("terminal-numbers", TerminalNumberViewSet, basename="terminal-number")
+router.register("terminal-number-imports", TerminalImportViewSet, basename="terminal-number-import")
 router.register("agencies", AgencyViewSet, basename="agency")
 router.register("accountants", AccountantViewSet, basename="accountant")
 router.register("agency-assignments", UserAgencyAssignmentViewSet, basename="agency-assignment")

@@ -6,7 +6,7 @@
 - `DailySheetGame` snapshots the active `WeeklyGameSchedule` rows for the sheet weekday.
 - `TPMDailyTransaction` records one active `TPMCode` on a `DailySheet`.
 - `TransactionGameSale` stores one monetary amount per transaction and sheet game.
-- `OmittedTerminal` explains active TPM codes not entered on a sheet.
+- `OmittedTerminal` explains active Sub-Agent Numbers not entered on a sheet.
 - `AuditLog` records immutable sheet, transaction, omission and workflow changes.
 
 ## Calculation Formulas
@@ -14,7 +14,7 @@
 All monetary values use `Decimal`, two decimal places and `ROUND_HALF_UP`.
 
 ```text
-NET Sales = sum of game sales for a TPM code
+NET Sales = sum of game sales for a Sub-Agent Number
 Commission = NET Sales x 5%
 To Pay = NET Sales x 95%
 
@@ -85,7 +85,7 @@ Excel exports are generated with `openpyxl`, use numeric monetary cells, sanitiz
 Accountants with `can_create` for an assigned agency and Super Admin users can preview one `.xlsx` workbook under `POST /api/daily-sheet-imports/preview/`. The parser supports the shared five-sheet agency workbook structure:
 
 - `ENTER GAME DATA HERE`: selected raw-sales source. `B2` is advisory workbook date, `B5:B224` is `SUB AGT NOS`, `C:I` are raw game sales, and row 3 supplies game headers.
-- `REGISTER SUB-AGENT`: maps `SUB AGT NOS` to `TERMINAL NOS`; `TERMINAL NOS` is the system `TPMCode.code`.
+- `REGISTER SUB-AGENT`: comparison data for the system register. `SUB AGT NOS` is the existing `TPMCode.code`; `TERMINAL NOS` is a separate registered terminal.
 - `MUSA RESULTS`, `Premier Games` and `Sheet2`: recognized but not imported as authoritative transaction data.
 
 The import reads only raw game-sales amounts. Django recalculates NET Sales, 5% commission, 95% To Pay, sub-agent share, organisation share, tax and difference using the existing model properties. Workbook formulas and cached legacy totals are advisory only.
@@ -200,9 +200,9 @@ Manual checks for the training manual:
 
 ## Phase 4 And 5 Notes
 
-Phase 4 completes daily operations using the existing core models. Accountants can manage people, TPM codes, sheets, transaction rows and omissions only for assigned agencies where the relevant permission flag allows it. The backend enforces object-level agency checks.
+Phase 4 completes daily operations using the existing core models. Accountants can manage people, Sub-Agent Numbers, sheets, transaction rows and omissions only for assigned agencies where the relevant permission flag allows it. The backend enforces object-level agency checks.
 
-TPM code uniqueness is enforced case-insensitively. People and TPM codes are safely deactivated so transaction history remains intact. Omitted-terminal removals mark records inactive to preserve history.
+Sub-Agent Number uniqueness is enforced case-insensitively. People and Sub-Agent Numbers are safely deactivated so transaction history remains intact. Omitted-terminal removals mark records inactive to preserve history.
 
 Manual tax is stored on `DailySheet` but does not reduce calculated To Pay. Difference remains `incoming_funds - total_to_pay`.
 
@@ -216,3 +216,41 @@ python manage.py test
 - Confirm accountant management audit logs do not expose password values.
 - Confirm report audit logs include metadata only, not full report contents.
 - Phase 5 adds migration `0006_alter_auditlog_action.py` for report preview/export audit action choices. No destructive schema or data migration is required.
+
+## Terminal Number register
+
+`TPMCode` is the compatibility backend/table name for **Sub-Agent Number**. Its IDs, values, relationships and historical snapshots are retained. `TerminalNumber` is separate: one globally case-insensitive terminal identifier (text, trimmed, leading zeroes retained), linked by protected foreign keys to a Sub-Agent Number, its current person and agency. A conditional database constraint permits at most one active terminal per Sub-Agent Number. Inactive identifiers remain reserved; reuse requires the dedicated Reassign action. Terminal edits are audited and do not rewrite transaction snapshots.
+
+All terminal mutations, template download, import and assignment history are Super Admin-only. Accountants can list/retrieve terminals only in assigned agencies. The existing People/Sub-Agent permission flags remain unchanged; changing a person?s agency or a Sub-Agent Number?s owner is blocked while terminal records refer to that relationship. Reassign the terminal records first. Terminal audit events are excluded from Accountant access through the generic audit endpoint to avoid revealing cross-agency history.
+
+Endpoints (Django trailing slash):
+
+- `GET|POST /api/terminal-numbers/`
+- `GET|PATCH /api/terminal-numbers/{id}/` (PATCH accepts only `terminal_number`)
+- `POST /api/terminal-numbers/{id}/deactivate/`
+- `POST /api/terminal-numbers/{id}/reactivate/`
+- `POST /api/terminal-numbers/{id}/reassign/`
+- `GET /api/terminal-numbers/{id}/history/`
+- `GET /api/terminal-number-imports/template/?agency={id}`
+- `POST /api/terminal-number-imports/preview/` (multipart `agency`, `file`)
+- `GET /api/terminal-number-imports/{id}/`
+- `POST /api/terminal-number-imports/{id}/confirm/` (`confirmed: true`)
+- `POST /api/terminal-number-imports/{id}/cancel/`
+
+List filters: `search`, `agency`, `active=true|false`. Create accepts `agency`, `person`, `sub_agent_number` (existing TPMCode ID), `terminal_number` (string), and `is_active` (boolean). The backend resolves and verifies the owner/agency, never trusting independent client relationships. Reassign requires all three target IDs, nonblank `reason` (maximum 2,000 characters), and `confirmed: true`. Cross-agency reassignment is allowed only for Super Admin. An occupied active target must be explicitly deactivated first. Reassignment preserves the terminal?s active status; reactivation is separate.
+
+Mutations and batch confirmation use `transaction.atomic()` with deterministic agency and row locks. Parent agency locks serialize empty assignment slots as well as existing records; database uniqueness is the final race safeguard. PostgreSQL supplies row locks; SQLite tests verify constraints/rollback but cannot prove PostgreSQL concurrency behavior. There is no terminal DELETE endpoint. Existing audit immutability protections also reject upsert-style bulk mutation.
+
+The template is a blank first worksheet with `S/NOS | SUB AGT NOS | TERMINAL NOS | NAME`; data starts at row 2. B/C are preformatted as text for 500 rows, and instructions are separate. Import supports up to 5,000 rows, 20 columns and 10 sheets with existing 5 MB compressed / 30 MB expanded package limits. It rejects formulas in B?D, macros/external links, missing or mismatched names, partial rows and case-insensitive workbook duplicates. S/NOS is ignored. Numeric identifiers warn about potential leading-zero loss; text cells do not. It creates neither People nor Sub-Agent Numbers.
+
+Preview saves only a dedicated batch, safe normalized rows, validation messages and metadata; no terminal assignments or raw workbook files. Batches expire after one hour and are private to their uploader, including between Super Admins. Confirmation revalidates identities and mappings under locks and rolls back all rows on failure. Only `New` and `Unchanged` rows can confirm. `Update required` (inactive same mapping), `Reassignment required` (terminal belongs elsewhere), and `Conflict` (target occupied or invalid row) block confirmation: use Reactivate/Reassign/Deactivate manually, then upload a fresh preview. Whitespace/case variants of an existing terminal are Unchanged and preserve its spelling.
+
+Daily five-sheet imports match SUB AGT NOS to the existing model and compare workbook registration with the system terminal. Missing workbook registration can resolve from the system. Conflicts block import. Legacy column-C matching remains only when neither a known contradictory Sub-Agent Number nor terminal history exists; it emits a warning and does not infer a terminal. Confirmation rejects changed identities/terminal assignments after preview. The parser materializes bounded worksheet regions once to avoid repeatedly reparsing streaming XML.
+
+New daily transactions snapshot terminal text alongside existing person/Sub-Agent snapshots. Reports group detail by stored identity including terminal snapshot; old blanks display `Not recorded`. No commission, To Pay, tax or reconciliation formula changes.
+
+Additive migrations: `0011_terminal_number_register` adds the two models, indexes/constraints, terminal snapshot (blank default), and audit choices; `0012_sub_agent_display_name` changes display metadata only. Neither migration creates mappings, renames tables, deletes identities nor updates existing snapshot values. Review/apply migrations to the intended database as part of your normal release procedure; implementation testing uses an isolated database.
+
+Read-only readiness: `python manage.py terminal_readiness` reports active Sub-Agent Numbers without terminals, inactive Sub-Agent Numbers, duplicate terminal/active mappings, relationship conflicts and historical blank snapshots. There is no write mode.
+
+For isolated tests: `python manage.py test --settings=config.test_settings`. This forces an in-memory SQLite database and a fast test-only password hasher; never use that settings module for serving the application.

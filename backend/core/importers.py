@@ -13,7 +13,7 @@ from django.utils.text import get_valid_filename
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from .models import DailySheet, DailySheetGame, TPMCode, WeeklyGameSchedule, money
+from .models import DailySheet, DailySheetGame, TPMCode, TerminalNumber, WeeklyGameSchedule, money
 
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
@@ -117,7 +117,10 @@ def build_daily_sheet_template(agency, transaction_date):
     for code in TPMCode.objects.select_related("person").filter(
         person__agency=agency, is_active=True, person__is_active=True,
     ).order_by("code", "id"):
-        registration_sheet.append(["", "", str(code.code), code.person.full_name])
+        terminal = code.terminal_numbers.filter(is_active=True).values_list("terminal_number", flat=True).first() or ""
+        registration_sheet.append(["", str(code.code), terminal, code.person.full_name])
+        for cell in registration_sheet[registration_sheet.max_row][1:4]:
+            cell.data_type = "s"
     for row in registration_sheet.iter_rows(min_row=2, max_row=max(2, registration_sheet.max_row), min_col=2, max_col=3):
         for cell in row:
             cell.number_format = "@"
@@ -247,25 +250,29 @@ def decimal_from_cell(cell, cell_ref, errors):
     return amount
 
 
-def registration_lookup(sheet, warnings, errors):
+def registration_lookup(sheet, warnings, errors, known_sub_codes=()):
     mapping = {}
     reverse = {}
     for row_number, row in enumerate(sheet.iter_rows(min_row=2, max_row=min(sheet.max_row, 300), min_col=2, max_col=4), start=2):
         sub_cell, terminal_cell, name_cell = row
         sub_ref = excel_ref(row_number, 2)
         terminal_ref = excel_ref(row_number, 3)
+        if any(c.data_type == "f" for c in (sub_cell, terminal_cell, name_cell)):
+            errors.append({"row": row_number, "cell": sub_ref, "message": "Formula cells are not allowed in registration identifiers or names."})
+            continue
         sub_code = normalize_identifier(sub_cell.value, sub_ref, warnings)
         terminal = normalize_identifier(terminal_cell.value, terminal_ref, warnings)
         workbook_name = str(name_cell.value or "").strip()
         if not sub_code and not terminal:
             continue
-        if not sub_code or not terminal:
+        if not sub_code or (not terminal and sub_code.casefold() not in known_sub_codes):
             errors.append({"cell": sub_ref, "message": "Registration row requires both SUB AGT NOS and TERMINAL NOS."})
             continue
         if sub_code in mapping and mapping[sub_code]["terminal"] != terminal:
             errors.append({"cell": sub_ref, "message": "SUB AGT NOS maps to multiple TERMINAL NOS values."})
         mapping[sub_code] = {"terminal": terminal, "workbook_name": workbook_name}
-        reverse.setdefault(terminal.lower(), set()).add(sub_code)
+        if terminal:
+            reverse.setdefault(terminal.lower(), set()).add(sub_code)
     for terminal, sub_codes in reverse.items():
         if len(sub_codes) > 1:
             errors.append({"cell": "REGISTER SUB-AGENT", "message": f"TERMINAL NOS {terminal} is mapped from multiple SUB AGT NOS values."})
@@ -347,6 +354,20 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
     if raw_sheet.max_column > MAX_INSPECTED_COLUMNS or registration_sheet.max_column > MAX_INSPECTED_COLUMNS:
         raise ValidationError("Workbook has too many populated columns.")
 
+    # Read each bounded region once. Repeated .cell() on streaming XML reparses
+    # the worksheet for every lookup and made previews unnecessarily expensive.
+    cache = openpyxl.Workbook()
+    cached_sheets = []
+    for source in (raw_sheet, registration_sheet):
+        target = cache.create_sheet()
+        for row in source.iter_rows(min_row=1, max_row=min(source.max_row, 300), max_col=min(source.max_column, MAX_INSPECTED_COLUMNS)):
+            for cell in row:
+                if cell.value is not None:
+                    copied = target.cell(cell.row, cell.column, cell.value)
+                    copied.data_type = cell.data_type
+        cached_sheets.append(target)
+    raw_sheet, registration_sheet = cached_sheets
+
     workbook_date = parse_workbook_date(raw_sheet["B2"].value)
     if workbook_date is None:
         warnings.append({"cell": "B2", "message": "Workbook date could not be parsed; selected date will be used."})
@@ -359,7 +380,9 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
     game_columns = build_game_columns(raw_sheet, scheduled_by_name, errors)
     if not game_columns:
         errors.append({"cell": "C3:I3", "message": "No spreadsheet game columns matched the selected date schedule."})
-    register = registration_lookup(registration_sheet, warnings, errors)
+    known_codes = {code.code.casefold(): code for code in TPMCode.objects.select_related("person").filter(person__agency=agency, is_active=True, person__is_active=True)}
+    register = registration_lookup(registration_sheet, warnings, errors, known_codes)
+    register = {key.casefold(): value for key, value in register.items()}
     tpm_matches = {}
     terminal_keys = {item["terminal"].lower() for item in register.values()}
     for code in TPMCode.objects.select_related("person").filter(person__agency=agency, is_active=True, person__is_active=True):
@@ -389,7 +412,7 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
                     excel_ref(registration_row, 3),
                     warnings,
                 )
-                if registered_sub_code and registered_terminal and register.get(registered_sub_code, {}).get("terminal") == registered_terminal:
+                if registered_sub_code and registered_terminal and register.get(registered_sub_code.casefold(), {}).get("terminal") == registered_terminal:
                     sub_code = registered_sub_code
                     warnings.append({
                         "row": row_index,
@@ -410,24 +433,43 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
         if not sub_code and raw_sales_present:
             errors.append({"row": row_index, "cell": sub_ref, "message": "Sales row is missing SUB AGT NOS."})
             continue
-        if sub_code in seen_sub_codes:
+        if sub_cell.data_type == "f":
+            errors.append({"row": row_index, "cell": sub_ref, "message": "Formula identifiers are not allowed."})
+            continue
+        if sub_code.casefold() in seen_sub_codes:
             errors.append({"row": row_index, "cell": sub_ref, "message": "Duplicate SUB AGT NOS in upload."})
-        seen_sub_codes.add(sub_code)
-        registration = register.get(sub_code)
-        if not registration:
-            errors.append({"row": row_index, "cell": sub_ref, "message": "SUB AGT NOS was not found in REGISTER SUB-AGENT."})
-            continue
-        terminal = registration["terminal"]
-        matches = tpm_matches.get(terminal.lower(), [])
-        if not matches:
-            errors.append({"row": row_index, "cell": sub_ref, "message": f"TERMINAL NOS {terminal} does not match a system TPM code."})
-            continue
-        if len(matches) > 1:
-            errors.append({"row": row_index, "cell": sub_ref, "message": f"TERMINAL NOS {terminal} matches multiple system TPM codes."})
-            continue
-        tpm = matches[0]
+        seen_sub_codes.add(sub_code.casefold())
+        registration = register.get(sub_code.casefold())
+        direct = known_codes.get(sub_code.casefold())
+        legacy = tpm_matches.get((registration or {}).get("terminal", "").lower(), [])
+        registered_terminal = (registration or {}).get("terminal", "")
+        if direct:
+            tpm = direct
+            master = TerminalNumber.objects.filter(sub_agent_number=tpm, is_active=True).first()
+            if master and registration and registered_terminal.casefold() != master.terminal_number.casefold():
+                errors.append({"row": row_index, "cell": sub_ref, "message": "Workbook terminal conflicts with the system Terminal Number register."})
+                continue
+            if not master and registered_terminal:
+                errors.append({"row": row_index, "cell": sub_ref, "message": "Workbook specifies a terminal that is not active for this Sub-Agent Number in the system register. Register it first."})
+                continue
+            terminal_snapshot = master.terminal_number if master else ""
+            if not registration:
+                warnings.append({"row": row_index, "cell": sub_ref, "message": "No workbook registration row; identity resolved from the system register."})
+        else:
+            if not registration:
+                errors.append({"row": row_index, "cell": sub_ref, "message": "SUB AGT NOS was not found in REGISTER SUB-AGENT or the selected agency."})
+                continue
+            if len(legacy) != 1:
+                errors.append({"row": row_index, "cell": sub_ref, "message": f"TERMINAL NOS {registered_terminal} does not match a system Sub-Agent Number for legacy import."})
+                continue
+            tpm = legacy[0]
+            if TPMCode.objects.filter(code__iexact=sub_code).exists() or tpm.terminal_numbers.exists() or TerminalNumber.objects.filter(terminal_number__iexact=registered_terminal).exists():
+                errors.append({"row": row_index, "cell": sub_ref, "message": "Legacy workbook mapping conflicts with the system register. Use the database Sub-Agent Number in column B."})
+                continue
+            terminal_snapshot = ""
+            warnings.append({"row": row_index, "cell": sub_ref, "message": "Legacy compatibility: column C resolved the existing Sub-Agent Number. No terminal mapping is inferred; Terminal Number is not recorded."})
         if tpm.code.lower() in seen_tpm_codes:
-            errors.append({"row": row_index, "cell": sub_ref, "message": "Duplicate resolved TPM Code in upload."})
+            errors.append({"row": row_index, "cell": sub_ref, "message": "Duplicate resolved Sub-Agent Number in upload."})
         seen_tpm_codes.add(tpm.code.lower())
         if row_errors:
             errors.extend({"row": row_index, **error} for error in row_errors)
@@ -436,16 +478,21 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
             ignored_zero_rows += 1
             warnings.append({"row": row_index, "cell": sub_ref, "message": "Row has a valid identifier but all sales are blank or zero; ignored."})
             continue
-        workbook_name = registration["workbook_name"]
+        workbook_name = (registration or {}).get("workbook_name", "")
         if not workbook_name:
             warnings.append({"row": row_index, "cell": sub_ref, "message": "Workbook name is missing; system person name will be used."})
-        elif workbook_name.strip().lower() != tpm.person.full_name.strip().lower():
+        elif " ".join(workbook_name.split()).casefold() != " ".join(tpm.person.full_name.split()).casefold():
+            if direct:
+                errors.append({"row": row_index, "cell": sub_ref, "message": "Workbook name conflicts with the database person."})
+                continue
             warnings.append({"row": row_index, "cell": sub_ref, "message": "Workbook name differs from system person name."})
         rows.append({
             "excel_row": row_index,
             "sub_agent_no": sub_code,
             "tpm_code": tpm.code,
             "tpm_code_id": tpm.id,
+            "person_id": tpm.person_id,
+            "terminal_number": terminal_snapshot,
             "person_name": tpm.person.full_name,
             "workbook_name": workbook_name,
             "agent_type": tpm.person.agent_type,
@@ -478,4 +525,5 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
         "editable_existing_sheet": bool(existing_sheet and existing_sheet.is_accountant_editable),
         "requires_date_mismatch_ack": bool(workbook_date and workbook_date != transaction_date),
     }
+    workbook.close()
     return WorkbookParseResult(payload=payload, warnings=warnings, errors=errors)

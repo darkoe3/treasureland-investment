@@ -191,7 +191,7 @@ class Phase5ReportAPITests(Phase5Mixin, APITestCase):
         values = [[cell.value for cell in row] for row in ws.iter_rows()]
         flat = [item for row in values for item in row]
         self.assertIn("Daily reconciliation", flat)
-        self.assertIn("TPM Code", flat)
+        self.assertIn("Sub-Agent Number", flat)
         self.assertIn("'+TPM-A", flat)
         self.assertTrue(any(isinstance(item, (int, float)) and item == 100 for item in flat))
         self.assertTrue(AuditLog.objects.filter(action="REPORT_EXPORTED", agency=self.agency).exists())

@@ -27,7 +27,7 @@ class TPMReassignmentTests(Phase4Mixin, APITestCase):
             for code in ("TPM-A", "tpm-a", " TPM-A "):
                 response = self.client.post("/api/tpm-codes/", {"person": self.sub.id, "code": code})
                 self.assertEqual(response.status_code, 400)
-                self.assertIn("TPM code TPM-A already exists and is assigned to Ayo. Edit the existing TPM code instead.", str(response.data))
+                self.assertIn("Sub-Agent Number TPM-A already exists and is assigned to Ayo. Edit the existing Sub-Agent Number instead.", str(response.data))
         self.assertEqual(TPMCode.objects.count(), count)
 
     def test_inactive_can_be_found_reassigned_and_reactivated(self):

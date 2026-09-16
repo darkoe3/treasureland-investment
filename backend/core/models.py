@@ -4,7 +4,7 @@ from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.db.models.functions import Lower
 from django.utils import timezone
@@ -149,13 +149,20 @@ class Person(TimeStampedModel):
     def __str__(self):
         return f"{self.full_name} ({self.agency.name})"
 
+    def clean(self):
+        if self.pk and Person.objects.filter(pk=self.pk).exclude(agency_id=self.agency_id).exists() and self.terminal_numbers.exists():
+            raise ValidationError({"agency": "Reassign this person's terminal records before changing agency."})
+
 
 class TPMCode(TimeStampedModel):
+    """Compatibility name: this table stores Sub-Agent Numbers, not terminals."""
     person = models.ForeignKey(Person, on_delete=models.CASCADE, related_name="tpm_codes")
     code = models.CharField(max_length=80, unique=True)
     is_active = models.BooleanField(default=True)
 
     class Meta:
+        verbose_name = "Sub-Agent Number"
+        verbose_name_plural = "Sub-Agent Numbers"
         ordering = ["code"]
         constraints = [
             models.UniqueConstraint(Lower("code"), name="unique_tpm_code_case_insensitive"),
@@ -171,6 +178,69 @@ class TPMCode(TimeStampedModel):
 
     def __str__(self):
         return self.code
+
+    def clean(self):
+        if self.pk and TPMCode.objects.filter(pk=self.pk).exclude(person_id=self.person_id).exists() and self.terminal_numbers.exists():
+            raise ValidationError({"person": "Reassign this Sub-Agent Number's terminal records before changing owner."})
+
+
+class TerminalNumber(TimeStampedModel):
+    terminal_number = models.CharField(max_length=80)
+    sub_agent_number = models.ForeignKey(TPMCode, on_delete=models.PROTECT, related_name="terminal_numbers")
+    agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="terminal_numbers")
+    person = models.ForeignKey(Person, on_delete=models.PROTECT, related_name="terminal_numbers")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_terminal_numbers")
+    updated_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="updated_terminal_numbers")
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True, related_name="deactivated_terminal_numbers")
+
+    class Meta:
+        ordering = ["terminal_number", "id"]
+        constraints = [
+            models.UniqueConstraint(Lower("terminal_number"), name="terminal_number_ci_unique"),
+            models.UniqueConstraint(fields=["sub_agent_number"], condition=Q(is_active=True), name="one_active_terminal_per_sub_agent"),
+            models.CheckConstraint(condition=~Q(terminal_number=""), name="terminal_number_not_empty"),
+        ]
+        indexes = [models.Index(fields=["agency", "is_active"]), models.Index(fields=["person", "is_active"])]
+
+    def clean(self):
+        if not isinstance(self.terminal_number, str):
+            raise ValidationError({"terminal_number": "Terminal Number must be text."})
+        self.terminal_number = self.terminal_number.strip()
+        if TerminalNumber.objects.filter(terminal_number__iexact=self.terminal_number).exclude(pk=self.pk).exists():
+            raise ValidationError({"terminal_number": "This Terminal Number already exists. Use its existing record and Reassign when necessary."})
+        if self.sub_agent_number_id:
+            owner = self.sub_agent_number.person
+            if self.person_id != owner.id or self.agency_id != owner.agency_id:
+                raise ValidationError("Person and agency must match the selected Sub-Agent Number.")
+            if self.is_active and (not self.sub_agent_number.is_active or not owner.is_active or not owner.agency.is_active):
+                raise ValidationError("An active terminal requires an active Sub-Agent Number, person and agency.")
+            if self.is_active and TerminalNumber.objects.filter(sub_agent_number_id=self.sub_agent_number_id, is_active=True).exclude(pk=self.pk).exists():
+                raise ValidationError({"sub_agent_number": "This Sub-Agent Number already has an active terminal. Explicitly deactivate it before replacement."})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class TerminalImportBatch(TimeStampedModel):
+    uploader = models.ForeignKey(User, on_delete=models.PROTECT, related_name="terminal_import_batches")
+    agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="terminal_import_batches")
+    original_filename = models.CharField(max_length=255)
+    file_hash = models.CharField(max_length=64)
+    status = models.CharField(max_length=20, default="PREVIEWED", choices=[(s, s.title()) for s in ("PREVIEWED", "CONFIRMED", "CANCELLED")])
+    preview_payload = models.JSONField(default=dict)
+    warnings = models.JSONField(default=list)
+    errors = models.JSONField(default=list)
+    expires_at = models.DateTimeField(db_index=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    result_counts = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["uploader", "status"]), models.Index(fields=["agency", "created_at"])]
 
 
 class Game(TimeStampedModel):
@@ -274,6 +344,14 @@ class VarianceStatus(models.TextChoices):
 
 
 class AuditAction(models.TextChoices):
+    TERMINAL_CREATED = "TERMINAL_CREATED", "Terminal created"
+    TERMINAL_EDITED = "TERMINAL_EDITED", "Terminal edited"
+    TERMINAL_DEACTIVATED = "TERMINAL_DEACTIVATED", "Terminal deactivated"
+    TERMINAL_REACTIVATED = "TERMINAL_REACTIVATED", "Terminal reactivated"
+    TERMINAL_REASSIGNED = "TERMINAL_REASSIGNED", "Terminal reassigned"
+    TERMINAL_IMPORT_PREVIEWED = "TERMINAL_IMPORT_PREVIEWED", "Terminal import previewed"
+    TERMINAL_IMPORT_CONFIRMED = "TERMINAL_IMPORT_CONFIRMED", "Terminal import confirmed"
+    TERMINAL_IMPORT_CANCELLED = "TERMINAL_IMPORT_CANCELLED", "Terminal import cancelled"
     DAILY_SHEET_RESET = "DAILY_SHEET_RESET", "Daily sheet reset"
     DAILY_SHEET_DELETED = "DAILY_SHEET_DELETED", "Daily sheet deleted"
     SHEET_CREATED = "SHEET_CREATED", "Sheet created"
@@ -501,6 +579,7 @@ class TPMDailyTransaction(TimeStampedModel):
     tpm_code = models.ForeignKey(TPMCode, on_delete=models.PROTECT, related_name="daily_transactions")
     person_id_snapshot = models.PositiveBigIntegerField(editable=False)
     tpm_code_snapshot = models.CharField(max_length=80, editable=False)
+    terminal_number_snapshot = models.CharField(max_length=80, blank=True, default="", editable=False)
     person_name_snapshot = models.CharField(max_length=255)
     agent_type_snapshot = models.CharField(max_length=20, choices=AgentType.choices)
     created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_tpm_transactions")
@@ -520,18 +599,22 @@ class TPMDailyTransaction(TimeStampedModel):
         errors = {}
         if self.tpm_code_id:
             if not self.tpm_code.is_active:
-                errors["tpm_code"] = "TPM code must be active."
+                errors["tpm_code"] = "Sub-Agent Number must be active."
             if not self.tpm_code.person.is_active:
-                errors["tpm_code"] = "TPM code person must be active."
+                errors["tpm_code"] = "Sub-Agent Number person must be active."
         if self.daily_sheet_id and self.tpm_code_id and self.tpm_code.person.agency_id != self.daily_sheet.agency_id:
-            errors["tpm_code"] = "TPM code must belong to the DailySheet agency."
+            errors["tpm_code"] = "Sub-Agent Number must belong to the DailySheet agency."
         if errors:
             raise ValidationError(errors)
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if self._state.adding and self.tpm_code_id:
+            list(Agency.objects.select_for_update().order_by("pk").values_list("pk", flat=True))
+            self.tpm_code = TPMCode.objects.select_for_update().select_related("person").get(pk=self.tpm_code_id)
             self.person_id_snapshot = self.tpm_code.person_id
             self.tpm_code_snapshot = self.tpm_code.code
+            self.terminal_number_snapshot = TerminalNumber.objects.filter(sub_agent_number_id=self.tpm_code_id, is_active=True).values_list("terminal_number", flat=True).first() or ""
             self.person_name_snapshot = self.tpm_code.person.full_name
             self.agent_type_snapshot = self.tpm_code.person.agent_type
         self.full_clean()
@@ -608,12 +691,12 @@ class OmittedTerminal(TimeStampedModel):
         errors = {}
         if self.tpm_code_id:
             if not self.tpm_code.is_active or not self.tpm_code.person.is_active:
-                errors["tpm_code"] = "Only active TPM codes for active people may be omitted."
+                errors["tpm_code"] = "Only active Sub-Agent Numbers for active people may be omitted."
         if self.daily_sheet_id and self.tpm_code_id:
             if self.tpm_code.person.agency_id != self.daily_sheet.agency_id:
-                errors["tpm_code"] = "TPM code must belong to the DailySheet agency."
+                errors["tpm_code"] = "Sub-Agent Number must belong to the DailySheet agency."
             if self.is_active and TPMDailyTransaction.objects.filter(daily_sheet=self.daily_sheet, tpm_code=self.tpm_code).exists():
-                errors["tpm_code"] = "TPM code cannot be both entered and omitted on the same sheet."
+                errors["tpm_code"] = "Sub-Agent Number cannot be both entered and omitted on the same sheet."
         if not self.reason.strip():
             errors["reason"] = "Reason is required."
         if errors:
@@ -636,6 +719,11 @@ class ImmutableAuditQuerySet(models.QuerySet):
 
     def bulk_update(self, objs, fields, batch_size=None):
         raise ValidationError("Audit logs are immutable.")
+
+    def bulk_create(self, objs, **kwargs):
+        if kwargs.get("update_conflicts"):
+            raise ValidationError("Audit logs are immutable.")
+        return super().bulk_create(objs, **kwargs)
 
 
 class AuditLog(models.Model):

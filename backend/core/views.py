@@ -199,15 +199,15 @@ def validate_sheet_submission(sheet):
     omitted_ids = set(sheet.omitted_terminals.filter(is_active=True).values_list("tpm_code_id", flat=True))
     unexplained = active_tpm_ids - entered_ids - omitted_ids
     if unexplained:
-        raise ValidationError({"omitted_terminals": "Every active TPM code must be entered or omitted with an explanation."})
+        raise ValidationError({"omitted_terminals": "Every active Sub-Agent Number must be entered or omitted with an explanation."})
     if entered_ids & omitted_ids:
-        raise ValidationError({"tpm_code": "A TPM code cannot be both entered and omitted."})
+        raise ValidationError({"tpm_code": "A Sub-Agent Number cannot be both entered and omitted."})
     game_count = sheet.sheet_games.count()
     for tpm_transaction in sheet.transactions.all():
         if tpm_transaction.sales.count() != game_count:
             raise ValidationError({"sales": "Every transaction must have one sale entry for every game on the sheet."})
     if sheet.transactions.values("tpm_code").distinct().count() != sheet.transactions.count():
-        raise ValidationError({"tpm_code": "Duplicate TPM codes are not allowed."})
+        raise ValidationError({"tpm_code": "Duplicate Sub-Agent Numbers are not allowed."})
     if sheet.totals()["variance"] != 0 and not sheet.reconciliation_note.strip():
         raise ValidationError({"reconciliation_note": "A reconciliation note is required when variance is not zero."})
 
@@ -443,11 +443,17 @@ class PersonViewSet(BaseSearchViewSet):
             new_values={"full_name": person.full_name, "agent_type": person.agent_type, "is_active": person.is_active},
         )
 
+    @transaction.atomic
     def perform_update(self, serializer):
-        person = self.get_object()
+        from .terminal_register import lock_register
+        lock_register()
+        person = Person.objects.select_for_update().get(pk=self.get_object().pk)
+        serializer.instance = person
         require_assignment_flag(self.request.user, person.agency, "can_edit")
         new_agency = serializer.validated_data.get("agency", person.agency)
         require_assignment_flag(self.request.user, new_agency, "can_edit")
+        if new_agency.pk != person.agency_id and person.terminal_numbers.exists():
+            raise ValidationError("This person has terminal records. Reassign those terminals before changing agency.")
         old_values = {"agency": person.agency_id, "full_name": person.full_name, "agent_type": person.agent_type, "is_active": person.is_active}
         updated = serializer.save()
         log_audit(
@@ -508,6 +514,8 @@ class TPMCodeViewSet(BaseSearchViewSet):
 
     @transaction.atomic
     def update(self, request, *args, **kwargs):
+        from .terminal_register import lock_register
+        lock_register()
         # Lock before DRF reads the instance so confirmation and audit use the current owner.
         TPMCode.objects.select_for_update().get(pk=self.get_object().pk)
         return super().update(request, *args, **kwargs)
@@ -532,6 +540,8 @@ class TPMCodeViewSet(BaseSearchViewSet):
         require_assignment_flag(self.request.user, code.person.agency, "can_edit")
         new_person = serializer.validated_data.get("person", code.person)
         require_assignment_flag(self.request.user, new_person.agency, "can_edit")
+        if new_person.pk != code.person_id and code.terminal_numbers.exists():
+            raise ValidationError("This Sub-Agent Number has terminal records. Use terminal reassignment before changing its owner.")
         confirmed = serializer.validated_data.pop("confirm_reassignment", False)
         if new_person.pk != code.person_id and not confirmed:
             raise ValidationError({"confirm_reassignment": "Confirm reassignment to a different person."})
@@ -560,7 +570,7 @@ class TPMCodeViewSet(BaseSearchViewSet):
             instance.id,
             old_values={"is_active": old_active},
             new_values={"is_active": False},
-            description=f"TPM code deactivated: {instance.code}",
+            description=f"Sub-Agent Number deactivated: {instance.code}",
         )
 
 
@@ -834,6 +844,8 @@ class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
         acknowledge_date_mismatch = request.data.get("acknowledge_date_mismatch") is True
 
         with transaction.atomic():
+            from .terminal_register import lock_register
+            lock_register()
             # Nullable sheet joins cannot be locked by PostgreSQL. Lock the batch;
             # the target sheet and its game snapshots are locked explicitly below.
             batch = self.get_queryset().select_for_update(of=("self",)).get(pk=batch.pk)
@@ -876,14 +888,20 @@ class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
             created_transactions = []
             for row in batch.preview_payload.get("rows", []):
                 try:
-                    tpm_code = TPMCode.objects.select_related("person").get(
+                    tpm_code = TPMCode.objects.select_for_update().select_related("person").get(
                         pk=row["tpm_code_id"],
                         person__agency=batch.agency,
                         person__is_active=True,
                         is_active=True,
                     )
                 except TPMCode.DoesNotExist as exc:
-                    raise ValidationError({"tpm_code": "A TPM Code changed after preview. Create a fresh preview."}) from exc
+                    raise ValidationError({"tpm_code": "A Sub-Agent Number changed after preview. Create a fresh preview."}) from exc
+                if tpm_code.code != row["tpm_code"] or tpm_code.person.full_name != row["person_name"] or ("person_id" in row and tpm_code.person_id != row["person_id"]):
+                    raise ValidationError("Sub-Agent identity changed after preview. Create a fresh preview.")
+                from .models import TerminalNumber
+                current_terminal = TerminalNumber.objects.filter(sub_agent_number=tpm_code, is_active=True).values_list("terminal_number", flat=True).first() or ""
+                if "terminal_number" in row and current_terminal != row["terminal_number"]:
+                    raise ValidationError("Terminal assignment changed after preview. Create a fresh preview.")
                 txn = TPMDailyTransaction.objects.create(
                     daily_sheet=sheet,
                     tpm_code=tpm_code,
@@ -1267,7 +1285,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = AuditLog.objects.select_related("user", "agency", "daily_sheet")
         user = self.request.user
         if user.role != UserRole.SUPER_ADMIN:
-            queryset = queryset.filter(agency__user_assignments__user=user, agency__user_assignments__can_view_history=True).distinct()
+            queryset = queryset.filter(agency__user_assignments__user=user, agency__user_assignments__can_view_history=True).exclude(model_name__in=["TerminalNumber", "TerminalImportBatch"]).distinct()
         agency = self.request.query_params.get("agency")
         daily_sheet = self.request.query_params.get("daily_sheet")
         if agency:

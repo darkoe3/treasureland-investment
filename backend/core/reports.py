@@ -216,11 +216,13 @@ def build_report(params, user, audit_action=AuditAction.REPORT_PREVIEWED):
 
         for txn in txns_for_sheet:
             person_id = txn.person_id_snapshot
-            detail_key = (person_id, txn.tpm_code_id)
+            detail_key = (person_id, txn.tpm_code_id, txn.tpm_code_snapshot, txn.terminal_number_snapshot)
             row = detail_map.setdefault(detail_key, {
                 "person": person_id,
                 "name": txn.person_name_snapshot,
                 "tpm_code": txn.tpm_code_snapshot,
+                "sub_agent_number": txn.tpm_code_snapshot,
+                "terminal_number": txn.terminal_number_snapshot or "Not recorded",
                 "games": {key: money("0") for key in game_columns},
                 "net_sales": money("0"),
                 "to_pay": money("0"),
@@ -263,7 +265,7 @@ def build_report(params, user, audit_action=AuditAction.REPORT_PREVIEWED):
             "daily_sheet_count": len(sheets),
             "transaction_row_count": transaction_count,
             "distinct_people_count": len(person_totals),
-            "distinct_tpm_code_count": len(detail_rows),
+            "distinct_tpm_code_count": len({key[1] for key in detail_map}),
             "total_net_sales": total_net,
             "total_commission": total_commission,
             "total_to_pay": total_to_pay,
@@ -369,7 +371,7 @@ def build_workbook(report):
 
     ws.append([])
     detail_header_row = ws.max_row + 1
-    detail_headers = ["No", "Name", "TPM Code", *[game["name"] for game in report["game_columns"]], "NET Sales", "To Pay", "Total"]
+    detail_headers = ["No", "Name", "Sub-Agent Number", "Terminal Number", *[game["name"] for game in report["game_columns"]], "NET Sales", "To Pay", "Total"]
     ws.append(detail_headers)
     for cell in ws[detail_header_row]:
         cell.font = Font(bold=True, color="FFFFFF")
@@ -380,12 +382,13 @@ def build_workbook(report):
             row["no"],
             safe_excel_text(row["name"]),
             safe_excel_text(row["tpm_code"]),
+            safe_excel_text(row["terminal_number"]),
             *[float(row["games"].get(game["key"], money("0"))) for game in report["game_columns"]],
             float(row["net_sales"]),
             float(row["to_pay"]),
             float(row["total"]) if row["total"] != "" else None,
         ])
-    ws.append(["", "Totals", "", *[None for _ in report["game_columns"]], float(report["summary"]["total_net_sales"]), float(report["summary"]["total_to_pay"]), float(report["summary"]["total_to_pay"])])
+    ws.append(["", "Totals", "", "", *[None for _ in report["game_columns"]], float(report["summary"]["total_net_sales"]), float(report["summary"]["total_to_pay"]), float(report["summary"]["total_to_pay"])])
     for cell in ws[ws.max_row]:
         cell.font = Font(bold=True)
 

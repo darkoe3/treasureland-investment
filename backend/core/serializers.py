@@ -256,12 +256,14 @@ class PersonSerializer(serializers.ModelSerializer):
 
     def get_tpm_codes(self, obj):
         return [
-            {"id": code.id, "code": code.code, "is_active": code.is_active}
+            {"id": code.id, "code": code.code, "sub_agent_number": code.code, "is_active": code.is_active,
+             "terminal_number": code.terminal_numbers.filter(is_active=True).values_list("terminal_number", flat=True).first()}
             for code in obj.tpm_codes.all().order_by("code")
         ]
 
 
 class TPMCodeSerializer(serializers.ModelSerializer):
+    sub_agent_number = serializers.CharField(source="code", read_only=True)
     code = serializers.CharField(max_length=80)
     confirm_reassignment = serializers.BooleanField(write_only=True, required=False, default=False)
     person_name = serializers.CharField(source="person.full_name", read_only=True)
@@ -270,7 +272,7 @@ class TPMCodeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TPMCode
-        fields = ("id", "person", "person_name", "agency", "agency_name", "code", "is_active", "created_at", "updated_at", "confirm_reassignment")
+        fields = ("id", "person", "person_name", "agency", "agency_name", "code", "is_active", "created_at", "updated_at", "confirm_reassignment", "sub_agent_number")
         read_only_fields = ("created_at", "updated_at")
 
     def validate_code(self, code):
@@ -280,8 +282,8 @@ class TPMCodeSerializer(serializers.ModelSerializer):
         existing = queryset.select_related("person").first()
         if existing:
             raise serializers.ValidationError(
-                f"TPM code {existing.code} already exists and is assigned to {existing.person.full_name}. "
-                "Edit the existing TPM code instead."
+                f"Sub-Agent Number {existing.code} already exists and is assigned to {existing.person.full_name}. "
+                "Edit the existing Sub-Agent Number instead."
             )
         return code.strip()
 
@@ -416,6 +418,8 @@ class TransactionGameSaleSerializer(serializers.ModelSerializer):
 
 class TPMDailyTransactionSerializer(serializers.ModelSerializer):
     sales = TransactionGameSaleSerializer(many=True)
+    sub_agent_number = serializers.CharField(source="tpm_code_snapshot", read_only=True)
+    terminal_number_snapshot = serializers.CharField(read_only=True)
     tpm_code_value = serializers.CharField(source="tpm_code_snapshot", read_only=True)
     net_sales = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     commission = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -429,6 +433,8 @@ class TPMDailyTransactionSerializer(serializers.ModelSerializer):
             "daily_sheet",
             "tpm_code",
             "tpm_code_value",
+            "sub_agent_number",
+            "terminal_number_snapshot",
             "person_name_snapshot",
             "agent_type_snapshot",
             "sales",
@@ -467,13 +473,15 @@ class TPMDailyTransactionSerializer(serializers.ModelSerializer):
         instance = getattr(self, "instance", None)
         daily_sheet = attrs.get("daily_sheet") or (instance.daily_sheet if instance else None)
         tpm_code = attrs.get("tpm_code") or (instance.tpm_code if instance else None)
+        if instance and tpm_code.pk != instance.tpm_code_id:
+            raise serializers.ValidationError({"tpm_code": "Transaction identity cannot be changed. Remove and recreate an editable row instead."})
         if daily_sheet and tpm_code:
             if not tpm_code.is_active or not tpm_code.person.is_active:
-                raise serializers.ValidationError({"tpm_code": "TPM code and person must be active."})
+                raise serializers.ValidationError({"tpm_code": "Sub-Agent Number and person must be active."})
             if tpm_code.person.agency_id != daily_sheet.agency_id:
-                raise serializers.ValidationError({"tpm_code": "TPM code must belong to the DailySheet agency."})
+                raise serializers.ValidationError({"tpm_code": "Sub-Agent Number must belong to the DailySheet agency."})
             if OmittedTerminal.objects.filter(daily_sheet=daily_sheet, tpm_code=tpm_code).exists():
-                raise serializers.ValidationError({"tpm_code": "TPM code cannot be both entered and omitted."})
+                raise serializers.ValidationError({"tpm_code": "Sub-Agent Number cannot be both entered and omitted."})
         if sales is None:
             raise serializers.ValidationError({"sales": "Sales are required."})
         game_ids = [sale["daily_sheet_game"].id for sale in sales]
@@ -542,12 +550,12 @@ class OmittedTerminalSerializer(serializers.ModelSerializer):
         daily_sheet = attrs.get("daily_sheet") or getattr(self.instance, "daily_sheet", None)
         tpm_code = attrs.get("tpm_code") or getattr(self.instance, "tpm_code", None)
         if tpm_code and (not tpm_code.is_active or not tpm_code.person.is_active):
-            raise serializers.ValidationError({"tpm_code": "Only active TPM codes for active people may be omitted."})
+            raise serializers.ValidationError({"tpm_code": "Only active Sub-Agent Numbers for active people may be omitted."})
         if daily_sheet and tpm_code:
             if tpm_code.person.agency_id != daily_sheet.agency_id:
-                raise serializers.ValidationError({"tpm_code": "TPM code must belong to the DailySheet agency."})
+                raise serializers.ValidationError({"tpm_code": "Sub-Agent Number must belong to the DailySheet agency."})
             if attrs.get("is_active", getattr(self.instance, "is_active", True)) and TPMDailyTransaction.objects.filter(daily_sheet=daily_sheet, tpm_code=tpm_code).exists():
-                raise serializers.ValidationError({"tpm_code": "TPM code cannot be both entered and omitted."})
+                raise serializers.ValidationError({"tpm_code": "Sub-Agent Number cannot be both entered and omitted."})
         if not (attrs.get("reason") or getattr(self.instance, "reason", "")).strip():
             raise serializers.ValidationError({"reason": "Reason is required."})
         return attrs

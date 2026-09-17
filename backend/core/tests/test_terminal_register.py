@@ -10,7 +10,7 @@ from openpyxl import Workbook, load_workbook
 from rest_framework.test import APITestCase
 
 from core.importers import parse_daily_sheet_workbook
-from core.models import AuditLog, TerminalImportBatch, TerminalNumber, TPMCode, TPMDailyTransaction, User
+from core.models import AuditLog, Person, TerminalImportBatch, TerminalNumber, TPMCode, TPMDailyTransaction, User
 from core.tests.test_daily_sheet_imports import workbook_upload
 from core.tests.test_phase_4 import Phase4Mixin
 
@@ -158,12 +158,12 @@ class TerminalRegisterTests(Phase4Mixin, APITestCase):
     def test_preview_has_no_terminal_writes_then_atomic_confirm(self):
         batch = self.preview()
         self.assertFalse(TerminalNumber.objects.exists())
-        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "New")
+        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "ADD_TERMINAL_TO_EXISTING_SUBAGENT")
         self.assertEqual(self.confirm(batch).status_code, 200)
         self.assertEqual(TerminalNumber.objects.get().terminal_number, "00009")
         self.assertEqual(self.confirm(batch).status_code, 400)
         batch = self.preview()
-        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "Unchanged")
+        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "UNCHANGED")
         self.assertEqual(self.confirm(batch).data["result_counts"], {"created": 0, "unchanged": 1})
         log = AuditLog.objects.filter(action="TERMINAL_IMPORT_PREVIEWED").first()
         self.assertNotIn("rows", log.new_values)
@@ -174,7 +174,7 @@ class TerminalRegisterTests(Phase4Mixin, APITestCase):
                 [5, 123, 123, "Ayo"], [None, None, None, None]]
         batch = self.preview(rows)
         messages = " ".join(e["message"] for e in batch["errors"])
-        for text in ("Row 3", "Duplicate", "NAME", "required", "Formula", "does not exist"):
+        for text in ("Row 3", "Duplicate", "required", "Formula", "does not exist"):
             self.assertIn(text, messages)
         self.assertTrue(batch["warnings"])
         self.assertEqual(len(batch["preview_payload"]["rows"]), 5)
@@ -183,12 +183,12 @@ class TerminalRegisterTests(Phase4Mixin, APITestCase):
     def test_conflict_classification_and_no_overwrite(self):
         terminal = self.create()
         batch = self.preview([[1, self.tpm_b.code, terminal.terminal_number, "Ayo"]])
-        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "Reassignment required")
+        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "REASSIGNMENT_REQUIRED")
         batch = self.preview([[1, self.tpm_a.code, "other", "Ayo"]])
-        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "Conflict")
+        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "REASSIGNMENT_REQUIRED")
         self.client.post(f"{self.base}{terminal.pk}/deactivate/")
         batch = self.preview([[1, self.tpm_a.code, terminal.terminal_number, "Ayo"]])
-        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "Update required")
+        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "REASSIGNMENT_REQUIRED")
 
     def test_confirm_rolls_back_first_row_when_second_row_changed(self):
         batch = self.preview([[1, self.tpm_a.code, "new1", "Ayo"], [2, self.tpm_b.code, "new2", "Ayo"]])
@@ -248,3 +248,150 @@ class TerminalRegisterTests(Phase4Mixin, APITestCase):
         self.assertIn('"historical_transactions_without_terminal_snapshot": 1', output.getvalue())
         self.assertFalse(TerminalNumber.objects.exists())
         self.assertEqual(TPMDailyTransaction.objects.count(), 1)
+
+
+class TerminalOnboardingTests(Phase4Mixin, APITestCase):
+    setUp = TerminalRegisterTests.setUp
+    data = TerminalRegisterTests.data
+    create = TerminalRegisterTests.create
+
+    def onboard(self, rows):
+        response = self.client.post(self.imports + "preview/", {"agency": self.musa.pk,
+            "mode": "ONBOARD_MISSING", "file": upload(rows)}, format="multipart")
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data
+
+    def approve(self, batch, **changes):
+        return self.client.post(f"{self.imports}{batch['id']}/confirm/", {
+            "confirmed": True, "reason": "Verified source register", "warnings_acknowledged": True,
+            "acknowledged_counts": batch["preview_payload"]["creation_counts"], **changes}, format="json")
+
+    def test_onboarding_dependency_order_counts_and_immutable_summary(self):
+        before = list(Person.objects.values())
+        batch = self.onboard([[1, "001NEW", "000NEW", "  New   Person "],
+                              [2, "002NEW", "000NEXT", "new person"],
+                              [3, "003NEW", "000AYO", " aYo "],
+                              [4, self.tpm_a.code, "000EXIST", "Ayo"]])
+        self.assertEqual(batch["errors"], [])
+        self.assertEqual(batch["preview_payload"]["creation_counts"], {"people": 1, "sub_agent_numbers": 3, "terminals": 4})
+        self.assertEqual(list(Person.objects.values()), before)
+        self.assertEqual(self.approve(batch).status_code, 200)
+        self.assertEqual(TPMCode.objects.get(code="001NEW").person_id, TPMCode.objects.get(code="002NEW").person_id)
+        self.assertEqual(TPMCode.objects.get(code="003NEW").person_id, self.person.pk)
+        for original in before:
+            self.assertEqual(Person.objects.values().get(pk=original["id"]), original)
+        log = AuditLog.objects.get(action="TERMINAL_IMPORT_CONFIRMED")
+        self.assertEqual(log.new_values["creation_counts"]["people"], 1)
+        self.assertEqual(log.new_values["mode"], "ONBOARD_MISSING")
+        self.assertEqual(log.description, "Verified source register")
+        self.assertNotIn("rows", log.new_values)
+        with self.assertRaises(ValidationError):
+            AuditLog.objects.filter(pk=log.pk).update(description="changed")
+
+    def test_onboarding_blocks_names_agencies_partial_duplicates_and_ignores_blanks(self):
+        Person.objects.create(agency=self.musa, full_name=" AYO ", agent_type="SUBAGENT")
+        batch = self.onboard([[1, "new", "t1", "ayo"], [2, self.tpm_a.code, "t2", "Wrong"],
+            [3, self.other_tpm.code, "t3", self.other_tpm.person.full_name],
+            [4, "partial", None, "Name"], [5, None, None, None],
+            [6, "ok", "t6", "New"], [7, "OK", "t7", "New"]])
+        self.assertEqual([r["classification"] for r in batch["preview_payload"]["rows"]],
+            ["NAME_CONFLICT", "NAME_CONFLICT", "AGENCY_CONFLICT", "INVALID", "CREATE_PERSON_SUBAGENT_TERMINAL", "DUPLICATE"])
+        self.assertEqual(self.approve(batch).status_code, 400)
+        self.assertFalse(TerminalNumber.objects.exists())
+
+    def test_onboarding_confirmation_requirements_and_accountant_denial(self):
+        batch = self.onboard([[1, "new", "term", "New"]])
+        for changes in ({"confirmed": False}, {"reason": " "}, {"acknowledged_counts": {}}, {"reason": None}):
+            self.assertEqual(self.approve(batch, **changes).status_code, 400)
+        self.client.force_authenticate(self.acct)
+        self.assertEqual(self.approve(batch).status_code, 403)
+        self.assertEqual(self.client.post(self.imports + "preview/", {"agency": self.musa.pk,
+            "mode": "ONBOARD_MISSING", "file": upload([[1, "new", "term", "New"]])}, format="multipart").status_code, 403)
+
+    def test_numeric_fields_and_acknowledgement(self):
+        batch = self.onboard([[1, 123, 456, "New"]])
+        self.assertEqual([w["field"] for w in batch["warnings"]], ["SUB AGT NOS", "TERMINAL NOS"])
+        for warning in batch["warnings"]:
+            self.assertEqual(warning["message"],
+                f"Row 2 — {warning['field']} is numeric and may have lost leading zeroes.")
+        self.assertEqual(self.approve(batch, warnings_acknowledged=False).status_code, 400)
+        self.assertEqual(self.approve(batch).status_code, 200)
+        self.assertEqual(TerminalNumber.objects.get().terminal_number, "456")
+
+    def test_atomic_onboarding_failure_rolls_back_every_record_and_audit(self):
+        batch = self.onboard([[1, "new1", "t1", "New One"], [2, "new2", "t2", "New Two"]])
+        before = (Person.objects.count(), TPMCode.objects.count(), AuditLog.objects.count())
+        from core.terminal_register import create_terminal
+        def fail_second(data, user):
+            if data["terminal_number"] == "t2":
+                raise ValidationError("Injected failure")
+            return create_terminal(data, user)
+        with patch("core.terminal_register.create_terminal", side_effect=fail_second):
+            self.assertEqual(self.approve(batch).status_code, 400)
+        self.assertEqual((Person.objects.count(), TPMCode.objects.count(), AuditLog.objects.count()), before)
+        self.assertFalse(TerminalNumber.objects.exists())
+        self.assertEqual(TerminalImportBatch.objects.get(pk=batch["id"]).status, "PREVIEWED")
+
+    def test_stale_matching_person_blocks_and_historical_records_unchanged(self):
+        historic = self.txn(self.sheet(), self.tpm_a)
+        before = historic.__class__.objects.values().get(pk=historic.pk)
+        batch = self.onboard([[1, "new", "t1", "New"]])
+        Person.objects.create(agency=self.musa, full_name="New", agent_type="SUBAGENT")
+        self.assertEqual(self.approve(batch).status_code, 400)
+        self.assertFalse(TPMCode.objects.filter(code="new").exists())
+        batch = self.onboard([[1, "new", "t1", "New"]])
+        self.assertEqual(self.approve(batch).status_code, 200)
+        self.assertEqual(historic.__class__.objects.values().get(pk=historic.pk), before)
+
+    def test_onboarding_never_reassigns_existing_terminal(self):
+        terminal = self.create()
+        before = TerminalNumber.objects.values().get(pk=terminal.pk)
+        batch = self.onboard([[1, "new", terminal.terminal_number, "New"]])
+        self.assertEqual(batch["preview_payload"]["rows"][0]["classification"], "REASSIGNMENT_REQUIRED")
+        self.assertEqual(self.approve(batch).status_code, 400)
+        self.assertEqual(TerminalNumber.objects.values().get(pk=terminal.pk), before)
+
+    def test_link_default_does_not_onboard_and_unknown_modes_are_rejected(self):
+        for mode in (None, 'LINK_EXISTING', 'automatic'):
+            data = {'agency': self.musa.pk, 'file': upload([[1, 'new', 't1', 'New']])}
+            if mode is not None:
+                data['mode'] = mode
+            response = self.client.post(self.imports + 'preview/', data, format='multipart')
+            if mode == 'automatic':
+                self.assertEqual(response.status_code, 400)
+            else:
+                self.assertEqual(response.status_code, 201)
+                self.assertTrue(response.data['errors'])
+                self.assertEqual(response.data['preview_payload']['mode'], 'LINK_EXISTING')
+                self.assertEqual(self.approve(response.data).status_code, 400)
+        self.assertFalse(Person.objects.filter(full_name='New').exists())
+        self.assertFalse(TPMCode.objects.filter(code='new').exists())
+
+    def test_foreign_terminal_identifier_blocks_onboarding(self):
+        terminal = self.create(code=self.other_tpm, terminal_number='foreign')
+        batch = self.onboard([[1, 'new', terminal.terminal_number, 'New']])
+        self.assertEqual(batch['preview_payload']['rows'][0]['classification'], 'AGENCY_CONFLICT')
+        self.assertEqual(self.approve(batch).status_code, 400)
+
+    def test_inactive_unique_person_and_empty_workbook_block(self):
+        self.person.is_active = False
+        self.person.save()
+        for rows in ([[1, 'new', 't1', 'Ayo']], [[1, None, None, None]]):
+            batch = self.onboard(rows)
+            self.assertTrue(batch['errors'])
+            self.assertEqual(self.approve(batch).status_code, 400)
+
+    def test_final_audit_failure_rolls_back_onboarding(self):
+        batch = self.onboard([[1, 'new', 't1', 'New']])
+        from core.terminal_register import audit
+        def fail_final(user, obj, action_name, *args, **kwargs):
+            if action_name == 'TERMINAL_IMPORT_CONFIRMED':
+                raise RuntimeError('Audit unavailable')
+            return audit(user, obj, action_name, *args, **kwargs)
+        with patch('core.terminal_register.audit', side_effect=fail_final):
+            with self.assertRaises(RuntimeError):
+                self.approve(batch)
+        self.assertFalse(Person.objects.filter(full_name='New').exists())
+        self.assertFalse(TPMCode.objects.filter(code='new').exists())
+        self.assertFalse(TerminalNumber.objects.exists())
+        self.assertFalse(AuditLog.objects.filter(action='TERMINAL_CREATED').exists())

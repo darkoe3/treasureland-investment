@@ -20,11 +20,30 @@ export function terminalPayload(draft, mode) {
   return { ...owner, terminal_number: draft.terminal_number.trim(), is_active: draft.is_active };
 }
 
-export function canConfirmTerminalImport(batch, confirmed, now = Date.now()) {
+export function canConfirmTerminalImport(batch, confirmed, now = Date.now(), reason = "", warningsAcknowledged = false) {
   return Boolean(batch && batch.status === "PREVIEWED" && !batch.errors?.length &&
-    new Date(batch.expires_at).getTime() > now && confirmed);
+    new Date(batch.expires_at).getTime() > now && confirmed &&
+    (!batch.warnings?.length || warningsAcknowledged) &&
+    (batch.preview_payload?.mode !== "ONBOARD_MISSING" || Boolean(reason.trim())));
 }
 
 export function terminalActions(user, terminal) {
   return user.role === "SUPER_ADMIN" ? ["Edit", "Reassign", terminal.is_active ? "Deactivate" : "Reactivate", "View history"] : [];
+}
+
+export function groupImportMessages(messages = []) {
+  const groups = new Map();
+  for (const item of messages) {
+    const key = item.field || item.detail || item.message.replace(/^Row \d+[: —]+/, "");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return [...groups].map(([label, rows]) => ({ label, rows }));
+}
+
+export function importRowGroup(category) {
+  if (["CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON", "ADD_TERMINAL_TO_EXISTING_SUBAGENT"].includes(category)) return "New";
+  if (category === "UNCHANGED") return "Unchanged";
+  if (["INVALID", "DUPLICATE"].includes(category)) return "Invalid";
+  return "Conflict";
 }

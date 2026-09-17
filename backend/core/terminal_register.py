@@ -1,6 +1,5 @@
 """Terminal master-data services. TPMCode remains the compatibility Sub-Agent model."""
 import hashlib
-from collections import Counter
 from datetime import timedelta
 from io import BytesIO
 
@@ -16,7 +15,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from .importers import normalize_identifier, safe_filename, validate_workbook_bytes
-from .models import Agency, AuditLog, TPMCode, TerminalImportBatch, TerminalNumber
+from .models import Agency, AgentType, AuditLog, Person, TPMCode, TerminalImportBatch, TerminalNumber
 from .permissions import IsSuperAdmin, SuperAdminOnlyWrites
 from .serializers import AuditLogSerializer
 
@@ -39,7 +38,10 @@ def audit(user, obj, action_name, old=None, reason=""):
     # Batch events contain metadata/counts only, never workbook rows.
     new = ({"file_name": obj.original_filename, "file_hash": obj.file_hash, "status": obj.status,
             "row_count": len(obj.preview_payload.get("rows", [])), "error_count": len(obj.errors),
-            "warning_count": len(obj.warnings), "result_counts": obj.result_counts} if is_batch else identity(obj))
+            "warning_count": len(obj.warnings), "result_counts": obj.result_counts,
+            "mode": obj.preview_payload.get("mode", "LINK_EXISTING"),
+            "creation_counts": obj.preview_payload.get("creation_counts", {}),
+            "classification_counts": obj.preview_payload.get("summary", {})} if is_batch else identity(obj))
     AuditLog.objects.create(user=user, agency=obj.agency, action=action_name,
                             model_name=type(obj).__name__, object_id=str(obj.pk),
                             old_values=old or {}, new_values=new, description=reason)
@@ -226,7 +228,54 @@ def classify(code, number):
     return "New", ""
 
 
-def parse_terminal_workbook(upload, agency):
+CATEGORIES = ("CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON",
+              "ADD_TERMINAL_TO_EXISTING_SUBAGENT", "UNCHANGED", "REASSIGNMENT_REQUIRED",
+              "NAME_CONFLICT", "AGENCY_CONFLICT", "DUPLICATE", "INVALID")
+NEW_CATEGORIES = CATEGORIES[:3]
+
+
+def resolve_import_row(sub, number, name, agency, mode):
+    code = TPMCode.objects.select_related("person__agency").filter(code__iexact=sub).first()
+    person = code.person if code else None
+    category, message = "INVALID", ""
+    terminal = TerminalNumber.objects.filter(terminal_number__iexact=number).first()
+    if (code and code.person.agency_id != agency.pk) or (terminal and terminal.agency_id != agency.pk):
+        category, message = "AGENCY_CONFLICT", "Identifier belongs to another agency. Resolve manually."
+    elif code and normalize_name(name) != normalize_name(person.full_name):
+        category, message = "NAME_CONFLICT", "NAME does not match the database person."
+    elif code and (not code.is_active or not person.is_active):
+        message = "Sub-Agent Number and person must be active."
+    elif terminal and (not code or terminal.sub_agent_number_id != code.pk):
+        category, message = "REASSIGNMENT_REQUIRED", "Use the dedicated Reassign workflow."
+    elif code:
+        state, message = classify(code, number)
+        category = {"New": "ADD_TERMINAL_TO_EXISTING_SUBAGENT", "Unchanged": "UNCHANGED",
+                    "Conflict": "REASSIGNMENT_REQUIRED", "Reassignment required": "REASSIGNMENT_REQUIRED",
+                    "Update required": "REASSIGNMENT_REQUIRED"}[state]
+    elif mode == "LINK_EXISTING":
+        message = "Sub-Agent Number does not exist in the selected agency."
+    else:
+        matches = [p for p in Person.objects.filter(agency=agency) if normalize_name(p.full_name) == normalize_name(name)]
+        if len(matches) > 1:
+            category, message = "NAME_CONFLICT", "Multiple people have this normalized NAME. Manual resolution required."
+        elif matches:
+            person = matches[0]
+            if not person.is_active:
+                message = "Matching person is inactive. Resolve manually."
+            else:
+                category = "ADD_SUBAGENT_TO_EXISTING_PERSON"
+        else:
+            category = "CREATE_PERSON_SUBAGENT_TERMINAL"
+    return category, message, code.pk if code else None, person.pk if person else None
+
+
+def creation_counts(rows):
+    return {"people": len({normalize_name(r["name"]) for r in rows if r["classification"] == NEW_CATEGORIES[0]}),
+            "sub_agent_numbers": sum(r["classification"] in NEW_CATEGORIES[:2] for r in rows),
+            "terminals": sum(r["classification"] in NEW_CATEGORIES for r in rows)}
+
+
+def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING"):
     data = validate_workbook_bytes(upload)
     errors, warnings, rows = [], [], []
     try:
@@ -265,31 +314,28 @@ def parse_terminal_workbook(upload, agency):
                     row_errors.append(f"Duplicate {label} in workbook.")
                 if value:
                     seen.add(value.casefold())
-            code = TPMCode.objects.select_related("person__agency").filter(code__iexact=sub, person__agency=agency).first()
-            classification = "Conflict"
-            if not code:
-                row_errors.append("Sub-Agent Number does not exist in the selected agency.")
-            else:
-                if normalize_name(name) != normalize_name(code.person.full_name):
-                    row_errors.append("NAME does not match the database person.")
-                if not code.is_active or not code.person.is_active:
-                    row_errors.append("Sub-Agent Number and person must be active.")
-                if not row_errors:
-                    classification, message = classify(code, number)
-                    if message:
-                        row_errors.append(message)
-            # Validation failures remain visible as Conflict; lifecycle blockers
-            # retain their actionable classification above.
-            rows.append({"row": n, "sub_agent_number": code.pk if code else None, "sub_agent_number_value": sub[:80],
-                         "terminal_number": number[:80], "person": code.person_id if code else None,
+            classification, code_id, person_id = "INVALID", None, None
+            if not row_errors:
+                classification, message, code_id, person_id = resolve_import_row(sub, number, name, agency, mode)
+                if message:
+                    row_errors.append(message)
+            elif any(message.startswith("Duplicate") for message in row_errors):
+                classification = "DUPLICATE"
+            rows.append({"row": n, "sub_agent_number": code_id, "sub_agent_number_value": sub[:80],
+                         "terminal_number": number[:80], "person": person_id,
                          "name": name[:255], "classification": classification})
-            errors.extend({"row": n, "message": f"Row {n}: {message}"} for message in row_errors)
-            warnings.extend({"row": n, "message": f"Row {n}: {warning['message']}"} for warning in row_warnings)
+            errors.extend({"row": n, "category": classification, "detail": message,
+                           "message": f"Row {n}: {message}"} for message in row_errors)
+            for warning in row_warnings:
+                field = "SUB AGT NOS" if warning["cell"].startswith("B") else "TERMINAL NOS"
+                warnings.append({"row": n, "field": field,
+                                 "message": f"Row {n} — {field} is numeric and may have lost leading zeroes."})
         if not rows:
             errors.append({"row": 2, "message": "Row 2: Workbook contains no completed rows."})
     finally:
         workbook.close()
-    return data, {"rows": rows, "summary": dict(Counter(row["classification"] for row in rows))}, warnings, errors
+    return data, {"mode": mode, "rows": rows, "creation_counts": creation_counts(rows),
+                  "summary": {category: sum(r["classification"] == category for r in rows) for category in CATEGORIES}}, warnings, errors
 
 
 class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
@@ -319,7 +365,9 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
         sheet = wb.active
         sheet.title = "Terminal Register"
         sheet.append(["S/NOS", "SUB AGT NOS", "TERMINAL NOS", "NAME"])
-        for n in range(2, 502):
+        for col in ("B", "C"):
+            sheet.column_dimensions[col].number_format = "@"
+        for n in range(2, 5002):
             for col in (2, 3):
                 cell = sheet.cell(n, col, "")
                 cell.data_type, cell.number_format = "s", "@"
@@ -328,9 +376,9 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
         sheet.freeze_panes = "A2"
         instructions = wb.create_sheet("Instructions")
         for text in ("Choose the same agency when uploading. Data starts on row 2 of Terminal Register.",
-                     "S/NOS is ignored. SUB AGT NOS must already exist in that agency.",
+                     "S/NOS is ignored. LINK_EXISTING requires existing people and Sub-Agent Numbers.",
                      "Keep identifiers as Text to preserve leading zeroes. Do not paste numeric cells.",
-                     "NAME verifies the existing database person; it does not create or rename people.",
+                     "ONBOARD_MISSING can create missing people and Sub-Agent Numbers after explicit confirmation. Existing names must match.",
                      "All three fields B–D are required. No formulas, macros or external links.",
                      "Preview first. Resolve conflicts using Edit, Deactivate, Reactivate or Reassign, then upload again."):
             instructions.append([text])
@@ -348,7 +396,10 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
         upload = request.FILES.get("file")
         if not upload:
             raise ValidationError({"file": "Upload an .xlsx workbook."})
-        data, payload, warnings, errors = parse_terminal_workbook(upload, agency)
+        mode = request.data.get("mode", "LINK_EXISTING")
+        if mode not in ("LINK_EXISTING", "ONBOARD_MISSING"):
+            raise ValidationError({"mode": "Select a valid import mode."})
+        data, payload, warnings, errors = parse_terminal_workbook(upload, agency, mode)
         batch = TerminalImportBatch.objects.create(uploader=request.user, agency=agency,
             original_filename=safe_filename(upload.name.replace("\\", "/")), file_hash=hashlib.sha256(data).hexdigest(),
             preview_payload=payload, warnings=warnings, errors=errors, expires_at=timezone.now() + timedelta(hours=1))
@@ -374,22 +425,46 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
             raise ValidationError("Resolve all blocking errors and create a fresh preview.")
         if not batch.agency.is_active:
             raise ValidationError("Agency is inactive.")
-        counts = {"created": 0, "unchanged": 0}
+        mode = batch.preview_payload.get("mode", "LINK_EXISTING")
+        reason = request.data.get("reason", "")
+        if batch.warnings and request.data.get("warnings_acknowledged") is not True:
+            raise ValidationError("Verify numeric identifiers against the original source and acknowledge warnings.")
+        if mode == "ONBOARD_MISSING":
+            if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+                raise ValidationError("Enter an onboarding reason (1–2000 characters).")
+            if request.data.get("acknowledged_counts") != batch.preview_payload["creation_counts"]:
+                raise ValidationError("Explicitly acknowledge the displayed creation counts.")
+        # Lock existing owners as well as parent agencies; validate the complete plan before writes.
+        list(Person.objects.select_for_update().filter(agency=batch.agency).order_by("pk"))
+        list(TPMCode.objects.select_for_update().order_by("pk"))
+        list(TerminalNumber.objects.select_for_update().order_by("pk"))
         for row in batch.preview_payload["rows"]:
-            code = resolve_owner({**row, "agency": batch.agency_id})
-            if code.code.casefold() != row["sub_agent_number_value"].casefold() or normalize_name(code.person.full_name) != normalize_name(row["name"]) or not code.is_active or not code.person.is_active:
-                raise ValidationError(f"Row {row['row']}: Identity changed after preview. Upload again.")
-            classification, _ = classify(code, row["terminal_number"])
-            if classification != row["classification"] or classification not in ("New", "Unchanged"):
-                raise ValidationError(f"Row {row['row']}: Assignment changed after preview. Upload again.")
-            if classification == "Unchanged":
+            category, message, code_id, person_id = resolve_import_row(
+                row["sub_agent_number_value"], row["terminal_number"], row["name"], batch.agency, mode)
+            if message or (category, code_id, person_id) != (row["classification"], row["sub_agent_number"], row["person"]):
+                raise ValidationError(f"Row {row['row']}: Identity or assignment changed after preview. Upload again.")
+        counts = {"created": 0, "unchanged": 0}
+        new_people = {}
+        for row in batch.preview_payload["rows"]:
+            if row["classification"] == "UNCHANGED":
                 counts["unchanged"] += 1
-            else:
-                create_terminal({**row, "agency": batch.agency_id}, request.user)
-                counts["created"] += 1
+                continue
+            person_id, code_id = row["person"], row["sub_agent_number"]
+            if not person_id:
+                key = normalize_name(row["name"])
+                if key not in new_people:
+                    new_people[key] = Person.objects.create(agency=batch.agency,
+                        full_name=" ".join(row["name"].split()), agent_type=AgentType.SUBAGENT).pk
+                person_id = new_people[key]
+            if not code_id:
+                code_id = TPMCode.objects.create(person_id=person_id, code=row["sub_agent_number_value"]).pk
+            create_terminal({**row, "person": person_id, "sub_agent_number": code_id, "agency": batch.agency_id}, request.user)
+            counts["created"] += 1
+        if mode == "ONBOARD_MISSING":
+            counts.update(batch.preview_payload["creation_counts"])
         batch.status, batch.confirmed_at, batch.result_counts = "CONFIRMED", timezone.now(), counts
         batch.save()
-        audit(request.user, batch, "TERMINAL_IMPORT_CONFIRMED")
+        audit(request.user, batch, "TERMINAL_IMPORT_CONFIRMED", reason=reason.strip() if mode == "ONBOARD_MISSING" else "")
         return Response(self.get_serializer(batch).data)
 
     @action(detail=True, methods=["post"])

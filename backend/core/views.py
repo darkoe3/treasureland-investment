@@ -430,7 +430,10 @@ class PersonViewSet(BaseSearchViewSet):
             queryset = queryset.filter(is_active=active == "true")
         return queryset
 
+    @transaction.atomic
     def perform_create(self, serializer):
+        from .terminal_register import lock_register
+        lock_register()
         agency = serializer.validated_data["agency"]
         require_assignment_flag(self.request.user, agency, "can_create")
         person = serializer.save()

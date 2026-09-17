@@ -23,7 +23,7 @@ const draft = { agency: "1", person: "1", sub_agent_number: "10", terminal_numbe
 function harness({ user = { role: "SUPER_ADMIN" }, editor = null, values = draft, preview = null, request = async () => [], uploadPage = false } = {}) {
   const states = [[terminal], people, { agency: "", active: "", search: "" }, editor, values, null, "1", new Blob(["xlsx"]), preview, false, false, "", ""];
   let index = 0;
-  const hooks = { ...React, useEffect() {}, useState(initial) { const n = index++; if (!(n in states)) states[n] = initial; return [states[n], (value) => { states[n] = typeof value === "function" ? value(states[n]) : value; }]; } };
+  const hooks = { ...React, useEffect() {}, useState(initial) { const n = index++; if (!(n in states)) states[n] = typeof initial === "function" ? initial() : initial; return [states[n], (value) => { states[n] = typeof value === "function" ? value(states[n]) : value; }]; } };
   const compiledModule = { exports: {} };
   vm.runInNewContext(compiled, { module: compiledModule, exports: compiledModule.exports, FormData, Date, window: { confirm: () => true }, require(name) {
     if (name === "react") return hooks;
@@ -120,4 +120,30 @@ test("responsive layout bounds grids and preview overflow at the component bound
   assert.match(css, /minmax\(min\(100%, 240px\), 1fr\)/);
   assert.match(css, /\.terminal-table\s*\{[^}]*overflow-x: auto/);
   assert.match(harness().html(), /terminal-cards/);
+});
+
+test("large import errors and numeric warnings group compactly with expandable rows", () => {
+  const errors = Array.from({ length: 199 }, (_, index) => ({ row: index + 2, category: "INVALID", detail: "Missing required values", message: `Row ${index + 2}: Missing required values` }));
+  const groups = operations.groupImportMessages(errors);
+  assert.equal(groups.length, 1); assert.equal(groups[0].rows.length, 199);
+  const ui = harness({ uploadPage: true, preview: { ...batch, errors } });
+  const html = ui.html();
+  assert.equal((html.match(/<details/g) || []).length, 1);
+  assert.match(html, /199 rows/); assert.match(html, /Row 200/);
+  assert.match(html, /Preview filter/);
+  const warnings = [{ field: "SUB AGT NOS", message: "sub" }, { field: "TERMINAL NOS", message: "terminal" }];
+  assert.equal(operations.groupImportMessages(warnings).length, 2);
+});
+
+test("onboarding defaults safely and confirmation requires reason and numeric acknowledgement", async () => {
+  const calls = [];
+  const ui = harness({ uploadPage: true, request: async (path, options) => { calls.push(options); return batch; } });
+  await find(ui.render(), (node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(calls[0].body.get("mode"), "LINK_EXISTING");
+  const onboarding = { ...batch, warnings: [{ message: "Numeric" }], preview_payload: { ...batch.preview_payload, mode: "ONBOARD_MISSING" } };
+  assert.equal(operations.canConfirmTerminalImport(onboarding, true), false);
+  assert.equal(operations.canConfirmTerminalImport(onboarding, true, Date.now(), "Verified", false), false);
+  assert.equal(operations.canConfirmTerminalImport(onboarding, true, Date.now(), " ", true), false);
+  assert.equal(operations.canConfirmTerminalImport(onboarding, true, Date.now(), "Verified", true), true);
+  for (const [category, group] of [["CREATE_PERSON_SUBAGENT_TERMINAL", "New"], ["UNCHANGED", "Unchanged"], ["NAME_CONFLICT", "Conflict"], ["INVALID", "Invalid"]]) assert.equal(operations.importRowGroup(category), group);
 });

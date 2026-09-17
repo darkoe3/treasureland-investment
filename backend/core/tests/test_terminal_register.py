@@ -255,6 +255,60 @@ class TerminalOnboardingTests(Phase4Mixin, APITestCase):
     data = TerminalRegisterTests.data
     create = TerminalRegisterTests.create
 
+    def test_blank_template_rows_are_ignored_in_both_modes_with_excel_row_numbers(self):
+        for mode in ("LINK_EXISTING", "ONBOARD_MISSING"):
+            with self.subTest(mode=mode):
+                response = self.client.post(self.imports + "preview/", {
+                    "agency": self.musa.pk, "mode": mode,
+                    "file": upload([[1, None, None, None], [None, None, None, None],
+                                    [3, " \t", "", "\u00a0"],
+                                    [4, self.tpm_a.code, "00009", "Ayo"]]),
+                }, format="multipart")
+                self.assertEqual(response.status_code, 201)
+                self.assertEqual(response.data["errors"], [])
+                self.assertEqual(response.data["warnings"], [])
+                payload = response.data["preview_payload"]
+                self.assertEqual(payload["ignored_blank_rows"], 3)
+                self.assertEqual([row["row"] for row in payload["rows"]], [5])
+                self.assertEqual(payload["creation_counts"]["terminals"], 1)
+
+    def test_each_missing_required_field_still_blocks_after_blank_rows(self):
+        for mode in ("LINK_EXISTING", "ONBOARD_MISSING"):
+            with self.subTest(mode=mode):
+                response = self.client.post(self.imports + "preview/", {
+                    "agency": self.musa.pk, "mode": mode,
+                    "file": upload([[1, None, None, None], [2, None, "t1", "Ayo"],
+                                    [3, "s2", None, "Ayo"], [4, "s3", "t3", None]]),
+                }, format="multipart")
+                self.assertEqual(response.status_code, 201)
+                payload = response.data["preview_payload"]
+                self.assertEqual(payload["ignored_blank_rows"], 1)
+                self.assertEqual([r["classification"] for r in payload["rows"]], ["INVALID"] * 3)
+                self.assertEqual([e["row"] for e in response.data["errors"]], [3, 4, 5])
+                self.assertEqual(self.approve(response.data).status_code, 400)
+                self.assertFalse(TerminalNumber.objects.exists())
+
+    def test_69_serial_only_rows_do_not_hide_six_name_conflicts(self):
+        codes = [TPMCode.objects.create(person=self.person, code=f"conflict-{n}") for n in range(6)]
+        before = list(TPMCode.objects.values())
+        batch = self.onboard([[n, None, None, None] for n in range(1, 70)] +
+                             [[70 + n, code.code, str(1000 + n), "Wrong name"] for n, code in enumerate(codes)])
+        payload = batch["preview_payload"]
+        self.assertEqual(payload["ignored_blank_rows"], 69)
+        self.assertEqual(payload["summary"]["NAME_CONFLICT"], 6)
+        self.assertEqual(payload["summary"]["INVALID"], 0)
+        self.assertEqual([e["row"] for e in batch["errors"]], list(range(71, 77)))
+        self.assertEqual(self.approve(batch).status_code, 400)
+        self.assertEqual(list(TPMCode.objects.values()), before)
+        self.assertFalse(TerminalNumber.objects.exists())
+
+    def test_numeric_warnings_keep_excel_row_numbers_after_ignored_rows(self):
+        batch = self.onboard([[1, None, None, None], [None, None, None, None], [3, 123, 456, "New"]])
+        self.assertEqual(batch["preview_payload"]["ignored_blank_rows"], 2)
+        self.assertEqual([w["row"] for w in batch["warnings"]], [4, 4])
+        for warning in batch["warnings"]:
+            self.assertTrue(warning["message"].startswith("Row 4 — "))
+
     def onboard(self, rows):
         response = self.client.post(self.imports + "preview/", {"agency": self.musa.pk,
             "mode": "ONBOARD_MISSING", "file": upload(rows)}, format="multipart")

@@ -147,3 +147,24 @@ test("onboarding defaults safely and confirmation requires reason and numeric ac
   assert.equal(operations.canConfirmTerminalImport(onboarding, true, Date.now(), "Verified", true), true);
   for (const [category, group] of [["CREATE_PERSON_SUBAGENT_TERMINAL", "New"], ["UNCHANGED", "Unchanged"], ["NAME_CONFLICT", "Conflict"], ["INVALID", "Invalid"]]) assert.equal(operations.importRowGroup(category), group);
 });
+
+test("grouped messages render Excel rows even when message text is absent or a dash", () => {
+  const warnings = [
+    { row: 4, field: "SUB AGT NOS", message: "" },
+    { row: 71, field: "SUB AGT NOS", message: "-" },
+    { row: 76, field: "TERMINAL NOS" },
+    { cell: "C80", field: "TERMINAL NOS" },
+  ];
+  const errors = [{ row: 72, category: "NAME_CONFLICT", detail: "NAME does not match the database person." },
+    { row: 75, category: "NAME_CONFLICT", detail: "NAME does not match the database person." }];
+  const groups = operations.groupImportMessages(warnings);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].rows.map((item) => item.row), [4, 71]);
+  assert.equal(groups[0].rows[0].message, "Row 4: SUB AGT NOS is numeric and may have lost leading zeroes.");
+  const preview = { ...batch, errors, warnings, preview_payload: { ...batch.preview_payload, ignored_blank_rows: 69 } };
+  const html = harness({ uploadPage: true, preview }).html();
+  for (const row of [4, 71, 72, 75, 76, 80]) assert.match(html, new RegExp(`Row ${row}:`));
+  assert.match(html, /Ignored blank template rows: 69/);
+  assert.doesNotMatch(html, /<li>\s*[-–—]?\s*<\/li>/);
+  assert.equal(operations.canConfirmTerminalImport(preview, true, Date.now(), "Verified", true), false);
+});

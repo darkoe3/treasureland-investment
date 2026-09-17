@@ -278,6 +278,7 @@ def creation_counts(rows):
 def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING"):
     data = validate_workbook_bytes(upload)
     errors, warnings, rows = [], [], []
+    ignored_blank_rows = 0
     try:
         workbook = openpyxl.load_workbook(BytesIO(data), read_only=True, data_only=False, keep_links=False)
     except Exception as exc:
@@ -292,7 +293,9 @@ def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING"):
             raise ValidationError("Row 1 must contain S/NOS, SUB AGT NOS, TERMINAL NOS, NAME in columns A–D.")
         seen_sub, seen_terminal = set(), set()
         for n, cells in enumerate(sheet.iter_rows(min_row=2, min_col=2, max_col=4), 2):
+            # Only B–D determine whether this is a data row. S/NOS is never required.
             if all(cell.value is None or str(cell.value).strip() == "" for cell in cells):
+                ignored_blank_rows += 1
                 continue
             row_errors, row_warnings = [], []
             if any(cell.data_type == "f" for cell in cells):
@@ -334,7 +337,8 @@ def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING"):
             errors.append({"row": 2, "message": "Row 2: Workbook contains no completed rows."})
     finally:
         workbook.close()
-    return data, {"mode": mode, "rows": rows, "creation_counts": creation_counts(rows),
+    return data, {"mode": mode, "rows": rows, "ignored_blank_rows": ignored_blank_rows,
+                  "creation_counts": creation_counts(rows),
                   "summary": {category: sum(r["classification"] == category for r in rows) for category in CATEGORIES}}, warnings, errors
 
 

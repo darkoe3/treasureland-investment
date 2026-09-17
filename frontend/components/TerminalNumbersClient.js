@@ -152,6 +152,7 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
       {batch ? <section aria-labelledby="terminal-preview-title"><h2 id="terminal-preview-title">Import preview — {batch.status}</h2>
         <p>{batch.original_filename} · {agencies.find((agency) => agency.id === batch.agency)?.name} · Expires {new Date(batch.expires_at).toLocaleString()}</p>
         <p>Mode: {batch.preview_payload.mode || "LINK_EXISTING"}</p>
+        <p>Ignored blank template rows: {batch.preview_payload.ignored_blank_rows ?? 0}. Rows with no Sub-Agent Number, Terminal Number or Name are ignored, even when S/NOS is filled.</p>
         {batch.errors?.length ? <button type="button" onClick={downloadErrors}>Download error results</button> : null}
         <dl>{Object.entries(batch.preview_payload.summary || {}).map(([category, count]) => <div key={category}><dt>{category}</dt><dd>{count}</dd></div>)}</dl>
         {[{ title: "Blocking errors", items: batch.errors }, { title: "Warnings", items: batch.warnings }].map(({ title, items }) => items?.length ? <div key={title} role={title === "Blocking errors" ? "alert" : undefined}><h3>{title}: {items.length}</h3>{groupImportMessages(items).map((group) => <details key={group.label}><summary>{group.label} ({group.rows.length} rows)</summary><ul>{group.rows.map((item, index) => <li key={index}>{item.message}</li>)}</ul></details>)}</div> : null)}

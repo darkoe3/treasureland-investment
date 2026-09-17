@@ -34,9 +34,15 @@ export function terminalActions(user, terminal) {
 export function groupImportMessages(messages = []) {
   const groups = new Map();
   for (const item of messages) {
-    const key = item.field || item.detail || item.message.replace(/^Row \d+[: —]+/, "");
+    const message = typeof item.message === "string" ? item.message.trim() : "";
+    const detail = item.detail || message.replace(/^Row \d+[: —]+/, "");
+    const key = item.field || detail || item.category || "Import validation";
+    const row = item.row || item.cell?.match(/^[A-Z]+(\d+)$/i)?.[1] || message.match(/^Row (\d+)\b/)?.[1];
+    const description = detail && !/^[-–—]+$/.test(detail) ? detail : item.field
+      ? `${item.field} is numeric and may have lost leading zeroes.`
+      : item.category || "Review this row in the workbook.";
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(item);
+    groups.get(key).push({ ...item, message: `${row ? `Row ${row}` : "Workbook"}: ${description}` });
   }
   return [...groups].map(([label, rows]) => ({ label, rows }));
 }

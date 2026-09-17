@@ -20,11 +20,30 @@ export function terminalPayload(draft, mode) {
   return { ...owner, terminal_number: draft.terminal_number.trim(), is_active: draft.is_active };
 }
 
-export function canConfirmTerminalImport(batch, confirmed, now = Date.now(), reason = "", warningsAcknowledged = false) {
-  return Boolean(batch && batch.status === "PREVIEWED" && !batch.errors?.length &&
-    new Date(batch.expires_at).getTime() > now && confirmed &&
-    (!batch.warnings?.length || warningsAcknowledged) &&
-    (batch.preview_payload?.mode !== "ONBOARD_MISSING" || Boolean(reason.trim())));
+export function terminalImportDisabledReason(batch, confirmed, now = Date.now(), reason = "", warningsAcknowledged = false, exclusionsAcknowledged = false) {
+  if (!batch || batch.status !== "PREVIEWED") return "Create a fresh preview.";
+  if (new Date(batch.expires_at).getTime() <= now) return "Preview expired. Upload again.";
+  const partial = batch.preview_payload?.policy === "PARTIAL";
+  if (!partial && batch.errors?.length) return "Resolve all blocking errors and create a fresh preview.";
+  if (partial && !batch.preview_payload.valid_count) return "At least one valid row is required.";
+  if (partial && !exclusionsAcknowledged) return "Acknowledge the excluded and valid row counts.";
+  if (batch.preview_payload?.mode === "ONBOARD_MISSING" && !reason.trim()) return "Enter an onboarding reason.";
+  if (batch.warnings?.length && !warningsAcknowledged) return "Acknowledge numeric identifier warnings.";
+  if (!confirmed) return "Acknowledge the creation counts and confirm the import.";
+  return "";
+}
+
+export function canConfirmTerminalImport(...args) {
+  return !terminalImportDisabledReason(...args);
+}
+
+export function matchesImportFilter(row, filter, warnings = []) {
+  const valid = row.excluded === false || ["CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON", "ADD_TERMINAL_TO_EXISTING_SUBAGENT", "UNCHANGED"].includes(row.classification);
+  if (filter === "All") return true;
+  if (filter === "Valid") return valid;
+  if (filter === "Excluded") return !valid;
+  if (filter === "Warning") return warnings.some((warning) => warning.row === row.row);
+  return importRowGroup(row.classification) === filter;
 }
 
 export function terminalActions(user, terminal) {
@@ -36,11 +55,11 @@ export function groupImportMessages(messages = []) {
   for (const item of messages) {
     const message = typeof item.message === "string" ? item.message.trim() : "";
     const detail = item.detail || message.replace(/^Row \d+[: —]+/, "");
-    const key = item.field || detail || item.category || "Import validation";
     const row = item.row || item.cell?.match(/^[A-Z]+(\d+)$/i)?.[1] || message.match(/^Row (\d+)\b/)?.[1];
     const description = detail && !/^[-–—]+$/.test(detail) ? detail : item.field
       ? `${item.field} is numeric and may have lost leading zeroes.`
       : item.category || "Review this row in the workbook.";
+    const key = item.field || description;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push({ ...item, message: `${row ? `Row ${row}` : "Workbook"}: ${description}` });
   }
@@ -50,6 +69,6 @@ export function groupImportMessages(messages = []) {
 export function importRowGroup(category) {
   if (["CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON", "ADD_TERMINAL_TO_EXISTING_SUBAGENT"].includes(category)) return "New";
   if (category === "UNCHANGED") return "Unchanged";
-  if (["INVALID", "DUPLICATE"].includes(category)) return "Invalid";
+  if (["INVALID", "INCOMPLETE", "DUPLICATE"].includes(category)) return "Invalid";
   return "Conflict";
 }

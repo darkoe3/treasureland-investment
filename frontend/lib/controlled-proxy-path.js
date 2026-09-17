@@ -88,6 +88,7 @@ export function isAllowedBackendProxyPath(path, method = "GET") {
   if (/^terminal-number-imports\/(preview)$/.test(cleanPath)) return normalizedMethod === "POST";
   if (/^terminal-number-imports\/(template|\d+)$/.test(cleanPath)) return normalizedMethod === "GET";
   if (/^terminal-number-imports\/\d+\/(confirm|cancel)$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^terminal-number-imports\/\d+\/exclusions$/.test(cleanPath)) return normalizedMethod === "GET";
   if (/^terminal-numbers\/\d+\/history$/.test(cleanPath)) return normalizedMethod === "GET";
   if (/^terminal-numbers\/\d+\/(deactivate|reactivate|reassign)$/.test(cleanPath)) return normalizedMethod === "POST";
   const parts = cleanPath.split("/").filter(Boolean);
@@ -122,5 +123,5 @@ export function backendPathFromProxySegments(segments = [], search = "") {
 export function isBinaryBackendProxyPath(path, method = "GET") {
   const cleanPath = cleanProxyPath(path);
   const normalizedMethod = String(method || "GET").toUpperCase();
-  return (cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template" || cleanPath === "terminal-number-imports/template") && normalizedMethod === "GET";
+  return (cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template" || (cleanPath === "terminal-number-imports/template" || /^terminal-number-imports\/\d+\/exclusions$/.test(cleanPath))) && normalizedMethod === "GET";
 }

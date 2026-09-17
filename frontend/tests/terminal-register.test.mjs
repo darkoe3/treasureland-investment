@@ -158,6 +158,7 @@ test("grouped messages render Excel rows even when message text is absent or a d
   const errors = [{ row: 72, category: "NAME_CONFLICT", detail: "NAME does not match the database person." },
     { row: 75, category: "NAME_CONFLICT", detail: "NAME does not match the database person." }];
   const groups = operations.groupImportMessages(warnings);
+  assert.equal(operations.groupImportMessages([{ row: 8, category: "INVALID", message: "-" }])[0].label, "INVALID");
   assert.equal(groups.length, 2);
   assert.deepEqual(groups[0].rows.map((item) => item.row), [4, 71]);
   assert.equal(groups[0].rows[0].message, "Row 4: SUB AGT NOS is numeric and may have lost leading zeroes.");
@@ -167,4 +168,55 @@ test("grouped messages render Excel rows even when message text is absent or a d
   assert.match(html, /Ignored blank template rows: 69/);
   assert.doesNotMatch(html, /<li>\s*[-–—]?\s*<\/li>/);
   assert.equal(operations.canConfirmTerminalImport(preview, true, Date.now(), "Verified", true), false);
+});
+
+test("partial policy is previewed, exclusions render exact rows and confirmation posts acknowledgements and counts", async () => {
+  const partial = { ...batch, errors: [{ row: 8, category: "INCOMPLETE", detail: "NAME is required." }],
+    preview_payload: { mode: "ONBOARD_MISSING", policy: "PARTIAL", valid_count: 1, excluded_count: 1,
+      creation_counts: { people: 1, sub_agent_numbers: 1, terminals: 1 }, excluded_counts: { INCOMPLETE: 1 },
+      rows: [{ row: 2, classification: "CREATE_PERSON_SUBAGENT_TERMINAL", excluded: false, name: "New" },
+        { row: 8, classification: "INCOMPLETE", excluded: true, sub_agent_number_value: "later", terminal_number: "t8", name: "", reasons: ["NAME is required."] }] } };
+  const calls = [];
+  const ui = harness({ uploadPage: true, request: async (path, options) => { calls.push([path, options]); return path.endsWith("confirm/") ? { ...partial, status: "CONFIRMED", result_counts: { imported: 1, excluded: 1, created: 1, unchanged: 0 } } : path.endsWith("preview/") ? partial : []; } });
+  assert.match(ui.html(), /Require all populated rows to be valid/);
+  find(ui.render(), (n) => n.type === "select" && n.props.value === "LINK_EXISTING").props.onChange({ target: { value: "ONBOARD_MISSING" } });
+  const policyLabel = find(ui.render(), (n) => n.type === "label" && React.Children.toArray(n.props.children).includes("Import valid rows only and skip rows with errors"));
+  find(policyLabel, (n) => n.type === "input").props.onChange({ target: { checked: true } });
+  await find(ui.render(), (n) => n.type === "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(calls[0][1].body.get("policy"), "PARTIAL");
+  const html = ui.html();
+  assert.match(html, /Row 8/);
+  assert.match(html, /NAME is required\./);
+  assert.match(html, /1 rows will be excluded and only 1 valid rows will be imported/);
+  assert.match(html, /Acknowledge the excluded and valid row counts/);
+  for (const label of ["Valid", "Excluded", "Conflict", "Warning", "All"]) assert.match(html, new RegExp(`<option[^>]*>${label}</option>`));
+  assert.equal(operations.canConfirmTerminalImport(partial, true, Date.now(), "Reason", true, false), false);
+  assert.equal(operations.canConfirmTerminalImport(partial, true, Date.now(), "Reason", true, true), true);
+  assert.equal(operations.canConfirmTerminalImport({ ...partial, preview_payload: { ...partial.preview_payload, valid_count: 0 } }, true, Date.now(), "Reason", true, true), false);
+  find(ui.render(), (n) => n.type === "textarea").props.onChange({ target: { value: "Verified" } });
+  for (const text of ["I reviewed the selected agency", "I understand that"]) {
+    const label = find(ui.render(), (n) => n.type === "label" && React.Children.toArray(n.props.children).some((c) => typeof c === "string" && c.startsWith(text)));
+    find(label, (n) => n.type === "input").props.onChange({ target: { checked: true } });
+  }
+  const confirm = find(ui.render(), (n) => n.type === "button" && n.props.children === "Confirm import");
+  assert.equal(confirm.props.disabled, false);
+  await confirm.props.onClick();
+  const payload = JSON.parse(calls.find(([path]) => path.endsWith("confirm/"))[1].body);
+  assert.equal(payload.expected_valid_count, 1);
+  assert.equal(payload.expected_excluded_count, 1);
+  assert.equal(payload.exclusions_acknowledged, true);
+  assert.deepEqual(payload.acknowledged_counts, partial.preview_payload.creation_counts);
+  assert.equal(payload.reason, "Verified");
+  assert.match(ui.html(), /1 imported, 1 excluded/);
+  assert.equal(operations.matchesImportFilter(partial.preview_payload.rows[0], "Valid"), true);
+  assert.equal(operations.matchesImportFilter(partial.preview_payload.rows[1], "Excluded"), true);
+  assert.equal(operations.matchesImportFilter(partial.preview_payload.rows[1], "Warning", [{ row: 8 }]), true);
+});
+
+test("exclusion Excel download has a controlled GET-only binary path", () => {
+  assert.equal(isAllowedBackendProxyPath("terminal-number-imports/12/exclusions", "GET"), true);
+  assert.equal(isBinaryBackendProxyPath("terminal-number-imports/12/exclusions", "GET"), true);
+  for (const method of ["POST", "PATCH", "DELETE"]) assert.equal(isAllowedBackendProxyPath("terminal-number-imports/12/exclusions", method), false);
+  assert.equal(isAllowedBackendProxyPath("terminal-number-imports/12/exclusions/extra", "GET"), false);
+  assert.doesNotMatch(harness({ uploadPage: true, user: { role: "ACCOUNTANT" } }).html(), /Import valid rows only/);
 });

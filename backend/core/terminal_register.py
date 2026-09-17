@@ -1,10 +1,12 @@
 """Terminal master-data services. TPMCode remains the compatibility Sub-Agent model."""
 import hashlib
+from collections import Counter
 from datetime import timedelta
 from io import BytesIO
 
 import openpyxl
 from django.core.exceptions import ValidationError as ModelValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.http import HttpResponse
 from django.utils import timezone
@@ -15,7 +17,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from .importers import normalize_identifier, safe_filename, validate_workbook_bytes
-from .models import Agency, AgentType, AuditLog, Person, TPMCode, TerminalImportBatch, TerminalNumber
+from .models import Agency, AgentType, AuditLog, Person, TPMCode, TerminalImportBatch, TerminalNumber, User
 from .permissions import IsSuperAdmin, SuperAdminOnlyWrites
 from .serializers import AuditLogSerializer
 
@@ -36,12 +38,14 @@ def identity(terminal):
 def audit(user, obj, action_name, old=None, reason=""):
     is_batch = isinstance(obj, TerminalImportBatch)
     # Batch events contain metadata/counts only, never workbook rows.
-    new = ({"file_name": obj.original_filename, "file_hash": obj.file_hash, "status": obj.status,
+    new = ({"status": obj.status, "policy": obj.preview_payload.get("policy", "STRICT"),
             "row_count": len(obj.preview_payload.get("rows", [])), "error_count": len(obj.errors),
             "warning_count": len(obj.warnings), "result_counts": obj.result_counts,
             "mode": obj.preview_payload.get("mode", "LINK_EXISTING"),
             "creation_counts": obj.preview_payload.get("creation_counts", {}),
-            "classification_counts": obj.preview_payload.get("summary", {})} if is_batch else identity(obj))
+            "classification_counts": obj.preview_payload.get("summary", {}),
+            "excluded_counts": obj.preview_payload.get("excluded_counts", {}),
+            "imported_count": obj.result_counts.get("imported", obj.result_counts.get("created", 0) + obj.result_counts.get("unchanged", 0))} if is_batch else identity(obj))
     AuditLog.objects.create(user=user, agency=obj.agency, action=action_name,
                             model_name=type(obj).__name__, object_id=str(obj.pk),
                             old_values=old or {}, new_values=new, description=reason)
@@ -73,7 +77,7 @@ def save_terminal(obj, user, action_name, old=None, reason=""):
     return obj
 
 
-def create_terminal(data, user):
+def create_terminal(data, user, *, import_batch=False):
     code = resolve_owner(data)
     active = data.get("is_active", True)
     if not isinstance(active, bool):
@@ -82,6 +86,9 @@ def create_terminal(data, user):
                          sub_agent_number=code, person=code.person, agency=code.person.agency,
                          is_active=active, created_by=user, updated_by=user,
                          deactivated_at=None if active else timezone.now(), deactivated_by=None if active else user)
+    if import_batch:
+        obj.save()
+        return obj
     return save_terminal(obj, user, "TERMINAL_CREATED")
 
 
@@ -230,7 +237,7 @@ def classify(code, number):
 
 CATEGORIES = ("CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON",
               "ADD_TERMINAL_TO_EXISTING_SUBAGENT", "UNCHANGED", "REASSIGNMENT_REQUIRED",
-              "NAME_CONFLICT", "AGENCY_CONFLICT", "DUPLICATE", "INVALID")
+              "NAME_CONFLICT", "AGENCY_CONFLICT", "DUPLICATE", "INVALID", "INCOMPLETE")
 NEW_CATEGORIES = CATEGORIES[:3]
 
 
@@ -275,10 +282,11 @@ def creation_counts(rows):
             "terminals": sum(r["classification"] in NEW_CATEGORIES for r in rows)}
 
 
-def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING"):
+def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING", policy="STRICT"):
     data = validate_workbook_bytes(upload)
     errors, warnings, rows = [], [], []
     ignored_blank_rows = 0
+    source_rows, source_formulas = [], []
     try:
         workbook = openpyxl.load_workbook(BytesIO(data), read_only=True, data_only=False, keep_links=False)
     except Exception as exc:
@@ -293,6 +301,8 @@ def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING"):
             raise ValidationError("Row 1 must contain S/NOS, SUB AGT NOS, TERMINAL NOS, NAME in columns A–D.")
         seen_sub, seen_terminal = set(), set()
         for n, cells in enumerate(sheet.iter_rows(min_row=2, min_col=2, max_col=4), 2):
+            source_rows.append([cell.value if isinstance(cell.value, (str, int, float, bool, type(None))) else str(cell.value) for cell in cells])
+            source_formulas.append([cell.data_type == "f" for cell in cells])
             # Only B–D determine whether this is a data row. S/NOS is never required.
             if all(cell.value is None or str(cell.value).strip() == "" for cell in cells):
                 ignored_blank_rows += 1
@@ -308,8 +318,15 @@ def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING"):
             sub = normalize_identifier(values[0], f"B{n}", row_warnings)
             number = normalize_identifier(values[1], f"C{n}", row_warnings)
             name = str(values[2] or "").strip()
-            if not sub or not number or not name:
-                row_errors.append("SUB AGT NOS, TERMINAL NOS and NAME are required.")
+            supplied_name = name
+            if not name and sub and policy == "PARTIAL":
+                owners = list(TPMCode.objects.select_related("person").filter(
+                    code__iexact=sub, person__agency=agency))
+                if len(owners) == 1 and owners[0].person_id:
+                    name = owners[0].person.full_name
+            missing_fields = [label for label, value in
+                              (("SUB AGT NOS", sub), ("TERMINAL NOS", number), ("NAME", name)) if not value]
+            row_errors.extend(f"{field} is required." for field in missing_fields)
             if len(sub) > 80 or len(number) > 80 or len(name) > 255:
                 row_errors.append("Identifier or name exceeds the allowed length.")
             for value, seen, label in ((sub, seen_sub, "Sub-Agent Number"), (number, seen_terminal, "Terminal Number")):
@@ -317,27 +334,48 @@ def parse_terminal_workbook(upload, agency, mode="LINK_EXISTING"):
                     row_errors.append(f"Duplicate {label} in workbook.")
                 if value:
                     seen.add(value.casefold())
-            classification, code_id, person_id = "INVALID", None, None
+            classification, code_id, person_id = "INCOMPLETE" if missing_fields and policy == "PARTIAL" else "INVALID", None, None
             if not row_errors:
                 classification, message, code_id, person_id = resolve_import_row(sub, number, name, agency, mode)
                 if message:
                     row_errors.append(message)
             elif any(message.startswith("Duplicate") for message in row_errors):
                 classification = "DUPLICATE"
-            rows.append({"row": n, "sub_agent_number": code_id, "sub_agent_number_value": sub[:80],
-                         "terminal_number": number[:80], "person": person_id,
-                         "name": name[:255], "classification": classification})
+            rows.append({"row": n, "sub_agent_number": code_id, "sub_agent_number_value": sub,
+                         "terminal_number": number, "person": person_id,
+                         "name": supplied_name, "resolved_name": name, "classification": classification,
+                         "missing_fields": missing_fields, "reasons": row_errors, "supplied_values": source_rows[-1],
+                         "excluded": classification not in (*NEW_CATEGORIES, "UNCHANGED")})
             errors.extend({"row": n, "category": classification, "detail": message,
                            "message": f"Row {n}: {message}"} for message in row_errors)
             for warning in row_warnings:
                 field = "SUB AGT NOS" if warning["cell"].startswith("B") else "TERMINAL NOS"
                 warnings.append({"row": n, "field": field,
                                  "message": f"Row {n} — {field} is numeric and may have lost leading zeroes."})
+        if policy == "PARTIAL":
+            # Every occurrence is unsafe: never choose an owner by workbook order.
+            duplicate_fields = (("sub_agent_number_value", "Sub-Agent Number"),
+                                ("terminal_number", "Terminal Number"))
+            frequencies = {field: Counter(r[field].casefold() for r in rows if r[field])
+                           for field, _ in duplicate_fields}
+            for row in rows:
+                duplicates = [f"Duplicate {label} in workbook." for field, label in duplicate_fields
+                              if row[field] and frequencies[field][row[field].casefold()] > 1]
+                if duplicates:
+                    row["classification"], row["excluded"] = "DUPLICATE", True
+                    row["reasons"].extend(message for message in duplicates if message not in row["reasons"])
+            errors = [{"row": row["row"], "category": row["classification"], "detail": message,
+                       "message": f"Row {row['row']}: {message}"}
+                      for row in rows for message in row["reasons"]]
         if not rows:
             errors.append({"row": 2, "message": "Row 2: Workbook contains no completed rows."})
     finally:
         workbook.close()
-    return data, {"mode": mode, "rows": rows, "ignored_blank_rows": ignored_blank_rows,
+    return data, {"mode": mode, "policy": policy, "source_rows": source_rows, "source_formulas": source_formulas,
+                  "valid_count": sum(not r["excluded"] for r in rows),
+                  "excluded_count": sum(r["excluded"] for r in rows),
+                  "excluded_counts": {c: sum(r["excluded"] and r["classification"] == c for r in rows) for c in CATEGORIES if c not in (*NEW_CATEGORIES, "UNCHANGED")},
+                  "rows": rows, "ignored_blank_rows": ignored_blank_rows,
                   "creation_counts": creation_counts(rows),
                   "summary": {category: sum(r["classification"] == category for r in rows) for category in CATEGORIES}}, warnings, errors
 
@@ -403,7 +441,10 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
         mode = request.data.get("mode", "LINK_EXISTING")
         if mode not in ("LINK_EXISTING", "ONBOARD_MISSING"):
             raise ValidationError({"mode": "Select a valid import mode."})
-        data, payload, warnings, errors = parse_terminal_workbook(upload, agency, mode)
+        policy = request.data.get("policy", "STRICT")
+        if policy not in ("STRICT", "PARTIAL") or (policy == "PARTIAL" and mode != "ONBOARD_MISSING"):
+            raise ValidationError({"policy": "Partial importing requires Super Admin ONBOARD_MISSING mode."})
+        data, payload, warnings, errors = parse_terminal_workbook(upload, agency, mode, policy)
         batch = TerminalImportBatch.objects.create(uploader=request.user, agency=agency,
             original_filename=safe_filename(upload.name.replace("\\", "/")), file_hash=hashlib.sha256(data).hexdigest(),
             preview_payload=payload, warnings=warnings, errors=errors, expires_at=timezone.now() + timedelta(hours=1))
@@ -423,10 +464,27 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
     def confirm(self, request, pk=None):
         lock_register()
         batch = self.locked_batch()
+        actor = User.objects.select_for_update().get(pk=request.user.pk)
+        if not actor.is_active or not actor.is_super_admin:
+            raise ValidationError("Super Admin permission is required.")
         if request.data.get("confirmed") is not True:
             raise ValidationError("Explicit confirmation is required.")
-        if batch.errors:
+        policy = batch.preview_payload.get("policy", "STRICT")
+        if "policy" in request.data and request.data["policy"] != policy:
+            raise ValidationError("The previewed policy cannot be changed. Upload a fresh preview.")
+        if batch.errors and policy == "STRICT":
             raise ValidationError("Resolve all blocking errors and create a fresh preview.")
+        if policy == "PARTIAL":
+            if batch.preview_payload.get("mode") != "ONBOARD_MISSING" or not request.user.is_super_admin:
+                raise ValidationError("Partial importing requires Super Admin onboarding.")
+            if not batch.preview_payload["valid_count"]:
+                raise ValidationError("At least one valid row is required.")
+            if request.data.get("exclusions_acknowledged") is not True:
+                raise ValidationError("Explicitly acknowledge excluded and valid rows.")
+            for field in ("valid_count", "excluded_count"):
+                expected = request.data.get("expected_" + field)
+                if type(expected) is not int or expected != batch.preview_payload[field]:
+                    raise ValidationError(f"Expected {field} does not match preview.")
         if not batch.agency.is_active:
             raise ValidationError("Agency is inactive.")
         mode = batch.preview_payload.get("mode", "LINK_EXISTING")
@@ -442,19 +500,39 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
         list(Person.objects.select_for_update().filter(agency=batch.agency).order_by("pk"))
         list(TPMCode.objects.select_for_update().order_by("pk"))
         list(TerminalNumber.objects.select_for_update().order_by("pk"))
-        for row in batch.preview_payload["rows"]:
-            category, message, code_id, person_id = resolve_import_row(
-                row["sub_agent_number_value"], row["terminal_number"], row["name"], batch.agency, mode)
-            if message or (category, code_id, person_id) != (row["classification"], row["sub_agent_number"], row["person"]):
-                raise ValidationError(f"Row {row['row']}: Identity or assignment changed after preview. Upload again.")
+        if "source_rows" in batch.preview_payload:
+            wb = openpyxl.Workbook()
+            wb.active.append(["S/NOS", "SUB AGT NOS", "TERMINAL NOS", "NAME"])
+            for index, values in enumerate(batch.preview_payload["source_rows"]):
+                wb.active.append([None, *values])
+                for column, value in enumerate(values, 2):
+                    if isinstance(value, str):
+                        is_formula = batch.preview_payload["source_formulas"][index][column - 2]
+                        wb.active.cell(index + 2, column).data_type = "f" if is_formula else "s"
+            stream = BytesIO()
+            wb.save(stream)
+            _, current, _, _ = parse_terminal_workbook(
+                SimpleUploadedFile("revalidate.xlsx", stream.getvalue()), batch.agency, mode, policy)
+            if current != batch.preview_payload:
+                raise ValidationError("Rows, counts or assignments changed after preview. Upload again.")
+        else:
+            for row in batch.preview_payload["rows"]:
+                category, message, code_id, person_id = resolve_import_row(
+                    row["sub_agent_number_value"], row["terminal_number"], row["name"], batch.agency, mode)
+                if message or (category, code_id, person_id) != (row["classification"], row["sub_agent_number"], row["person"]):
+                    raise ValidationError("Identity or assignment changed after preview. Upload again.")
         counts = {"created": 0, "unchanged": 0}
         new_people = {}
         for row in batch.preview_payload["rows"]:
+            if row.get("excluded"):
+                continue
             if row["classification"] == "UNCHANGED":
                 counts["unchanged"] += 1
                 continue
             person_id, code_id = row["person"], row["sub_agent_number"]
             if not person_id:
+                if not normalize_name(row["name"]):
+                    raise ValidationError("NAME is required to create a Person.")
                 key = normalize_name(row["name"])
                 if key not in new_people:
                     new_people[key] = Person.objects.create(agency=batch.agency,
@@ -462,14 +540,40 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
                 person_id = new_people[key]
             if not code_id:
                 code_id = TPMCode.objects.create(person_id=person_id, code=row["sub_agent_number_value"]).pk
-            create_terminal({**row, "person": person_id, "sub_agent_number": code_id, "agency": batch.agency_id}, request.user)
+            create_terminal({**row, "person": person_id, "sub_agent_number": code_id, "agency": batch.agency_id}, request.user, import_batch=True)
             counts["created"] += 1
         if mode == "ONBOARD_MISSING":
             counts.update(batch.preview_payload["creation_counts"])
+        if policy == "PARTIAL":
+            counts.update(imported=batch.preview_payload["valid_count"],
+                          excluded=batch.preview_payload["excluded_count"],
+                          excluded_counts=batch.preview_payload["excluded_counts"])
         batch.status, batch.confirmed_at, batch.result_counts = "CONFIRMED", timezone.now(), counts
         batch.save()
         audit(request.user, batch, "TERMINAL_IMPORT_CONFIRMED", reason=reason.strip() if mode == "ONBOARD_MISSING" else "")
         return Response(self.get_serializer(batch).data)
+
+    @action(detail=True, methods=["get"], url_path="exclusions")
+    def exclusions(self, request, pk=None):
+        batch = self.get_object()
+        wb = openpyxl.Workbook()
+        sheet = wb.active
+        sheet.title = "Excluded rows"
+        sheet.append(["Excel row", "SUB AGT NOS", "TERMINAL NOS", "NAME", "Category", "Reason"])
+        for row in batch.preview_payload["rows"]:
+            if row.get("excluded", row["classification"] not in (*NEW_CATEGORIES, "UNCHANGED")):
+                supplied = batch.preview_payload.get("source_rows", [])[row["row"] - 2] if "source_rows" in batch.preview_payload else [row["sub_agent_number_value"], row["terminal_number"], row["name"]]
+                reasons = row.get("reasons") or [e.get("detail", e.get("message", "")) for e in batch.errors if e.get("row") == row["row"]]
+                sheet.append([row["row"], *supplied, row["classification"], " ".join(reasons)])
+                for cell in sheet[sheet.max_row]:
+                    if isinstance(cell.value, str):
+                        cell.data_type = "s"
+        sheet.freeze_panes = "A2"
+        stream = BytesIO()
+        wb.save(stream)
+        response = HttpResponse(stream.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        response["Content-Disposition"] = 'attachment; filename="terminal-import-exclusions.xlsx"'
+        return response
 
     @action(detail=True, methods=["post"])
     @transaction.atomic

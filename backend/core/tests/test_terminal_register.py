@@ -376,10 +376,10 @@ class TerminalOnboardingTests(Phase4Mixin, APITestCase):
         batch = self.onboard([[1, "new1", "t1", "New One"], [2, "new2", "t2", "New Two"]])
         before = (Person.objects.count(), TPMCode.objects.count(), AuditLog.objects.count())
         from core.terminal_register import create_terminal
-        def fail_second(data, user):
+        def fail_second(data, user, **kwargs):
             if data["terminal_number"] == "t2":
                 raise ValidationError("Injected failure")
-            return create_terminal(data, user)
+            return create_terminal(data, user, **kwargs)
         with patch("core.terminal_register.create_terminal", side_effect=fail_second):
             self.assertEqual(self.approve(batch).status_code, 400)
         self.assertEqual((Person.objects.count(), TPMCode.objects.count(), AuditLog.objects.count()), before)

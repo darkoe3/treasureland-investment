@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { apiPath, clientDownload, clientRequest } from "../lib/client-api";
-import { groupImportMessages, importRowGroup, canConfirmTerminalImport, changeTerminalDraft, terminalActions, terminalChoices, terminalPayload } from "../lib/terminal-operations";
+import { groupImportMessages, matchesImportFilter, terminalImportDisabledReason, canConfirmTerminalImport, changeTerminalDraft, terminalActions, terminalChoices, terminalPayload } from "../lib/terminal-operations";
 
 const emptyDraft = { agency: "", person: "", sub_agent_number: "", terminal_number: "", is_active: true, reason: "", confirmed: false };
 const unpack = (data) => data.results || data;
@@ -29,6 +29,9 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(false);
   const [rowFilter, setRowFilter] = useState("All");
   const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const [partialImport, setPartialImport] = useState(false);
+  const [exclusionsAcknowledged, setExclusionsAcknowledged] = useState(false);
+  const disabledReason = terminalImportDisabledReason(batch, confirmed, currentTime, reason, warningsAcknowledged, exclusionsAcknowledged);
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
     return () => clearInterval(timer);
@@ -88,16 +91,16 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
   async function preview(event) {
     event.preventDefault();
     await run(async () => {
-      const form = new FormData(); form.set("agency", uploadAgency); form.set("file", file); form.set("mode", importMode);
+      const form = new FormData(); form.set("agency", uploadAgency); form.set("file", file); form.set("mode", importMode); form.set("policy", importMode === "ONBOARD_MISSING" && partialImport ? "PARTIAL" : "STRICT");
       const result = await clientRequest(apiPath("/terminal-number-imports/preview/"), { method: "POST", body: form });
-      setBatch(result); setConfirmed(false); setWarningsAcknowledged(false); setReason("");
+      setBatch(result); setExclusionsAcknowledged(false); setConfirmed(false); setWarningsAcknowledged(false); setReason("");
     });
   }
   async function batchAction(action) {
     await run(async () => {
-      const result = await clientRequest(apiPath(`/terminal-number-imports/${batch.id}/${action}/`), { method: "POST", body: JSON.stringify({ confirmed, reason, warnings_acknowledged: warningsAcknowledged, acknowledged_counts: confirmed ? batch.preview_payload.creation_counts : null }) });
-      setBatch(result); setConfirmed(false); setWarningsAcknowledged(false); setReason(""); await reload();
-      setMessage(action === "confirm" ? `Import confirmed: ${result.result_counts.created} created, ${result.result_counts.unchanged} unchanged.` : "Import cancelled.");
+      const result = await clientRequest(apiPath(`/terminal-number-imports/${batch.id}/${action}/`), { method: "POST", body: JSON.stringify({ confirmed, reason, exclusions_acknowledged: exclusionsAcknowledged, expected_valid_count: batch.preview_payload.valid_count, expected_excluded_count: batch.preview_payload.excluded_count, warnings_acknowledged: warningsAcknowledged, acknowledged_counts: confirmed ? batch.preview_payload.creation_counts : null }) });
+      setBatch(result); setExclusionsAcknowledged(false); setConfirmed(false); setWarningsAcknowledged(false); setReason(""); await reload();
+      setMessage(action === "confirm" ? `Import confirmed: ${result.result_counts.imported ?? (result.result_counts.created + result.result_counts.unchanged)} imported, ${result.result_counts.excluded ?? 0} excluded; ${result.result_counts.created} created, ${result.result_counts.unchanged} unchanged. Correct excluded rows and upload them again.` : "Import cancelled.");
     });
   }
   async function download() {
@@ -107,11 +110,12 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
       anchor.href = url; anchor.download = "terminal-register.xlsx"; anchor.click(); URL.revokeObjectURL(url);
     });
   }
-  function downloadErrors() {
-    const blob = new Blob([JSON.stringify({ agency: batch.agency, mode: batch.preview_payload.mode,
-      errors: batch.errors, warnings: batch.warnings }, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob); const anchor = document.createElement("a");
-    anchor.href = url; anchor.download = "terminal-import-errors.json"; anchor.click(); URL.revokeObjectURL(url);
+  async function downloadErrors() {
+    await run(async () => {
+      const result = await clientDownload(apiPath(`/terminal-number-imports/${batch.id}/exclusions/`));
+      const url = URL.createObjectURL(result.blob); const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = "terminal-import-exclusions.xlsx"; anchor.click(); URL.revokeObjectURL(url);
+    });
   }
 
   return <section className="terminal-register">
@@ -145,25 +149,32 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
         <label>Agency<select required value={uploadAgency} onChange={(event) => setUploadAgency(event.target.value)}><option value="">Select Agency</option>{agencies.map((agency) => <option value={agency.id} key={agency.id}>{agency.name}</option>)}</select></label>
         <label>Import mode<select value={importMode} onChange={(event) => setImportMode(event.target.value)}><option value="LINK_EXISTING">LINK_EXISTING — link existing records</option><option value="ONBOARD_MISSING">ONBOARD_MISSING — create missing records</option></select></label>
         <p>{importMode === "ONBOARD_MISSING" ? "Super Admin onboarding may create missing People, Sub-Agent Numbers and Terminals. Preview makes no master-data changes. Confirmation requires a reason and acknowledgement of creation counts. Existing records are never renamed or reassigned." : "People and Sub-Agent Numbers must already exist. Only Terminal mappings are created."}</p>
+        <p>{importMode !== "ONBOARD_MISSING" || !partialImport ? "Require all populated rows to be valid" : "Import valid rows only and skip rows with errors"}</p>
+        {importMode === "ONBOARD_MISSING" ? <label className="terminal-check"><input type="checkbox" checked={partialImport} onChange={(event) => setPartialImport(event.target.checked)} />Import valid rows only and skip rows with errors</label> : null}
         <button type="button" disabled={!uploadAgency} onClick={download}>Download template</button>
         <label>Excel workbook<input type="file" accept=".xlsx" required onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>
         <button disabled={!file || !uploadAgency} type="submit">Preview upload</button>
       </fieldset></form>
       {batch ? <section aria-labelledby="terminal-preview-title"><h2 id="terminal-preview-title">Import preview — {batch.status}</h2>
         <p>{batch.original_filename} · {agencies.find((agency) => agency.id === batch.agency)?.name} · Expires {new Date(batch.expires_at).toLocaleString()}</p>
-        <p>Mode: {batch.preview_payload.mode || "LINK_EXISTING"}</p>
+        <p>Mode: {batch.preview_payload.mode || "LINK_EXISTING"}. Policy: {batch.preview_payload.policy === "PARTIAL" ? "Import valid rows only and skip rows with errors" : "Require all populated rows to be valid"}</p>
+        <p>Valid rows to import: {batch.preview_payload.valid_count ?? batch.preview_payload.rows.length}. Excluded rows: {batch.preview_payload.excluded_count ?? 0}.</p>
+        <dl>{Object.entries(batch.preview_payload.excluded_counts || {}).map(([category, count]) => <div key={category}><dt>Excluded {category.toLowerCase().replaceAll("_", " ")} rows</dt><dd>{count}</dd></div>)}</dl>
         <p>Ignored blank template rows: {batch.preview_payload.ignored_blank_rows ?? 0}. Rows with no Sub-Agent Number, Terminal Number or Name are ignored, even when S/NOS is filled.</p>
         {batch.errors?.length ? <button type="button" onClick={downloadErrors}>Download error results</button> : null}
+        <p>New People: {batch.preview_payload.creation_counts?.people ?? 0}. New Sub-Agent Numbers: {batch.preview_payload.creation_counts?.sub_agent_numbers ?? 0}. New Terminal Numbers: {batch.preview_payload.creation_counts?.terminals ?? 0}.</p>
         <dl>{Object.entries(batch.preview_payload.summary || {}).map(([category, count]) => <div key={category}><dt>{category}</dt><dd>{count}</dd></div>)}</dl>
-        {[{ title: "Blocking errors", items: batch.errors }, { title: "Warnings", items: batch.warnings }].map(({ title, items }) => items?.length ? <div key={title} role={title === "Blocking errors" ? "alert" : undefined}><h3>{title}: {items.length}</h3>{groupImportMessages(items).map((group) => <details key={group.label}><summary>{group.label} ({group.rows.length} rows)</summary><ul>{group.rows.map((item, index) => <li key={index}>{item.message}</li>)}</ul></details>)}</div> : null)}
-        <label>Preview filter<select value={rowFilter} onChange={(event) => setRowFilter(event.target.value)}>{["All", "New", "Unchanged", "Conflict", "Invalid"].map((filter) => <option key={filter}>{filter}</option>)}</select></label>
-        <div className="terminal-table"><table><thead><tr><th>Row</th><th>Sub-Agent Number</th><th>Terminal Number</th><th>Name</th><th>Classification</th></tr></thead><tbody>{batch.preview_payload.rows.filter((row) => rowFilter === "All" || importRowGroup(row.classification) === rowFilter).map((row) => <tr key={row.row}><td>{row.row}</td><td>{row.sub_agent_number_value}</td><td>{row.terminal_number}</td><td>{row.name}</td><td>{row.classification}</td></tr>)}</tbody></table></div>
+        {[{ title: batch.preview_payload.policy === "PARTIAL" ? "Excluded row errors" : "Blocking errors", items: batch.errors }, { title: "Warnings", items: batch.warnings }].map(({ title, items }) => items?.length ? <div key={title} role={title === "Blocking errors" ? "alert" : undefined}><h3>{title}: {items.length}</h3>{groupImportMessages(items).map((group) => <details key={group.label}><summary>{group.label} ({group.rows.length} rows)</summary><ul>{group.rows.map((item, index) => <li key={index}>{item.message}</li>)}</ul></details>)}</div> : null)}
+        <label>Preview filter<select value={rowFilter} onChange={(event) => setRowFilter(event.target.value)}>{["All", "Valid", "Excluded", "Conflict", "Warning"].map((filter) => <option key={filter}>{filter}</option>)}</select></label>
+        <div className="terminal-table"><table><thead><tr><th>Row</th><th>Sub-Agent Number</th><th>Terminal Number</th><th>Name</th><th>Classification</th><th>Reason</th></tr></thead><tbody>{batch.preview_payload.rows.filter((row) => matchesImportFilter(row, rowFilter, batch.warnings)).map((row) => <tr key={row.row}><td>Row {row.row}</td><td>{String(row.supplied_values?.[0] ?? row.sub_agent_number_value)}</td><td>{String(row.supplied_values?.[1] ?? row.terminal_number)}</td><td>{String(row.supplied_values?.[2] ?? row.name)}</td><td>{row.classification}</td><td>{row.reasons?.join(" ") || batch.errors?.filter((item) => item.row === row.row).map((item) => item.detail || item.message).join(" ")}</td></tr>)}</tbody></table></div>
         {batch.status === "PREVIEWED" ? <div className="terminal-confirmation"><h3>Confirm import</h3><p>Only the displayed new records will be created. Unchanged rows will be skipped. The entire batch rolls back if any row fails.</p>
           <p>Selected agency: {agencies.find((agency) => agency.id === batch.agency)?.name}. Creation counts: {batch.preview_payload.creation_counts?.people || 0} People, {batch.preview_payload.creation_counts?.sub_agent_numbers || 0} Sub-Agent Numbers, {batch.preview_payload.creation_counts?.terminals || 0} Terminals.</p>
           {batch.preview_payload.mode === "ONBOARD_MISSING" ? <label>Onboarding reason<textarea required maxLength={2000} value={reason} onChange={(event) => setReason(event.target.value)} /></label> : null}
           {batch.warnings?.length ? <label className="terminal-check"><input type="checkbox" checked={warningsAcknowledged} onChange={(event) => setWarningsAcknowledged(event.target.checked)} />I verified the numeric identifiers against the original source values, including leading zeroes.</label> : null}
-          <label className="terminal-check"><input type="checkbox" checked={confirmed} disabled={pending || Boolean(batch.errors.length)} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed the selected agency, rows and warnings, acknowledge the displayed creation counts and confirm this import.</label>
-          <div className="terminal-actions"><button disabled={pending || !canConfirmTerminalImport(batch, confirmed, currentTime, reason, warningsAcknowledged)} onClick={() => batchAction("confirm")}>Confirm import</button><button disabled={pending} onClick={() => batchAction("cancel")}>Cancel import</button><button disabled={pending} onClick={() => { setBatch(null); setConfirmed(false); }}>Start fresh preview</button></div>
+          <label className="terminal-check"><input type="checkbox" checked={confirmed} disabled={pending || (batch.preview_payload.policy !== "PARTIAL" && Boolean(batch.errors.length))} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed the selected agency, rows and warnings, acknowledge the displayed creation counts and confirm this import.</label>
+          {batch.preview_payload.policy === "PARTIAL" ? <label className="terminal-check"><input type="checkbox" checked={exclusionsAcknowledged} onChange={(event) => setExclusionsAcknowledged(event.target.checked)} />I understand that {batch.preview_payload.excluded_count} rows will be excluded and only {batch.preview_payload.valid_count} valid rows will be imported.</label> : null}
+          {pending || disabledReason ? <p role="status">{pending ? "Request in progress." : disabledReason}</p> : null}
+          <div className="terminal-actions"><button disabled={pending || !canConfirmTerminalImport(batch, confirmed, currentTime, reason, warningsAcknowledged, exclusionsAcknowledged)} onClick={() => batchAction("confirm")}>Confirm import</button><button disabled={pending} onClick={() => batchAction("cancel")}>Cancel import</button><button disabled={pending} onClick={() => { setBatch(null); setConfirmed(false); }}>Start fresh preview</button></div>
         </div> : null}
       </section> : null}
     </section> : null}

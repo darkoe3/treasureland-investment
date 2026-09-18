@@ -31,6 +31,7 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [partialImport, setPartialImport] = useState(false);
   const [exclusionsAcknowledged, setExclusionsAcknowledged] = useState(false);
+  const [registerType, setRegisterType] = useState("TERMINAL");
   const disabledReason = terminalImportDisabledReason(batch, confirmed, currentTime, reason, warningsAcknowledged, exclusionsAcknowledged);
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
@@ -91,7 +92,7 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
   async function preview(event) {
     event.preventDefault();
     await run(async () => {
-      const form = new FormData(); form.set("agency", uploadAgency); form.set("file", file); form.set("mode", importMode); form.set("policy", importMode === "ONBOARD_MISSING" && partialImport ? "PARTIAL" : "STRICT");
+      const form = new FormData(); form.set("agency", uploadAgency); form.set("file", file); form.set("mode", importMode); form.set("register_type", registerType); form.set("policy", importMode === "ONBOARD_MISSING" && partialImport ? "PARTIAL" : "STRICT");
       const result = await clientRequest(apiPath("/terminal-number-imports/preview/"), { method: "POST", body: form });
       setBatch(result); setExclusionsAcknowledged(false); setConfirmed(false); setWarningsAcknowledged(false); setReason("");
     });
@@ -105,9 +106,9 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
   }
   async function download() {
     await run(async () => {
-      const result = await clientDownload(apiPath(`/terminal-number-imports/template/?agency=${uploadAgency}`));
+      const result = await clientDownload(apiPath(`/terminal-number-imports/template/?agency=${uploadAgency}&register_type=${registerType}`));
       const url = URL.createObjectURL(result.blob); const anchor = document.createElement("a");
-      anchor.href = url; anchor.download = "terminal-register.xlsx"; anchor.click(); URL.revokeObjectURL(url);
+      anchor.href = url; anchor.download = registerType === "SUB_AGENT" ? "sub-agent-register.xlsx" : "terminal-register.xlsx"; anchor.click(); URL.revokeObjectURL(url);
     });
   }
   async function downloadErrors() {
@@ -119,7 +120,7 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
   }
 
   return <section className="terminal-register">
-    <header className="terminal-heading"><div><h1>{uploadPage ? "Upload terminal register" : "Terminal Numbers"}</h1><p>Terminals belong to Sub-Agent Numbers, people and agencies.</p></div>
+    <header className="terminal-heading"><div><h1>{uploadPage ? "Upload register" : "Terminal Numbers"}</h1><p>Terminals belong to Sub-Agent Numbers, people and agencies.</p></div>
       <div className="terminal-actions">{admin && !uploadPage ? <><button onClick={() => openEditor("add")} disabled={pending}>Add terminal</button><Link href="/dashboard/terminal-numbers/upload">Upload Excel</Link></> : null}
         {uploadPage ? <Link href="/dashboard/terminal-numbers">Terminal Numbers</Link> : null}</div>
     </header>
@@ -144,11 +145,12 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
       </fieldset></form>
     </section> : null}
     {uploadPage && admin ? <section className="panel"><h2>Upload Excel</h2>
-      <p>Columns A–D: S/NOS, SUB AGT NOS, TERMINAL NOS, NAME. Preview creates no terminal assignments. Resolve assignment conflicts through manual actions before uploading again.</p>
+      <p>{registerType === "SUB_AGENT" ? "Columns A-C: S/NOS, SUB AGT NOS, SUB NAME. No Terminal Numbers are created." : "Columns A-D: S/NOS, SUB AGT NOS, TERMINAL NOS, NAME."} Preview makes no changes. Resolve conflicts through manual actions.</p>
       <form onSubmit={preview}><fieldset disabled={pending || batch?.status === "PREVIEWED"}>
         <label>Agency<select required value={uploadAgency} onChange={(event) => setUploadAgency(event.target.value)}><option value="">Select Agency</option>{agencies.map((agency) => <option value={agency.id} key={agency.id}>{agency.name}</option>)}</select></label>
+        <label>Register type<select value={registerType} onChange={(event) => setRegisterType(event.target.value)}><option value="SUB_AGENT">Sub-Agent Register — no terminal numbers</option><option value="TERMINAL">Terminal Register — includes terminal numbers</option></select></label>
         <label>Import mode<select value={importMode} onChange={(event) => setImportMode(event.target.value)}><option value="LINK_EXISTING">LINK_EXISTING — link existing records</option><option value="ONBOARD_MISSING">ONBOARD_MISSING — create missing records</option></select></label>
-        <p>{importMode === "ONBOARD_MISSING" ? "Super Admin onboarding may create missing People, Sub-Agent Numbers and Terminals. Preview makes no master-data changes. Confirmation requires a reason and acknowledgement of creation counts. Existing records are never renamed or reassigned." : "People and Sub-Agent Numbers must already exist. Only Terminal mappings are created."}</p>
+        <p>{importMode === "ONBOARD_MISSING" ? "Super Admin onboarding may create missing People and Sub-Agent Numbers; Terminal Registers also create Terminals. Preview makes no master-data changes. Confirmation requires a reason and acknowledgement of creation counts. Existing records are never renamed or reassigned." : "People and Sub-Agent Numbers must already exist. Sub-Agent Registers only match existing records; Terminal Registers create terminal mappings."}</p>
         <p>{importMode !== "ONBOARD_MISSING" || !partialImport ? "Require all populated rows to be valid" : "Import valid rows only and skip rows with errors"}</p>
         {importMode === "ONBOARD_MISSING" ? <label className="terminal-check"><input type="checkbox" checked={partialImport} onChange={(event) => setPartialImport(event.target.checked)} />Import valid rows only and skip rows with errors</label> : null}
         <button type="button" disabled={!uploadAgency} onClick={download}>Download template</button>
@@ -166,10 +168,10 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
         <dl>{Object.entries(batch.preview_payload.summary || {}).map(([category, count]) => <div key={category}><dt>{category}</dt><dd>{count}</dd></div>)}</dl>
         {[{ title: batch.preview_payload.policy === "PARTIAL" ? "Excluded row errors" : "Blocking errors", items: batch.errors }, { title: "Warnings", items: batch.warnings }].map(({ title, items }) => items?.length ? <div key={title} role={title === "Blocking errors" ? "alert" : undefined}><h3>{title}: {items.length}</h3>{groupImportMessages(items).map((group) => <details key={group.label}><summary>{group.label} ({group.rows.length} rows)</summary><ul>{group.rows.map((item, index) => <li key={index}>{item.message}</li>)}</ul></details>)}</div> : null)}
         <label>Preview filter<select value={rowFilter} onChange={(event) => setRowFilter(event.target.value)}>{["All", "Valid", "Excluded", "Conflict", "Warning"].map((filter) => <option key={filter}>{filter}</option>)}</select></label>
-        <div className="terminal-table"><table><thead><tr><th>Row</th><th>Sub-Agent Number</th><th>Terminal Number</th><th>Name</th><th>Classification</th><th>Reason</th></tr></thead><tbody>{batch.preview_payload.rows.filter((row) => matchesImportFilter(row, rowFilter, batch.warnings)).map((row) => <tr key={row.row}><td>Row {row.row}</td><td>{String(row.supplied_values?.[0] ?? row.sub_agent_number_value)}</td><td>{String(row.supplied_values?.[1] ?? row.terminal_number)}</td><td>{String(row.supplied_values?.[2] ?? row.name)}</td><td>{row.classification}</td><td>{row.reasons?.join(" ") || batch.errors?.filter((item) => item.row === row.row).map((item) => item.detail || item.message).join(" ")}</td></tr>)}</tbody></table></div>
+        <div className="terminal-table"><table><thead><tr><th>Row</th><th>Sub-Agent Number</th><th>Terminal Number</th><th>Name</th><th>Classification</th><th>Reason</th></tr></thead><tbody>{batch.preview_payload.rows.filter((row) => matchesImportFilter(row, rowFilter, batch.warnings)).map((row) => <tr key={row.row}><td>Row {row.row}</td><td>{String(row.supplied_values?.[0] ?? row.sub_agent_number_value)}</td><td>{batch.preview_payload.register_type === "SUB_AGENT" ? "Not assigned" : String(row.supplied_values?.[1] ?? row.terminal_number)}</td><td>{String(row.name)}</td><td>{row.classification}</td><td>{row.reasons?.join(" ") || batch.errors?.filter((item) => item.row === row.row).map((item) => item.detail || item.message).join(" ")}</td></tr>)}</tbody></table></div>
         {batch.status === "PREVIEWED" ? <div className="terminal-confirmation"><h3>Confirm import</h3><p>Only the displayed new records will be created. Unchanged rows will be skipped. The entire batch rolls back if any row fails.</p>
           <p>Selected agency: {agencies.find((agency) => agency.id === batch.agency)?.name}. Creation counts: {batch.preview_payload.creation_counts?.people || 0} People, {batch.preview_payload.creation_counts?.sub_agent_numbers || 0} Sub-Agent Numbers, {batch.preview_payload.creation_counts?.terminals || 0} Terminals.</p>
-          {batch.preview_payload.mode === "ONBOARD_MISSING" ? <label>Onboarding reason<textarea required maxLength={2000} value={reason} onChange={(event) => setReason(event.target.value)} /></label> : null}
+          {(batch.preview_payload.mode === "ONBOARD_MISSING" || batch.preview_payload.register_type === "SUB_AGENT") ? <label>Onboarding reason<textarea required maxLength={2000} value={reason} onChange={(event) => setReason(event.target.value)} /></label> : null}
           {batch.warnings?.length ? <label className="terminal-check"><input type="checkbox" checked={warningsAcknowledged} onChange={(event) => setWarningsAcknowledged(event.target.checked)} />I verified the numeric identifiers against the original source values, including leading zeroes.</label> : null}
           <label className="terminal-check"><input type="checkbox" checked={confirmed} disabled={pending || (batch.preview_payload.policy !== "PARTIAL" && Boolean(batch.errors.length))} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed the selected agency, rows and warnings, acknowledge the displayed creation counts and confirm this import.</label>
           {batch.preview_payload.policy === "PARTIAL" ? <label className="terminal-check"><input type="checkbox" checked={exclusionsAcknowledged} onChange={(event) => setExclusionsAcknowledged(event.target.checked)} />I understand that {batch.preview_payload.excluded_count} rows will be excluded and only {batch.preview_payload.valid_count} valid rows will be imported.</label> : null}
@@ -183,6 +185,7 @@ export default function TerminalNumbersClient({ user, agencies, uploadPage = fal
         <label>Agency filter<select value={filters.agency} onChange={(event) => setFilters({ ...filters, agency: event.target.value })}><option value="">All accessible agencies</option>{agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label>
         <label>Status<select value={filters.active} onChange={(event) => setFilters({ ...filters, active: event.target.value })}><option value="">Active and inactive</option><option value="true">Active</option><option value="false">Inactive</option></select></label>
       </div><p role="status">{visible.length} terminals</p>
+      <div className="terminal-cards">{people.flatMap((person) => (person.tpm_codes || []).filter((code) => !terminals.some((terminal) => terminal.sub_agent_number === code.id)).map((code) => ({ person, code }))).filter(({ person, code }) => (!filters.agency || String(person.agency) === filters.agency) && (!filters.active || String(code.is_active) === filters.active) && [person.full_name, code.code].join(" ").toLowerCase().includes(filters.search.toLowerCase())).map(({ person, code }) => <article className="panel" key={`unassigned-${code.id}`}><h2>{code.code}</h2><p>{person.full_name}</p><p>Terminal Number: Not assigned</p>{admin && person.is_active && code.is_active ? <button disabled={pending} onClick={() => { openEditor("add"); setDraft({ ...emptyDraft, agency: String(person.agency), person: String(person.id), sub_agent_number: String(code.id) }); }}>Assign Terminal</button> : null}<Link href="/dashboard/people">Manage Sub-Agent Number</Link></article>)}</div>
       <div className="terminal-cards">{visible.map((item) => <article className="panel" key={item.id}><h2>{item.terminal_number}</h2><dl>
         <div><dt>Sub-Agent Number</dt><dd>{item.sub_agent_number_value}</dd></div><div><dt>Person</dt><dd>{item.person_name}</dd></div><div><dt>Agency</dt><dd>{item.agency_name}</dd></div><div><dt>Status</dt><dd>{item.is_active ? "Active" : "Inactive"}</dd></div><div><dt>Updated date</dt><dd>{new Date(item.updated_at).toLocaleString()}</dd></div>
       </dl><div className="terminal-actions">{terminalActions(user, item).map((label) => <button key={label} disabled={pending} onClick={() => act(label, item)}>{label}</button>)}</div></article>)}</div>

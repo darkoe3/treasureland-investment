@@ -445,7 +445,7 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
         registered_terminal = (registration or {}).get("terminal", "")
         if direct:
             tpm = direct
-            master = TerminalNumber.objects.filter(sub_agent_number=tpm, is_active=True).first()
+            master = TerminalNumber.objects.filter(sub_agent_number=tpm, is_active=True).first() if registered_terminal else None
             if master and registration and registered_terminal.casefold() != master.terminal_number.casefold():
                 errors.append({"row": row_index, "cell": sub_ref, "message": "Workbook terminal conflicts with the system Terminal Number register."})
                 continue

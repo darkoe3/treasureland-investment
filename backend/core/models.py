@@ -608,13 +608,15 @@ class TPMDailyTransaction(TimeStampedModel):
             raise ValidationError(errors)
 
     @transaction.atomic
-    def save(self, *args, **kwargs):
+    def save(self, *args, terminal_snapshot=None, **kwargs):
         if self._state.adding and self.tpm_code_id:
             list(Agency.objects.select_for_update().order_by("pk").values_list("pk", flat=True))
             self.tpm_code = TPMCode.objects.select_for_update().select_related("person").get(pk=self.tpm_code_id)
             self.person_id_snapshot = self.tpm_code.person_id
             self.tpm_code_snapshot = self.tpm_code.code
-            self.terminal_number_snapshot = TerminalNumber.objects.filter(sub_agent_number_id=self.tpm_code_id, is_active=True).values_list("terminal_number", flat=True).first() or ""
+            # Imports explicitly preserve an absent workbook terminal; manual entry
+            # records the current assignment. Existing historical rows are untouched.
+            self.terminal_number_snapshot = (TerminalNumber.objects.filter(sub_agent_number_id=self.tpm_code_id, is_active=True).values_list("terminal_number", flat=True).first() or "") if terminal_snapshot is None else terminal_snapshot
             self.person_name_snapshot = self.tpm_code.person.full_name
             self.agent_type_snapshot = self.tpm_code.person.agent_type
         self.full_clean()

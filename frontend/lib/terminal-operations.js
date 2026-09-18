@@ -27,7 +27,7 @@ export function terminalImportDisabledReason(batch, confirmed, now = Date.now(),
   if (!partial && batch.errors?.length) return "Resolve all blocking errors and create a fresh preview.";
   if (partial && !batch.preview_payload.valid_count) return "At least one valid row is required.";
   if (partial && !exclusionsAcknowledged) return "Acknowledge the excluded and valid row counts.";
-  if (batch.preview_payload?.mode === "ONBOARD_MISSING" && !reason.trim()) return "Enter an onboarding reason.";
+  if ((batch.preview_payload?.mode === "ONBOARD_MISSING" || batch.preview_payload?.register_type === "SUB_AGENT") && !reason.trim()) return "Enter an onboarding reason.";
   if (batch.warnings?.length && !warningsAcknowledged) return "Acknowledge numeric identifier warnings.";
   if (!confirmed) return "Acknowledge the creation counts and confirm the import.";
   return "";
@@ -38,7 +38,7 @@ export function canConfirmTerminalImport(...args) {
 }
 
 export function matchesImportFilter(row, filter, warnings = []) {
-  const valid = row.excluded === false || ["CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON", "ADD_TERMINAL_TO_EXISTING_SUBAGENT", "UNCHANGED"].includes(row.classification);
+  const valid = row.excluded === false || ["CREATE_PERSON_SUBAGENT", "CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON", "ADD_TERMINAL_TO_EXISTING_SUBAGENT", "UNCHANGED"].includes(row.classification);
   if (filter === "All") return true;
   if (filter === "Valid") return valid;
   if (filter === "Excluded") return !valid;
@@ -55,7 +55,8 @@ export function groupImportMessages(messages = []) {
   for (const item of messages) {
     const message = typeof item.message === "string" ? item.message.trim() : "";
     const detail = item.detail || message.replace(/^Row \d+[: —]+/, "");
-    const row = item.row || item.cell?.match(/^[A-Z]+(\d+)$/i)?.[1] || message.match(/^Row (\d+)\b/)?.[1];
+    const row = [item.row, item.cell?.match(/^[A-Z]+(\d+)$/i)?.[1], message.match(/^Row (\d+)\b/)?.[1]]
+      .find((value) => /^\d+$/.test(String(value)) && Number(value) > 0);
     const description = detail && !/^[-–—]+$/.test(detail) ? detail : item.field
       ? `${item.field} is numeric and may have lost leading zeroes.`
       : item.category || "Review this row in the workbook.";
@@ -67,7 +68,7 @@ export function groupImportMessages(messages = []) {
 }
 
 export function importRowGroup(category) {
-  if (["CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON", "ADD_TERMINAL_TO_EXISTING_SUBAGENT"].includes(category)) return "New";
+  if (["CREATE_PERSON_SUBAGENT", "CREATE_PERSON_SUBAGENT_TERMINAL", "ADD_SUBAGENT_TO_EXISTING_PERSON", "ADD_TERMINAL_TO_EXISTING_SUBAGENT"].includes(category)) return "New";
   if (category === "UNCHANGED") return "Unchanged";
   if (["INVALID", "INCOMPLETE", "DUPLICATE"].includes(category)) return "Invalid";
   return "Conflict";

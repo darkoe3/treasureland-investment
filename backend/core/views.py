@@ -903,14 +903,15 @@ class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
                     raise ValidationError("Sub-Agent identity changed after preview. Create a fresh preview.")
                 from .models import TerminalNumber
                 current_terminal = TerminalNumber.objects.filter(sub_agent_number=tpm_code, is_active=True).values_list("terminal_number", flat=True).first() or ""
-                if "terminal_number" in row and current_terminal != row["terminal_number"]:
+                if row.get("terminal_number") and current_terminal != row["terminal_number"]:
                     raise ValidationError("Terminal assignment changed after preview. Create a fresh preview.")
-                txn = TPMDailyTransaction.objects.create(
+                txn = TPMDailyTransaction(
                     daily_sheet=sheet,
                     tpm_code=tpm_code,
                     created_by=request.user,
                     updated_by=request.user,
                 )
+                txn.save(terminal_snapshot=row.get("terminal_number"))
                 created_transactions.append(txn)
                 TransactionGameSale.objects.bulk_create(
                     [

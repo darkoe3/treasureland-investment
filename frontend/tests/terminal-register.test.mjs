@@ -20,6 +20,37 @@ const terminal = { id: 1, agency: 1, agency_name: "Musa", person: 1, person_name
 const batch = { id: 1, agency: 1, status: "PREVIEWED", original_filename: "test.xlsx", expires_at: "2099-01-01", warnings: [], errors: [], preview_payload: { rows: [{ row: 2, terminal_number: "00009", sub_agent_number_value: "0001", name: "Ayo", classification: "New" }] } };
 const draft = { agency: "1", person: "1", sub_agent_number: "10", terminal_number: "00009", is_active: true, confirmed: false, reason: "" };
 
+test("sub-agent register selector posts fixed type and renders names without terminals", async () => {
+  const preview = { ...batch, preview_payload: { register_type: "SUB_AGENT", mode: "LINK_EXISTING",
+    creation_counts: { people: 0, sub_agent_numbers: 0, terminals: 0 },
+    rows: [{ row: 9, classification: "UNCHANGED", name: "Ayo", supplied_values: ["0001", "Ayo"] }] } };
+  const calls = [];
+  const ui = harness({ uploadPage: true, request: async (path, options) => { calls.push([path, options]); return preview; } });
+  assert.match(ui.html(), /Sub-Agent Register — no terminal numbers/);
+  find(ui.render(), (n) => n.type === "select" && n.props.value === "TERMINAL").props.onChange({ target: { value: "SUB_AGENT" } });
+  await find(ui.render(), (n) => n.type === "form").props.onSubmit({ preventDefault() {} });
+  assert.equal(calls[0][1].body.get("register_type"), "SUB_AGENT");
+  assert.match(ui.html(), /Row 9<\/td><td>0001<\/td><td>Not assigned<\/td><td>Ayo/);
+  assert.match(ui.html(), /New Terminal Numbers: 0/);
+  assert.equal(operations.canConfirmTerminalImport(preview, true, Date.now(), ""), false);
+  assert.equal(operations.canConfirmTerminalImport(preview, true, Date.now(), "Verified"), true);
+});
+
+test("unassigned listing opens manual terminal assignment with selected owner", () => {
+  const ui = harness();
+  assert.match(ui.html(), /Terminal Number: Not assigned/);
+  find(ui.render(), (n) => n.type === "button" && n.props.children === "Assign Terminal").props.onClick();
+  assert.equal(ui.states[4].sub_agent_number, "20");
+  assert.equal(ui.states[4].person, "2");
+  assert.equal(ui.states[4].agency, "2");
+  assert.doesNotMatch(harness({ user: { role: "ACCOUNTANT" } }).html(), /Assign Terminal/);
+});
+
+test("grouped messages recover Excel row numbers from placeholder rows", () => {
+  const groups = operations.groupImportMessages([{ row: "-", cell: "B27", field: "SUB AGT NOS", message: "-" }]);
+  assert.equal(groups[0].rows[0].message, "Row 27: SUB AGT NOS is numeric and may have lost leading zeroes.");
+});
+
 function harness({ user = { role: "SUPER_ADMIN" }, editor = null, values = draft, preview = null, request = async () => [], uploadPage = false } = {}) {
   const states = [[terminal], people, { agency: "", active: "", search: "" }, editor, values, null, "1", new Blob(["xlsx"]), preview, false, false, "", ""];
   let index = 0;

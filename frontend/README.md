@@ -131,6 +131,28 @@ npm run build
 - Wide report tables scroll internally without widening the dashboard shell.
 - Logout clears auth cookies and returns to `/login`.
 
+## Standalone Payments
+
+The authenticated Payments section is available at `/dashboard/payments`, with payer, obligation, receipt and analytics routes beneath it. Payment screens call Django only through the same-origin controlled BFF. They do not read Daily Sheets or calculate authoritative financial values in JavaScript.
+
+The overview separates gross posted, reversed, net collected and outstanding amounts. Payers can be created, edited, activated/deactivated and opened for agency-scoped Sub-Agent linking, unlinking and confirmed reassignment. Obligations show expected, posted, reversed and current balance values; they can be created, cancelled with a reason, or opened for payment history. There are no hard-delete controls.
+
+Authorised Accountants can record full or partial payments in assigned agencies. The form validates positive amounts and the displayed balance, forwards backend field errors, disables duplicate submissions and keeps one Web Crypto idempotency key for an unchanged retry. Material form changes create a new key; successful or cancelled attempts are discarded. Keys and payment data are never written to browser storage. Only Super Admin users see reversal controls. Reversal requires a reason and confirmation, and refreshes the obligation and payment history.
+
+The receipt action uses the exact `GET /api/backend/payer-payments/{id}/receipt/` proxy route. The BFF preserves authentication, status, PDF content type, safe disposition and binary response body. Browser object URLs are revoked after download. Payment proxy methods are exact and mutations remain CSRF-protected.
+
+Analytics filters distinguish inclusive obligation-date portfolio filters from inclusive payment-date collection filters. The UI displays backend-provided portfolio, collection, status, method, trend and Super Admin agency breakdowns with Ghana currency formatting. Reversed amounts remain separate from active collections.
+
+Frontend verification:
+
+```text
+npm test
+npm run lint
+npm run build
+```
+
+Known limitations: authenticated browser viewport verification requires a local staff session and was not claimed in the release review; receipt-view audit events remain disabled because they are not part of the established audit policy. Teller/Cashier functionality is not implemented.
+
 ## Terminal Numbers
 
 `/dashboard/terminal-numbers` is visible to both roles; the backend scopes Accountant reads to assigned agencies. Super Admin has Add terminal, Edit, Deactivate/Reactivate, Reassign and View history. Edit cannot move ownership. Agency ? Person ? Sub-Agent Number choices cascade and clear stale selections. Reassign shows both agencies/people/numbers, requires a reason and explicit checkbox, and preserves historical transactions.

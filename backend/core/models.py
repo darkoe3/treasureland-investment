@@ -87,6 +87,10 @@ class Agency(TimeStampedModel):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(Lower("name"), name="agency_name_ci_unique"),
+            models.UniqueConstraint(Lower("code"), name="agency_code_ci_unique"),
+        ]
         indexes = [models.Index(fields=["is_active", "name"])]
 
     def __str__(self):
@@ -344,6 +348,10 @@ class VarianceStatus(models.TextChoices):
 
 
 class AuditAction(models.TextChoices):
+    AGENCY_CREATED = "AGENCY_CREATED", "Agency created"
+    AGENCY_UPDATED = "AGENCY_UPDATED", "Agency updated"
+    AGENCY_DEACTIVATED = "AGENCY_DEACTIVATED", "Agency deactivated"
+    AGENCY_REACTIVATED = "AGENCY_REACTIVATED", "Agency reactivated"
     TERMINAL_CREATED = "TERMINAL_CREATED", "Terminal created"
     TERMINAL_EDITED = "TERMINAL_EDITED", "Terminal edited"
     TERMINAL_DEACTIVATED = "TERMINAL_DEACTIVATED", "Terminal deactivated"
@@ -376,6 +384,313 @@ class AuditAction(models.TextChoices):
     IMPORT_CONFIRMED = "IMPORT_CONFIRMED", "Import confirmed"
     IMPORT_CANCELLED = "IMPORT_CANCELLED", "Import cancelled"
     IMPORT_FAILED = "IMPORT_FAILED", "Import failed"
+    PAYMENT_PAYER_CREATED = "PAYMENT_PAYER_CREATED", "Payment payer created"
+    PAYMENT_PAYER_UPDATED = "PAYMENT_PAYER_UPDATED", "Payment payer updated"
+    PAYMENT_PAYER_DEACTIVATED = "PAYMENT_PAYER_DEACTIVATED", "Payment payer deactivated"
+    PAYMENT_PAYER_REACTIVATED = "PAYMENT_PAYER_REACTIVATED", "Payment payer reactivated"
+    PAYER_SUBAGENT_ASSIGNED = "PAYER_SUBAGENT_ASSIGNED", "Sub-agent assigned"
+    PAYER_SUBAGENT_UNASSIGNED = "PAYER_SUBAGENT_UNASSIGNED", "Sub-agent unassigned"
+    PAYER_SUBAGENT_REASSIGNED = "PAYER_SUBAGENT_REASSIGNED", "Sub-agent reassigned"
+    PAYMENT_OBLIGATION_CREATED = "PAYMENT_OBLIGATION_CREATED", "Payment obligation created"
+    PAYMENT_OBLIGATION_UPDATED = "PAYMENT_OBLIGATION_UPDATED", "Payment obligation updated"
+    PAYMENT_OBLIGATION_CANCELLED = "PAYMENT_OBLIGATION_CANCELLED", "Payment obligation cancelled"
+    PAYMENT_RECORDED = "PAYMENT_RECORDED", "Payment recorded"
+    PAYMENT_REVERSED = "PAYMENT_REVERSED", "Payment reversed"
+
+
+class PaymentPayer(TimeStampedModel):
+    agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="payment_payers")
+    payer_name = models.CharField(max_length=200)
+    telephone = models.CharField(max_length=80, blank=True, default="")
+    email = models.EmailField(max_length=255, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_payment_payers")
+
+    class Meta:
+        ordering = ["payer_name", "id"]
+        constraints = [
+            models.UniqueConstraint(Lower("payer_name"), "agency", name="unique_payment_payer_name_per_agency"),
+            models.CheckConstraint(condition=~Q(payer_name=""), name="payment_payer_name_not_empty"),
+        ]
+        indexes = [models.Index(fields=["agency", "is_active", "payer_name"])]
+
+    def clean(self):
+        if not self.payer_name or not self.payer_name.strip():
+            raise ValidationError({"payer_name": "Payer name is required."})
+        self.payer_name = " ".join(self.payer_name.split())
+        if self.agency_id and not self.agency.is_active:
+            raise ValidationError({"agency": "Inactive agencies reject new Payers."})
+        if self.pk:
+            matches = PaymentPayer.objects.filter(agency_id=self.agency_id, payer_name__iexact=self.payer_name).exclude(pk=self.pk)
+            if matches.exists():
+                raise ValidationError({"payer_name": "A payer with this name already exists in this agency."})
+        elif PaymentPayer.objects.filter(agency_id=self.agency_id, payer_name__iexact=self.payer_name).exists():
+            raise ValidationError({"payer_name": "A payer with this name already exists in this agency."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.payer_name} ({self.agency.name})"
+
+
+class PayerSubAgentAssignment(TimeStampedModel):
+    payer = models.ForeignKey(PaymentPayer, on_delete=models.CASCADE, related_name="sub_agent_assignments")
+    sub_agent_number = models.ForeignKey(TPMCode, on_delete=models.PROTECT, related_name="payment_payer_assignments")
+    is_active = models.BooleanField(default=True)
+    assigned_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="assigned_payment_sub_agents")
+    assigned_at = models.DateTimeField(default=timezone.now)
+    unassigned_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True, related_name="unassigned_payment_sub_agents")
+    unassigned_at = models.DateTimeField(null=True, blank=True)
+    reassignment_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["payer__payer_name", "sub_agent_number__code"]
+        constraints = [
+            models.UniqueConstraint(fields=["payer", "sub_agent_number"], name="unique_payer_sub_agent_assignment"),
+            models.UniqueConstraint(fields=["sub_agent_number"], condition=Q(is_active=True), name="unique_active_payer_sub_agent_assignment"),
+        ]
+        indexes = [models.Index(fields=["payer", "is_active"]), models.Index(fields=["sub_agent_number", "is_active"])]
+
+    def clean(self):
+        if self.payer_id and self.sub_agent_number_id and self.payer.agency_id != self.sub_agent_number.person.agency_id:
+            raise ValidationError({"sub_agent_number": "Sub-Agent Number must belong to the same agency as the payer."})
+        if not self.payer.is_active:
+            raise ValidationError({"payer": "Inactive payers cannot receive new assignments."})
+        if not self.sub_agent_number.is_active:
+            raise ValidationError({"sub_agent_number": "Inactive Sub-Agent Numbers cannot receive new assignments."})
+        if not self.sub_agent_number.person.is_active:
+            raise ValidationError({"sub_agent_number": "The Sub-Agent Number owner must be active."})
+        if self.is_active and self.payer.agency_id and not self.payer.agency.is_active:
+            raise ValidationError({"payer": "Assignments require an active agency."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.payer.payer_name} -> {self.sub_agent_number.code}"
+
+
+class PaymentNumberSequence(models.Model):
+    sequence_type = models.CharField(max_length=20)
+    year = models.PositiveIntegerField()
+    last_value = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["sequence_type", "year"], name="unique_payment_number_sequence")
+        ]
+
+
+def next_payment_number(sequence_type, year, prefix):
+    with transaction.atomic():
+        sequence, _ = PaymentNumberSequence.objects.select_for_update().get_or_create(
+            sequence_type=sequence_type,
+            year=year,
+            defaults={"last_value": 0},
+        )
+        sequence.last_value += 1
+        sequence.save(update_fields=["last_value"])
+        return f"{prefix}-{year}-{sequence.last_value:06d}"
+
+
+class PaymentObligation(TimeStampedModel):
+    class ObligationStatus(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        PARTIALLY_PAID = "PARTIALLY_PAID", "Partially Paid"
+        PAID = "PAID", "Paid"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="payment_obligations")
+    payer = models.ForeignKey(PaymentPayer, on_delete=models.PROTECT, related_name="obligations")
+    obligation_number = models.CharField(max_length=40, unique=True)
+    description = models.CharField(max_length=255)
+    obligation_date = models.DateField()
+    due_date = models.DateField(null=True, blank=True)
+    total_expected = models.DecimalField(max_digits=14, decimal_places=2)
+    notes = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=20, choices=ObligationStatus.choices, default=ObligationStatus.OPEN)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_payment_obligations")
+    cancelled_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True, related_name="cancelled_payment_obligations")
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-obligation_date", "-id"]
+        indexes = [models.Index(fields=["agency", "status", "obligation_date"]), models.Index(fields=["payer", "obligation_date"])]
+        constraints = [
+            models.CheckConstraint(condition=Q(total_expected__gt=0), name="payment_obligation_total_expected_positive"),
+        ]
+
+    def clean(self):
+        if self.total_expected is not None and self.total_expected <= 0:
+            raise ValidationError({"total_expected": "Total expected must be greater than zero."})
+        if self.agency_id and self.payer_id and self.payer.agency_id != self.agency_id:
+            raise ValidationError({"payer": "Obligation agency must match the payer's agency."})
+        if not (self.description or "").strip():
+            raise ValidationError({"description": "Description is required."})
+        if self.agency_id and not self.agency.is_active:
+            raise ValidationError({"agency": "Active agencies only."})
+        if self.payer_id and not self.payer.is_active:
+            raise ValidationError({"payer": "Inactive payers cannot carry obligations."})
+        if self.pk:
+            original = PaymentObligation.objects.filter(pk=self.pk).first()
+            has_posted_payments = self.payments.filter(status=PayerPayment.PaymentStatus.POSTED).exists() if original else False
+            if has_posted_payments:
+                if self.agency_id and original.agency_id != self.agency_id:
+                    raise ValidationError({"agency": "Agency cannot change after the first posted payment."})
+                if self.payer_id and original.payer_id != self.payer_id:
+                    raise ValidationError({"payer": "Payer cannot change after the first posted payment."})
+                if self.total_expected != original.total_expected:
+                    raise ValidationError({"total_expected": "Expected amount cannot be changed after the first posted payment."})
+
+    @property
+    def total_paid(self):
+        if not self.pk:
+            return Decimal("0.00")
+        total = self.payments.filter(status=PayerPayment.PaymentStatus.POSTED).aggregate(total=models.Sum("amount_received"))["total"]
+        return money(total or Decimal("0.00"))
+
+    @property
+    def balance(self):
+        return money(self.total_expected - self.total_paid)
+
+    def refresh_status(self):
+        if not self.pk:
+            return self.status
+        if self.status == self.ObligationStatus.CANCELLED:
+            return self.status
+        if self.total_paid == 0:
+            self.status = self.ObligationStatus.OPEN
+        elif self.total_paid >= self.total_expected:
+            self.status = self.ObligationStatus.PAID
+        else:
+            self.status = self.ObligationStatus.PARTIALLY_PAID
+        return self.status
+
+    def save(self, *args, **kwargs):
+        self.total_expected = money(self.total_expected)
+        self.description = " ".join(self.description.split()) if self.description else ""
+        if isinstance(self.obligation_date, str):
+            self.obligation_date = timezone.datetime.strptime(self.obligation_date, "%Y-%m-%d").date()
+        if not self.obligation_number and not self.pk:
+            year = self.obligation_date.year if self.obligation_date else timezone.now().year
+            self.obligation_number = next_payment_number("OBLIGATION", year, "TLI-OBL")
+        self.full_clean()
+        if self.status != self.ObligationStatus.CANCELLED:
+            self.refresh_status()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.obligation_number} - {self.payer.payer_name}"
+
+
+class PayerPayment(TimeStampedModel):
+    class PaymentMethod(models.TextChoices):
+        CASH = "CASH", "Cash"
+        MOBILE_MONEY = "MOBILE_MONEY", "Mobile Money"
+        BANK_TRANSFER = "BANK_TRANSFER", "Bank Transfer"
+        CHEQUE = "CHEQUE", "Cheque"
+        OTHER = "OTHER", "Other"
+
+    class PaymentStatus(models.TextChoices):
+        POSTED = "POSTED", "Posted"
+        REVERSED = "REVERSED", "Reversed"
+
+    obligation = models.ForeignKey(PaymentObligation, on_delete=models.PROTECT, related_name="payments")
+    receipt_number = models.CharField(max_length=40, unique=True)
+    agency_snapshot = models.CharField(max_length=200)
+    payer_name_snapshot = models.CharField(max_length=200)
+    linked_sub_agent_numbers_snapshot = models.JSONField(default=list, blank=True)
+    obligation_number_snapshot = models.CharField(max_length=40)
+    obligation_description_snapshot = models.CharField(max_length=255)
+    obligation_date_snapshot = models.DateField()
+    expected_amount_snapshot = models.DecimalField(max_digits=14, decimal_places=2)
+    amount_previously_paid = models.DecimalField(max_digits=14, decimal_places=2)
+    amount_received = models.DecimalField(max_digits=14, decimal_places=2)
+    cumulative_amount_paid = models.DecimalField(max_digits=14, decimal_places=2)
+    balance_after_payment = models.DecimalField(max_digits=14, decimal_places=2)
+    payment_date = models.DateTimeField(default=timezone.now)
+    payment_method = models.CharField(max_length=20, choices=PaymentMethod.choices)
+    payment_reference = models.CharField(max_length=120, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    recorded_by_display_snapshot = models.CharField(max_length=255, blank=True, default="")
+    recorded_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="recorded_payer_payments")
+    status = models.CharField(max_length=20, choices=PaymentStatus.choices, default=PaymentStatus.POSTED)
+    idempotency_key = models.CharField(max_length=100, unique=True)
+    reversed_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True, related_name="reversed_payer_payments")
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversal_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-payment_date", "-id"]
+        indexes = [models.Index(fields=["obligation", "status", "payment_date"]), models.Index(fields=["idempotency_key"]) ]
+        constraints = [
+            models.CheckConstraint(condition=Q(expected_amount_snapshot__gt=0), name="payment_expected_snapshot_positive"),
+            models.CheckConstraint(condition=Q(amount_previously_paid__gte=0), name="payment_previous_paid_non_negative"),
+            models.CheckConstraint(condition=Q(amount_received__gt=0), name="payment_amount_received_positive"),
+            models.CheckConstraint(condition=Q(cumulative_amount_paid__gte=0), name="payment_cumulative_paid_non_negative"),
+            models.CheckConstraint(condition=Q(balance_after_payment__gte=0), name="payment_balance_after_non_negative"),
+            models.CheckConstraint(
+                condition=(
+                    Q(status="POSTED", reversed_by__isnull=True, reversed_at__isnull=True, reversal_reason="")
+                    | Q(status="REVERSED", reversed_by__isnull=False, reversed_at__isnull=False) & ~Q(reversal_reason="")
+                ),
+                name="payment_reversal_metadata_consistent",
+            ),
+        ]
+
+    def clean(self):
+        if self.amount_received <= 0:
+            raise ValidationError({"amount_received": "Payment amount must be greater than zero."})
+        if self.payment_method != self.PaymentMethod.CASH and not self.payment_reference.strip():
+            raise ValidationError({"payment_reference": "A payment reference is required for non-cash payments."})
+        if self.payment_method == self.PaymentMethod.CASH and self.payment_reference and len(self.payment_reference.strip()) > 120:
+            raise ValidationError({"payment_reference": "Reference is too long."})
+        if self.status == self.PaymentStatus.REVERSED and not self.reversal_reason.strip():
+            raise ValidationError({"reversal_reason": "A reversal reason is required."})
+        if self.status == self.PaymentStatus.REVERSED and (not self.reversed_by_id or not self.reversed_at):
+            raise ValidationError({"status": "Reversed payments require reversal actor and timestamp."})
+        if self.status == self.PaymentStatus.POSTED and (self.reversed_by_id or self.reversed_at or self.reversal_reason.strip()):
+            raise ValidationError({"status": "Posted payments cannot contain reversal metadata."})
+
+        if self.pk:
+            original = PayerPayment.objects.filter(pk=self.pk).first()
+            if original and original.status == self.PaymentStatus.POSTED:
+                immutable_fields = (
+                    "obligation_id", "receipt_number", "agency_snapshot", "payer_name_snapshot",
+                    "linked_sub_agent_numbers_snapshot", "obligation_number_snapshot",
+                    "obligation_description_snapshot", "obligation_date_snapshot",
+                    "expected_amount_snapshot", "amount_previously_paid", "amount_received",
+                    "cumulative_amount_paid", "balance_after_payment", "payment_date",
+                    "payment_method", "payment_reference", "notes", "recorded_by_id",
+                    "recorded_by_display_snapshot", "idempotency_key",
+                )
+                if any(getattr(original, field) != getattr(self, field) for field in immutable_fields):
+                    raise ValidationError({"detail": "POSTED payment records are immutable."})
+            elif original and original.status == self.PaymentStatus.REVERSED and self.status != original.status:
+                raise ValidationError({"detail": "REVERSED payment records are immutable."})
+
+    def save(self, *args, **kwargs):
+        self.amount_received = money(self.amount_received)
+        self.amount_previously_paid = money(self.amount_previously_paid)
+        self.cumulative_amount_paid = money(self.cumulative_amount_paid)
+        self.balance_after_payment = money(self.balance_after_payment)
+        self.expected_amount_snapshot = money(self.expected_amount_snapshot)
+        if not self.receipt_number and not self.pk:
+            self.receipt_number = next_payment_number("PAYMENT", self.payment_date.year if self.payment_date else timezone.now().year, "TLI-PAY")
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Payment records cannot be deleted.")
+
+    def __str__(self):
+        return f"{self.receipt_number} - {self.payer_name_snapshot}"
 
 
 class DailySheet(TimeStampedModel):

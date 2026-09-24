@@ -1,6 +1,6 @@
 const COLLECTION_METHODS = {
   "terminal-numbers": new Set(["GET", "POST"]),
-  agencies: new Set(["GET"]),
+  agencies: new Set(["GET", "POST"]),
   games: new Set(["GET"]),
   people: new Set(["GET", "POST"]),
   "tpm-codes": new Set(["GET", "POST"]),
@@ -9,9 +9,13 @@ const COLLECTION_METHODS = {
   "omitted-terminals": new Set(["GET", "POST"]),
   "weekly-game-schedules": new Set(["GET", "POST"]),
   "audit-logs": new Set(["GET"]),
+  "payment-payers": new Set(["GET", "POST"]),
+  "payment-obligations": new Set(["GET", "POST"]),
+  "payer-payments": new Set(["GET", "POST"]),
 };
 
 const DETAIL_METHODS = {
+  agencies: new Set(["GET", "PATCH"]),
   "terminal-numbers": new Set(["GET", "PATCH"]),
   people: new Set(["GET", "PATCH", "DELETE"]),
   "tpm-codes": new Set(["GET", "PATCH", "DELETE"]),
@@ -19,6 +23,9 @@ const DETAIL_METHODS = {
   "tpm-daily-transactions": new Set(["GET", "PATCH", "DELETE"]),
   "omitted-terminals": new Set(["GET", "PATCH", "DELETE"]),
   "weekly-game-schedules": new Set(["GET", "PATCH", "DELETE"]),
+  "payment-payers": new Set(["GET", "PATCH"]),
+  "payment-obligations": new Set(["GET", "PATCH"]),
+  "payer-payments": new Set(["GET"]),
 };
 
 const ACCOUNTANT_ACTION_METHODS = new Map([
@@ -91,6 +98,13 @@ export function isAllowedBackendProxyPath(path, method = "GET") {
   if (/^terminal-number-imports\/\d+\/exclusions$/.test(cleanPath)) return normalizedMethod === "GET";
   if (/^terminal-numbers\/\d+\/history$/.test(cleanPath)) return normalizedMethod === "GET";
   if (/^terminal-numbers\/\d+\/(deactivate|reactivate|reassign)$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^agencies\/\d+\/(deactivate|reactivate)$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^payment-payers\/\d+\/(deactivate|reactivate|assign_sub_agent|unassign_sub_agent|reassign_sub_agent)$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^payment-obligations\/\d+\/cancel$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^payer-payments\/\d+\/reverse$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^payer-payments\/\d+\/receipt$/.test(cleanPath)) return normalizedMethod === "GET";
+  if (cleanPath === "payments/analytics") return normalizedMethod === "GET";
+  if (/^agencies\/\d+\/impact$/.test(cleanPath)) return normalizedMethod === "GET";
   const parts = cleanPath.split("/").filter(Boolean);
   if (cleanPath === "games/for-date") {
     return normalizedMethod === "GET";
@@ -123,5 +137,5 @@ export function backendPathFromProxySegments(segments = [], search = "") {
 export function isBinaryBackendProxyPath(path, method = "GET") {
   const cleanPath = cleanProxyPath(path);
   const normalizedMethod = String(method || "GET").toUpperCase();
-  return (cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template" || (cleanPath === "terminal-number-imports/template" || /^terminal-number-imports\/\d+\/exclusions$/.test(cleanPath))) && normalizedMethod === "GET";
+  return (cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template" || (cleanPath === "terminal-number-imports/template" || /^terminal-number-imports\/\d+\/exclusions$/.test(cleanPath)) || /^payer-payments\/\d+\/receipt$/.test(cleanPath)) && normalizedMethod === "GET";
 }

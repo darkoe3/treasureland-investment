@@ -67,7 +67,7 @@ def resolve_report_query(params):
     if not str(agency_id).isdigit():
         raise ValidationError({"agency": "agency must be a numeric active agency ID."})
     try:
-        agency = Agency.objects.get(pk=agency_id, is_active=True)
+        agency = Agency.objects.get(pk=agency_id)
     except Agency.DoesNotExist as exc:
         raise NotFound("Agency was not found.")
 

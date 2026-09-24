@@ -10,6 +10,10 @@ from .views import (
     GameViewSet,
     LoginView,
     OmittedTerminalViewSet,
+    PaymentAnalyticsView,
+    PaymentObligationViewSet,
+    PaymentPayerViewSet,
+    PayerPaymentViewSet,
     PersonViewSet,
     RefreshView,
     TPMCodeViewSet,
@@ -40,6 +44,9 @@ router.register("daily-sheet-imports", DailySheetImportBatchViewSet, basename="d
 router.register("tpm-daily-transactions", TPMDailyTransactionViewSet, basename="tpm-daily-transaction")
 router.register("omitted-terminals", OmittedTerminalViewSet, basename="omitted-terminal")
 router.register("audit-logs", AuditLogViewSet, basename="audit-log")
+router.register("payment-payers", PaymentPayerViewSet, basename="payment-payer")
+router.register("payment-obligations", PaymentObligationViewSet, basename="payment-obligation")
+router.register("payer-payments", PayerPaymentViewSet, basename="payer-payment")
 
 urlpatterns = [
     path("health/", health_view, name="health"),
@@ -49,5 +56,6 @@ urlpatterns = [
     path("auth/me/", current_user_view, name="current_user"),
     path("reports/agency-summary/", agency_summary_report_view, name="agency_summary_report"),
     path("reports/agency-summary/export/", agency_summary_report_export_view, name="agency_summary_report_export"),
+    path("payments/analytics/", PaymentAnalyticsView.as_view(), name="payments-analytics"),
     path("", include(router.urls)),
 ]

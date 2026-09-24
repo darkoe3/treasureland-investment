@@ -1,13 +1,20 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 import logging
 import uuid
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import Http404, HttpResponse
 from django.db import IntegrityError, transaction
+from django.db.models import Count, DecimalField, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.text import get_valid_filename
 from rest_framework import filters, status, viewsets
@@ -15,11 +22,14 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from .agencies import AgencyWriteLockMixin, require_active_agency, agency_counts, agency_identity, agency_audit
 from .models import (
     Agency,
     AuditAction,
@@ -30,6 +40,10 @@ from .models import (
     DailySheetStatus,
     Game,
     OmittedTerminal,
+    PaymentObligation,
+    PaymentPayer,
+    PayerPayment,
+    PayerSubAgentAssignment,
     Person,
     TPMCode,
     TPMDailyTransaction,
@@ -59,6 +73,10 @@ from .serializers import (
     EmailTokenObtainPairSerializer,
     GameSerializer,
     OmittedTerminalSerializer,
+    PaymentObligationSerializer,
+    PaymentPayerSerializer,
+    PayerPaymentSerializer,
+    PayerSubAgentAssignmentSerializer,
     PersonSerializer,
     TPMCodeSerializer,
     TPMDailyTransactionSerializer,
@@ -141,8 +159,83 @@ def agency_summary_report_export_view(request):
     return workbook_response(report)
 
 
-class BaseSearchViewSet(viewsets.ModelViewSet):
+class BaseSearchViewSet(AgencyWriteLockMixin, viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+
+
+class PaymentPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+def parse_payment_date(value, field_name):
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError({field_name: "Use an ISO date in YYYY-MM-DD format."}) from exc
+
+
+def validate_date_range(query_params, start_name, end_name):
+    start = parse_payment_date(query_params[start_name], start_name) if query_params.get(start_name) else None
+    end = parse_payment_date(query_params[end_name], end_name) if query_params.get(end_name) else None
+    if start and end and start > end:
+        raise ValidationError({end_name: f"{end_name} must be on or after {start_name}."})
+    return start, end
+
+
+def parse_id_filter(query_params, name):
+    values = query_params.getlist(name)
+    if not values:
+        return []
+    parsed = []
+    for value in values:
+        for item in value.split(","):
+            try:
+                parsed.append(int(item))
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({name: "Use numeric IDs separated by commas."}) from exc
+    return list(dict.fromkeys(parsed))
+
+
+def parse_single_id(query_params, name):
+    value = query_params.get(name)
+    if not value:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError({name: "Use a numeric ID."}) from exc
+
+
+def validate_ordering(query_params, allowed):
+    ordering = query_params.get("ordering")
+    if not ordering:
+        return
+    invalid = [item for item in ordering.split(",") if item.lstrip("-") not in allowed]
+    if invalid:
+        raise ValidationError({"ordering": "Unsupported ordering field."})
+
+
+def ensure_agency_filter_access(user, agency_ids):
+    if user.role == UserRole.SUPER_ADMIN or not agency_ids:
+        return
+    accessible = set(accessible_agency_ids(user).filter(agency__is_active=True))
+    if not set(agency_ids).issubset(accessible):
+        raise PermissionDenied("You do not have access to one or more requested agencies.")
+
+
+class PaymentQueryMixin:
+    pagination_class = PaymentPagination
+
+    def filter_queryset(self, queryset):
+        validate_ordering(self.request.query_params, set(self.ordering_fields))
+        return super().filter_queryset(queryset)
+
+    def validate_agency_query(self):
+        agency_ids = parse_id_filter(self.request.query_params, "agency")
+        ensure_agency_filter_access(self.request.user, agency_ids)
+        return agency_ids
 
 
 def assignment_for(user, agency):
@@ -152,6 +245,8 @@ def assignment_for(user, agency):
 
 
 def require_assignment_flag(user, agency, flag):
+    if flag in {"can_create", "can_edit", "can_delete"}:
+        require_active_agency(agency)
     if user.role == UserRole.SUPER_ADMIN:
         return
     assignment = assignment_for(user, agency)
@@ -162,7 +257,7 @@ def require_assignment_flag(user, agency, flag):
 def accessible_agency_ids(user, flag=None):
     if user.role == UserRole.SUPER_ADMIN:
         return None
-    queryset = UserAgencyAssignment.objects.filter(user=user, agency__is_active=True)
+    queryset = UserAgencyAssignment.objects.filter(user=user)
     if flag:
         queryset = queryset.filter(**{flag: True})
     return queryset.values_list("agency_id", flat=True)
@@ -218,11 +313,82 @@ class AgencyViewSet(BaseSearchViewSet):
     search_fields = ["name", "code"]
     ordering_fields = ["name", "code", "created_at"]
 
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
     def get_queryset(self):
         queryset = Agency.objects.all()
-        if self.request.user.role == UserRole.SUPER_ADMIN:
-            return queryset
-        return queryset.filter(user_assignments__user=self.request.user).distinct()
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            queryset = queryset.filter(user_assignments__user=self.request.user).distinct()
+        active = self.request.query_params.get("active")
+        if active in {"true", "false"}:
+            queryset = queryset.filter(is_active=active == "true")
+        return queryset
+
+    def _save(self, serializer, action_name):
+        previous = agency_identity(serializer.instance) if serializer.instance else None
+        try:
+            with transaction.atomic():
+                agency = serializer.save()
+                agency_audit(self.request.user, agency, action_name, previous)
+        except IntegrityError:
+            # A concurrent create may win after serializer uniqueness validation.
+            retry = self.get_serializer(serializer.instance, data=self.request.data, partial=True)
+            retry.is_valid(raise_exception=True)
+            raise ValidationError({"detail": "An agency with this name or code already exists. Refresh and try again."})
+
+    def perform_create(self, serializer):
+        self._save(serializer, AuditAction.AGENCY_CREATED)
+
+    def perform_update(self, serializer):
+        self._save(serializer, AuditAction.AGENCY_UPDATED)
+
+    def retrieve(self, request, *args, **kwargs):
+        agency = self.get_object()
+        data = dict(self.get_serializer(agency).data)
+        data["assigned_accountants"] = list(agency.user_assignments.values("user_id", "user__full_name"))
+        data["recent_daily_sheets"] = list(agency.daily_sheets.values("id", "transaction_date", "status")[:10])
+        events = agency.audit_logs.all()
+        if request.user.role != UserRole.SUPER_ADMIN:
+            assignment = assignment_for(request.user, agency)
+            events = events.exclude(model_name__in=["TerminalNumber", "TerminalImportBatch"]) if assignment and assignment.can_view_history else events.none()
+        data["recent_audit_events"] = list(events.values("id", "action", "created_at")[:10])
+        return Response(data)
+
+    @action(detail=True, methods=["get"])
+    def impact(self, request, pk=None):
+        return Response(agency_counts(self.get_object()))
+
+    def _change_status(self, request, active):
+        agency = self.get_object()  # Parent lock acquired before any mutation/child lock.
+        reason = request.data.get("reason")
+        errors = {}
+        if not isinstance(reason, str) or not reason.strip():
+            errors["reason"] = "A reason is required."
+        elif len(reason.strip()) > 1000:
+            errors["reason"] = "Use at most 1000 characters."
+        if request.data.get("confirmed") is not True:
+            errors["confirmed"] = "Explicit confirmation is required."
+        impact = agency_counts(agency)
+        if not active and impact["editable_daily_sheets"] and request.data.get("acknowledge_editable_sheets") is not True:
+            errors["acknowledge_editable_sheets"] = "Acknowledge the Draft, Returned or Reopened sheets. They will be preserved."
+        if errors:
+            raise ValidationError(errors)
+        if agency.is_active == active:
+            return Response({"detail": "Agency status has already changed. Refresh before continuing."}, status=409)
+        previous = agency_identity(agency)
+        agency.is_active = active
+        agency.save(update_fields=["is_active", "updated_at"])
+        agency_audit(request.user, agency, AuditAction.AGENCY_REACTIVATED if active else AuditAction.AGENCY_DEACTIVATED,
+                     previous, reason.strip(), impact)
+        return Response(self.get_serializer(agency).data)
+
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        return self._change_status(request, False)
+
+    @action(detail=True, methods=["post"])
+    def reactivate(self, request, pk=None):
+        return self._change_status(request, True)
 
 
 class UserAgencyAssignmentViewSet(BaseSearchViewSet):
@@ -577,6 +743,631 @@ class TPMCodeViewSet(BaseSearchViewSet):
         )
 
 
+class PaymentPayerViewSet(PaymentQueryMixin, BaseSearchViewSet):
+    pagination_class = PaymentPagination
+    serializer_class = PaymentPayerSerializer
+    permission_classes = [IsAuthenticated]
+    search_fields = ["payer_name", "agency__name", "sub_agent_assignments__sub_agent_number__code"]
+    ordering_fields = ["payer_name", "created_at", "is_active"]
+
+    def get_queryset(self):
+        expected_totals = PaymentObligation.objects.filter(payer_id=OuterRef("pk")).values("payer_id").annotate(total=Sum("total_expected")).values("total")
+        collected_totals = PayerPayment.objects.filter(
+            obligation__payer_id=OuterRef("pk"),
+            status=PayerPayment.PaymentStatus.POSTED,
+        ).values("obligation__payer_id").annotate(total=Sum("amount_received")).values("total")
+        queryset = PaymentPayer.objects.select_related("agency", "created_by").annotate(
+            _total_expected=Coalesce(
+                Subquery(expected_totals, output_field=DecimalField(max_digits=14, decimal_places=2)),
+                Value(Decimal("0.00"), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            ),
+            _total_collected=Coalesce(
+                Subquery(collected_totals, output_field=DecimalField(max_digits=14, decimal_places=2)),
+                Value(Decimal("0.00"), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            ),
+            _active_obligations=Count(
+                "obligations",
+                filter=~Q(obligations__status=PaymentObligation.ObligationStatus.CANCELLED),
+                distinct=True,
+            ),
+        ).order_by("payer_name", "id")
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            queryset = queryset.filter(agency__user_assignments__user=self.request.user, agency__is_active=True).distinct()
+        agency_ids = self.validate_agency_query()
+        if agency_ids:
+            queryset = queryset.filter(agency_id__in=agency_ids)
+        active = self.request.query_params.get("active")
+        if active and active not in {"true", "false"}:
+            raise ValidationError({"active": "Use true or false."})
+        if active in {"true", "false"}:
+            queryset = queryset.filter(is_active=active == "true")
+        return queryset
+
+    def perform_create(self, serializer):
+        agency = serializer.validated_data["agency"]
+        require_active_agency(agency)
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(self.request.user, agency, "can_create")
+        payer = serializer.save(created_by=self.request.user)
+        log_audit(self.request.user, agency, AuditAction.PAYMENT_PAYER_CREATED, "PaymentPayer", payer.id, new_values={"agency_id": agency.id, "is_active": payer.is_active, "actor_id": self.request.user.id})
+
+    def perform_update(self, serializer):
+        payer = self.get_object()
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(self.request.user, payer.agency, "can_edit")
+        old_values = {"is_active": payer.is_active}
+        payer = serializer.save()
+        log_audit(self.request.user, payer.agency, AuditAction.PAYMENT_PAYER_UPDATED, "PaymentPayer", payer.id, old_values=old_values, new_values={"is_active": payer.is_active, "actor_id": self.request.user.id})
+
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        payer = self.get_object()
+        if request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(request.user, payer.agency, "can_delete")
+        if not payer.is_active:
+            return Response({"detail": "This payer is already inactive."}, status=409)
+        payer.is_active = False
+        payer.save(update_fields=["is_active", "updated_at"])
+        log_audit(request.user, payer.agency, AuditAction.PAYMENT_PAYER_DEACTIVATED, "PaymentPayer", payer.id, old_values={"is_active": True}, new_values={"is_active": False, "actor_id": request.user.id})
+        return Response(self.get_serializer(payer).data)
+
+    @action(detail=True, methods=["post"])
+    def reactivate(self, request, pk=None):
+        payer = self.get_object()
+        if request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(request.user, payer.agency, "can_edit")
+        if payer.is_active:
+            return Response({"detail": "This payer is already active."}, status=409)
+        payer.is_active = True
+        payer.save(update_fields=["is_active", "updated_at"])
+        log_audit(request.user, payer.agency, AuditAction.PAYMENT_PAYER_REACTIVATED, "PaymentPayer", payer.id, old_values={"is_active": False}, new_values={"is_active": True, "actor_id": request.user.id})
+        return Response(self.get_serializer(payer).data)
+
+    @action(detail=True, methods=["post"])
+    def assign_sub_agent(self, request, pk=None):
+        payer = self.get_object()
+        sub_agent_id = request.data.get("sub_agent_number")
+        if not sub_agent_id:
+            raise ValidationError({"sub_agent_number": "A Sub-Agent Number is required."})
+        if request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(request.user, payer.agency, "can_edit")
+        sub_agent = TPMCode.objects.select_related("person__agency").get(pk=sub_agent_id)
+        if sub_agent.person.agency_id != payer.agency_id:
+            raise ValidationError({"sub_agent_number": "Sub-Agent Number must belong to the same agency."})
+        if not sub_agent.is_active or not sub_agent.person.is_active or not payer.agency.is_active:
+            raise ValidationError({"sub_agent_number": "Inactive agency, person or Sub-Agent Number cannot be assigned."})
+        with transaction.atomic():
+            existing = PayerSubAgentAssignment.objects.select_for_update().filter(sub_agent_number=sub_agent, is_active=True).first()
+            if existing and existing.payer_id != payer.id:
+                raise ValidationError({"sub_agent_number": "This Sub-Agent Number already belongs to an active payer in this agency."})
+            assignment, created = PayerSubAgentAssignment.objects.get_or_create(
+                payer=payer,
+                sub_agent_number=sub_agent,
+                defaults={"assigned_by": request.user, "is_active": True},
+            )
+            if not created:
+                assignment.is_active = True
+                assignment.unassigned_by = None
+                assignment.unassigned_at = None
+                assignment.reassignment_reason = ""
+                assignment.save(update_fields=["is_active", "unassigned_by", "unassigned_at", "reassignment_reason", "updated_at"])
+            log_audit(request.user, payer.agency, AuditAction.PAYER_SUBAGENT_ASSIGNED, "PayerSubAgentAssignment", assignment.id, new_values={"payer_id": payer.id, "sub_agent_number_id": sub_agent.id, "actor_id": request.user.id})
+        return Response(PayerSubAgentAssignmentSerializer(assignment).data)
+
+    @action(detail=True, methods=["post"])
+    def unassign_sub_agent(self, request, pk=None):
+        payer = self.get_object()
+        sub_agent_id = request.data.get("sub_agent_number")
+        reason = request.data.get("reason", "")
+        if not sub_agent_id:
+            raise ValidationError({"sub_agent_number": "A Sub-Agent Number is required."})
+        if request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(request.user, payer.agency, "can_edit")
+        assignment = PayerSubAgentAssignment.objects.select_related("payer", "sub_agent_number").filter(payer=payer, sub_agent_number_id=sub_agent_id).first()
+        if not assignment:
+            raise ValidationError({"sub_agent_number": "This Sub-Agent Number is not linked to this payer."})
+        if not assignment.is_active:
+            return Response({"detail": "This assignment is already inactive."}, status=409)
+        assignment.is_active = False
+        assignment.unassigned_by = request.user
+        assignment.unassigned_at = timezone.now()
+        assignment.reassignment_reason = reason.strip()
+        assignment.save(update_fields=["is_active", "unassigned_by", "unassigned_at", "reassignment_reason", "updated_at"])
+        log_audit(request.user, payer.agency, AuditAction.PAYER_SUBAGENT_UNASSIGNED, "PayerSubAgentAssignment", assignment.id, new_values={"payer_id": payer.id, "sub_agent_number_id": assignment.sub_agent_number_id, "actor_id": request.user.id})
+        return Response(PayerSubAgentAssignmentSerializer(assignment).data)
+
+    @action(detail=True, methods=["post"])
+    def reassign_sub_agent(self, request, pk=None):
+        payer = self.get_object()
+        if request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(request.user, payer.agency, "can_edit")
+        if request.data.get("confirmed") is not True:
+            raise ValidationError({"confirmed": "Explicit confirmation is required."})
+        sub_agent_id = request.data.get("sub_agent_number")
+        target_payer_id = request.data.get("new_payer") or request.data.get("new_payer_id")
+        if not sub_agent_id or not target_payer_id:
+            raise ValidationError({"sub_agent_number": "The Sub-Agent Number and new payer are required."})
+        try:
+            sub_agent_id = int(sub_agent_id)
+            target_payer_id = int(target_payer_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"detail": "Sub-Agent Number and new payer must be numeric IDs."}) from exc
+        if target_payer_id == payer.id:
+            raise ValidationError({"new_payer": "The new payer must be different from the current payer."})
+        with transaction.atomic():
+            old_assignment = PayerSubAgentAssignment.objects.select_for_update().filter(payer=payer, sub_agent_number_id=sub_agent_id, is_active=True).first()
+            if not old_assignment:
+                raise ValidationError({"sub_agent_number": "This Sub-Agent Number is not actively linked to this payer."})
+            target_payer = PaymentPayer.objects.select_for_update().filter(pk=target_payer_id).first()
+            if not target_payer:
+                raise ValidationError({"new_payer": "The target payer was not found."})
+            if target_payer.agency_id != payer.agency_id:
+                raise ValidationError({"new_payer": "Cross-agency reassignment is forbidden."})
+            if not target_payer.is_active:
+                raise ValidationError({"new_payer": "The target payer is inactive."})
+            existing = PayerSubAgentAssignment.objects.select_for_update().filter(sub_agent_number_id=sub_agent_id, is_active=True).first()
+            if existing and existing.payer_id != payer.id:
+                raise ValidationError({"sub_agent_number": "This Sub-Agent Number is already assigned to another active payer."})
+            old_assignment.is_active = False
+            old_assignment.unassigned_by = request.user
+            old_assignment.unassigned_at = timezone.now()
+            old_assignment.reassignment_reason = "Reassigned"
+            old_assignment.save(update_fields=["is_active", "unassigned_by", "unassigned_at", "reassignment_reason", "updated_at"])
+            assignment, _ = PayerSubAgentAssignment.objects.get_or_create(
+                payer=target_payer,
+                sub_agent_number=old_assignment.sub_agent_number,
+                defaults={"assigned_by": request.user, "is_active": True},
+            )
+            assignment.is_active = True
+            assignment.assigned_by = request.user
+            assignment.assigned_at = timezone.now()
+            assignment.unassigned_by = None
+            assignment.unassigned_at = None
+            assignment.reassignment_reason = "Reassigned"
+            assignment.save(update_fields=["is_active", "assigned_by", "assigned_at", "unassigned_by", "unassigned_at", "reassignment_reason", "updated_at"])
+            log_audit(
+                request.user,
+                payer.agency,
+                AuditAction.PAYER_SUBAGENT_REASSIGNED,
+                "PayerSubAgentAssignment",
+                assignment.id,
+                old_values={"previous_payer_id": payer.id, "sub_agent_number_id": sub_agent_id},
+                new_values={"new_payer_id": target_payer.id, "agency_id": payer.agency_id, "actor_id": request.user.id},
+            )
+        return Response(PayerSubAgentAssignmentSerializer(assignment).data)
+
+
+class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
+    pagination_class = PaymentPagination
+    serializer_class = PaymentObligationSerializer
+    permission_classes = [IsAuthenticated]
+    search_fields = ["obligation_number", "description", "payer__payer_name"]
+    ordering_fields = ["obligation_date", "total_expected", "created_at", "status", "obligation_number"]
+
+    def get_queryset(self):
+        queryset = PaymentObligation.objects.select_related("agency", "payer", "payer__agency", "created_by").annotate(
+            _posted_total=Coalesce(
+                Sum("payments__amount_received", filter=Q(payments__status=PayerPayment.PaymentStatus.POSTED)),
+                Value(Decimal("0.00"), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            ),
+            _reversed_total=Coalesce(
+                Sum("payments__amount_received", filter=Q(payments__status=PayerPayment.PaymentStatus.REVERSED)),
+                Value(Decimal("0.00"), output_field=DecimalField(max_digits=14, decimal_places=2)),
+            ),
+        ).annotate(_balance=F("total_expected") - F("_posted_total")).order_by("-obligation_date", "-id")
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            queryset = queryset.filter(agency__user_assignments__user=self.request.user, agency__is_active=True).distinct()
+        agency_ids = self.validate_agency_query()
+        if agency_ids:
+            queryset = queryset.filter(agency_id__in=agency_ids)
+        payer = parse_single_id(self.request.query_params, "payer")
+        status = self.request.query_params.get("status")
+        if payer:
+            queryset = queryset.filter(payer_id=payer)
+        if status:
+            if status not in PaymentObligation.ObligationStatus.values:
+                raise ValidationError({"status": "Unsupported obligation status."})
+            queryset = queryset.filter(status=status)
+        description = self.request.query_params.get("description")
+        if description:
+            queryset = queryset.filter(description__icontains=description)
+        obligation_number = self.request.query_params.get("obligation_number")
+        if obligation_number:
+            queryset = queryset.filter(obligation_number=obligation_number)
+        start, end = validate_date_range(self.request.query_params, "obligation_start", "obligation_end")
+        if start:
+            queryset = queryset.filter(obligation_date__gte=start)
+        if end:
+            queryset = queryset.filter(obligation_date__lte=end)
+        outstanding = self.request.query_params.get("outstanding_only")
+        if outstanding and outstanding not in {"true", "false"}:
+            raise ValidationError({"outstanding_only": "Use true or false."})
+        if outstanding == "true":
+            queryset = queryset.filter(status__in=[PaymentObligation.ObligationStatus.OPEN, PaymentObligation.ObligationStatus.PARTIALLY_PAID])
+        return queryset
+
+    def perform_create(self, serializer):
+        payer = serializer.validated_data["payer"]
+        agency = payer.agency
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(self.request.user, agency, "can_create")
+        obligation = serializer.save(agency=agency, created_by=self.request.user)
+        log_audit(self.request.user, agency, AuditAction.PAYMENT_OBLIGATION_CREATED, "PaymentObligation", obligation.id, new_values={"agency_id": agency.id, "payer_id": payer.id, "obligation_number": obligation.obligation_number, "total_expected": str(obligation.total_expected), "status": obligation.status, "actor_id": self.request.user.id})
+
+    def perform_update(self, serializer):
+        obligation = self.get_object()
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(self.request.user, obligation.agency, "can_edit")
+        has_posted = obligation.payments.filter(status=PayerPayment.PaymentStatus.POSTED).exists()
+        if has_posted:
+            for field in ("agency", "payer", "total_expected"):
+                if field in serializer.validated_data:
+                    raise ValidationError({field: f"{field.replace('_', ' ').title()} cannot change after the first posted payment."})
+        old_values = {"obligation_date": obligation.obligation_date.isoformat(), "total_expected": str(obligation.total_expected), "status": obligation.status}
+        updated = serializer.save()
+        log_audit(self.request.user, updated.agency, AuditAction.PAYMENT_OBLIGATION_UPDATED, "PaymentObligation", updated.id, old_values=old_values, new_values={"obligation_date": updated.obligation_date.isoformat(), "total_expected": str(updated.total_expected), "status": updated.status, "actor_id": self.request.user.id})
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        obligation = self.get_object()
+        if request.user.role != UserRole.SUPER_ADMIN:
+            require_assignment_flag(request.user, obligation.agency, "can_delete")
+        reason = request.data.get("reason", "")
+        if not reason.strip():
+            raise ValidationError({"reason": "A cancellation reason is required."})
+        with transaction.atomic():
+            obligation = PaymentObligation.objects.select_for_update().get(pk=obligation.pk)
+            if obligation.payments.filter(status=PayerPayment.PaymentStatus.POSTED).exists():
+                raise ValidationError({"detail": "This obligation has posted payments. Reverse those payments before cancelling."})
+            obligation.status = PaymentObligation.ObligationStatus.CANCELLED
+            obligation.cancelled_by = request.user
+            obligation.cancelled_at = timezone.now()
+            obligation.cancellation_reason = reason.strip()
+            obligation.save(update_fields=["status", "cancelled_by", "cancelled_at", "cancellation_reason", "updated_at"])
+        log_audit(request.user, obligation.agency, AuditAction.PAYMENT_OBLIGATION_CANCELLED, "PaymentObligation", obligation.id, new_values={"status": obligation.status, "actor_id": request.user.id})
+        return Response(self.get_serializer(obligation).data)
+
+
+class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
+    pagination_class = PaymentPagination
+    serializer_class = PayerPaymentSerializer
+    permission_classes = [IsAuthenticated]
+    search_fields = ["receipt_number", "payer_name_snapshot", "obligation__obligation_number", "obligation__description"]
+    ordering_fields = ["payment_date", "amount_received", "receipt_number", "status", "payment_method"]
+
+    def get_queryset(self):
+        queryset = PayerPayment.objects.select_related("obligation", "recorded_by", "obligation__payer", "obligation__agency").order_by("-payment_date", "-id")
+        if self.request.user.role != UserRole.SUPER_ADMIN:
+            queryset = queryset.filter(obligation__agency__user_assignments__user=self.request.user, obligation__agency__is_active=True).distinct()
+        agency_ids = self.validate_agency_query()
+        if agency_ids:
+            queryset = queryset.filter(obligation__agency_id__in=agency_ids)
+        payer = parse_single_id(self.request.query_params, "payer")
+        obligation = parse_single_id(self.request.query_params, "obligation")
+        status = self.request.query_params.get("status")
+        if payer:
+            queryset = queryset.filter(obligation__payer_id=payer)
+        if obligation:
+            queryset = queryset.filter(obligation_id=obligation)
+        if status:
+            if status not in PayerPayment.PaymentStatus.values:
+                raise ValidationError({"status": "Unsupported payment status."})
+            queryset = queryset.filter(status=status)
+        payment_method = self.request.query_params.get("payment_method")
+        if payment_method:
+            if payment_method not in PayerPayment.PaymentMethod.values:
+                raise ValidationError({"payment_method": "Unsupported payment method."})
+            queryset = queryset.filter(payment_method=payment_method)
+        receipt_number = self.request.query_params.get("receipt_number")
+        if receipt_number:
+            queryset = queryset.filter(receipt_number=receipt_number)
+        start, end = validate_date_range(self.request.query_params, "payment_start", "payment_end")
+        if start:
+            queryset = queryset.filter(payment_date__date__gte=start)
+        if end:
+            queryset = queryset.filter(payment_date__date__lte=end)
+        recorder = parse_single_id(self.request.query_params, "recorded_by")
+        if recorder is not None:
+            if self.request.user.role != UserRole.SUPER_ADMIN:
+                raise PermissionDenied("Only Super Admin can filter by recorder.")
+            queryset = queryset.filter(recorded_by_id=recorder)
+        return queryset
+
+    def perform_create(self, serializer):
+        with transaction.atomic():
+            obligation = serializer.validated_data["obligation"]
+            obligation_locked = PaymentObligation.objects.select_for_update().select_related("agency", "payer").get(pk=obligation.pk)
+            if self.request.user.role != UserRole.SUPER_ADMIN:
+                require_assignment_flag(self.request.user, obligation_locked.agency, "can_create")
+            key = serializer.validated_data["idempotency_key"].strip()
+            existing = PayerPayment.objects.filter(idempotency_key=key).first()
+            if existing:
+                same_request = (
+                    existing.obligation_id == obligation_locked.id
+                    and existing.amount_received == serializer.validated_data["amount_received"]
+                    and existing.payment_method == serializer.validated_data["payment_method"]
+                    and existing.payment_reference == serializer.validated_data.get("payment_reference", "")
+                    and existing.notes == serializer.validated_data.get("notes", "")
+                )
+                if not same_request:
+                    raise ValidationError({"idempotency_key": "This idempotency key was already used for different payment data."})
+                self._idempotent_payment = existing
+                return
+            if obligation_locked.status in {PaymentObligation.ObligationStatus.CANCELLED, PaymentObligation.ObligationStatus.PAID}:
+                raise ValidationError({"obligation": "Only open obligations with an outstanding balance accept payments."})
+            current_totals = obligation_locked.payments.filter(status=PayerPayment.PaymentStatus.POSTED).aggregate(total=Sum("amount_received"))
+            total_paid = money(current_totals["total"] or Decimal("0.00"))
+            balance = money(obligation_locked.total_expected - total_paid)
+            amount = serializer.validated_data["amount_received"]
+            if amount > balance:
+                raise ValidationError({"amount_received": "Payment exceeds the current outstanding balance."})
+            if amount <= 0:
+                raise ValidationError({"amount_received": "Payment amount must be greater than zero."})
+            payment = serializer.save(
+                agency_snapshot=obligation_locked.agency.name,
+                payer_name_snapshot=obligation_locked.payer.payer_name,
+                linked_sub_agent_numbers_snapshot=list(obligation_locked.payer.sub_agent_assignments.filter(is_active=True).values_list("sub_agent_number__code", flat=True)),
+                obligation_number_snapshot=obligation_locked.obligation_number,
+                obligation_description_snapshot=obligation_locked.description,
+                obligation_date_snapshot=obligation_locked.obligation_date,
+                expected_amount_snapshot=obligation_locked.total_expected,
+                amount_previously_paid=total_paid,
+                cumulative_amount_paid=money(total_paid + amount),
+                balance_after_payment=money(balance - amount),
+                payment_date=timezone.now(),
+                recorded_by=self.request.user,
+                recorded_by_display_snapshot=self.request.user.full_name or self.request.user.email,
+            )
+            obligation_locked.refresh_status(); obligation_locked.save(update_fields=["status", "updated_at"])
+            log_audit(self.request.user, obligation_locked.agency, AuditAction.PAYMENT_RECORDED, "PayerPayment", payment.id, new_values={"receipt_number": payment.receipt_number, "amount_received": str(payment.amount_received), "obligation_id": obligation_locked.id, "status": payment.status, "actor_id": self.request.user.id})
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self._idempotent_payment = None
+        self.perform_create(serializer)
+        payment = self._idempotent_payment or serializer.instance
+        headers = self.get_success_headers(self.get_serializer(payment).data)
+        return Response(self.get_serializer(payment).data, status=status.HTTP_200_OK if self._idempotent_payment else status.HTTP_201_CREATED, headers=headers)
+
+    def update(self, request, *args, **kwargs):
+        raise ValidationError({"detail": "Payment records cannot be updated."})
+
+    def partial_update(self, request, *args, **kwargs):
+        raise ValidationError({"detail": "Payment records cannot be updated."})
+
+    def destroy(self, request, *args, **kwargs):
+        raise ValidationError({"detail": "Payment records cannot be deleted."})
+
+    @action(detail=True, methods=["post"])
+    def reverse(self, request, pk=None):
+        payment = self.get_object()
+        if request.user.role != UserRole.SUPER_ADMIN:
+            raise PermissionDenied("Only Super Admin can reverse posted payments.")
+        reason = request.data.get("reason", "")
+        if not reason.strip():
+            raise ValidationError({"reason": "A reversal reason is required."})
+        if request.data.get("confirmed") is not True:
+            raise ValidationError({"confirmed": "Explicit confirmation is required."})
+        with transaction.atomic():
+            payment_locked = PayerPayment.objects.select_for_update().select_related("obligation").get(pk=payment.pk)
+            obligation_locked = PaymentObligation.objects.select_for_update().get(pk=payment_locked.obligation_id)
+            if payment_locked.status == PayerPayment.PaymentStatus.REVERSED:
+                return Response({"detail": "This payment has already been reversed."}, status=409)
+            if payment_locked.status != PayerPayment.PaymentStatus.POSTED:
+                raise ValidationError({"detail": "Only posted payments can be reversed."})
+            payment_locked.status = PayerPayment.PaymentStatus.REVERSED
+            payment_locked.reversed_by = request.user
+            payment_locked.reversed_at = timezone.now()
+            payment_locked.reversal_reason = reason.strip()
+            payment_locked.save(update_fields=["status", "reversed_by", "reversed_at", "reversal_reason", "updated_at"])
+            obligation_locked.refresh_status(); obligation_locked.save(update_fields=["status", "updated_at"])
+            log_audit(request.user, obligation_locked.agency, AuditAction.PAYMENT_REVERSED, "PayerPayment", payment_locked.id, new_values={"receipt_number": payment_locked.receipt_number, "status": payment_locked.status, "actor_id": request.user.id})
+        return Response(self.get_serializer(payment_locked).data)
+
+    @action(detail=True, methods=["get"])
+    def receipt(self, request, pk=None):
+        payment = self.get_object()
+        buffer = BytesIO()
+        document = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm, pageCompression=0)
+        styles = getSampleStyleSheet()
+        story = [Paragraph("Treasureland Investment Limited", styles["Title"]), Paragraph(f"Receipt: {payment.receipt_number}", styles["Heading2"]), Spacer(1, 6)]
+        if payment.status == PayerPayment.PaymentStatus.REVERSED:
+            story.append(Paragraph("REVERSED", styles["Heading1"]))
+        rows = [
+            ("Status", payment.status), ("Payment date/time", payment.payment_date.isoformat()),
+            ("Agency", payment.agency_snapshot), ("Payer", payment.payer_name_snapshot),
+            ("Linked Sub-Agent Numbers", ", ".join(payment.linked_sub_agent_numbers_snapshot) or "None"),
+            ("Obligation", f"{payment.obligation_number_snapshot} - {payment.obligation_description_snapshot}"),
+            ("Obligation date", payment.obligation_date_snapshot.isoformat()),
+            ("Expected amount", str(payment.expected_amount_snapshot)), ("Previously paid", str(payment.amount_previously_paid)),
+            ("Amount received", str(payment.amount_received)), ("Cumulative paid", str(payment.cumulative_amount_paid)),
+            ("Outstanding balance", str(payment.balance_after_payment)), ("Payment method", payment.get_payment_method_display()),
+            ("Payment reference", payment.payment_reference or "None"), ("Recorded by", payment.recorded_by_display_snapshot),
+            ("Notes", payment.notes or "None"),
+        ]
+        table = Table(rows, colWidths=[48 * mm, 125 * mm])
+        table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold")]))
+        story.append(table)
+        document.build(story)
+        response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{get_valid_filename(payment.receipt_number)}.pdf"'
+        return response
+
+
+class PaymentAnalyticsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        agency_ids = parse_id_filter(request.query_params, "agency")
+        ensure_agency_filter_access(request.user, agency_ids)
+        obligations = PaymentObligation.objects.all()
+        if request.user.role != UserRole.SUPER_ADMIN:
+            obligations = obligations.filter(agency__user_assignments__user=request.user, agency__is_active=True).distinct()
+        if agency_ids:
+            obligations = obligations.filter(agency_id__in=agency_ids)
+
+        payer_id = parse_single_id(request.query_params, "payer")
+        if payer_id:
+            obligations = obligations.filter(payer_id=payer_id)
+        obligation_status = request.query_params.get("obligation_status")
+        if obligation_status:
+            if obligation_status not in PaymentObligation.ObligationStatus.values:
+                raise ValidationError({"obligation_status": "Unsupported obligation status."})
+            obligations = obligations.filter(status=obligation_status)
+        obligation_start, obligation_end = validate_date_range(request.query_params, "obligation_start", "obligation_end")
+        if obligation_start:
+            obligations = obligations.filter(obligation_date__gte=obligation_start)
+        if obligation_end:
+            obligations = obligations.filter(obligation_date__lte=obligation_end)
+
+        payments = PayerPayment.objects.filter(obligation__in=obligations)
+        payment_start, payment_end = validate_date_range(request.query_params, "payment_start", "payment_end")
+        if payment_start:
+            payments = payments.filter(payment_date__date__gte=payment_start)
+        if payment_end:
+            payments = payments.filter(payment_date__date__lte=payment_end)
+        payment_method = request.query_params.get("payment_method")
+        if payment_method:
+            if payment_method not in PayerPayment.PaymentMethod.values:
+                raise ValidationError({"payment_method": "Unsupported payment method."})
+            payments = payments.filter(payment_method=payment_method)
+        recorder = parse_single_id(request.query_params, "recorded_by")
+        if recorder is not None:
+            if request.user.role != UserRole.SUPER_ADMIN:
+                raise PermissionDenied("Only Super Admin can filter by recorder.")
+            payments = payments.filter(recorded_by_id=recorder)
+
+        posted_payments = payments.filter(status=PayerPayment.PaymentStatus.POSTED)
+        reversed_payments = payments.filter(status=PayerPayment.PaymentStatus.REVERSED)
+        zero = Decimal("0.00")
+        total_expected = obligations.aggregate(total=Sum("total_expected"))["total"] or zero
+        posted_total = posted_payments.aggregate(total=Sum("amount_received"))["total"] or zero
+        reversed_total = reversed_payments.aggregate(total=Sum("amount_received"))["total"] or zero
+        gross_posted_total = payments.aggregate(total=Sum("amount_received"))["total"] or zero
+        outstanding_obligations = obligations.filter(status__in=[PaymentObligation.ObligationStatus.OPEN, PaymentObligation.ObligationStatus.PARTIALLY_PAID])
+        outstanding_expected = outstanding_obligations.aggregate(total=Sum("total_expected"))["total"] or zero
+        outstanding_posted = PayerPayment.objects.filter(
+            obligation__in=outstanding_obligations,
+            status=PayerPayment.PaymentStatus.POSTED,
+        ).aggregate(total=Sum("amount_received"))["total"] or zero
+        total_outstanding = money(outstanding_expected - outstanding_posted)
+        collection_rate = money((posted_total / total_expected) * Decimal("100")) if total_expected else zero
+
+        status_rows = {row["status"]: row["count"] for row in obligations.values("status").annotate(count=Count("id"))}
+        by_status = {
+            status_value: status_rows.get(status_value, 0)
+            for status_value, _ in PaymentObligation.ObligationStatus.choices
+        }
+        by_method = {}
+        method_rows = {
+            row["payment_method"]: row
+            for row in payments.values("payment_method").annotate(
+                posted_amount=Sum("amount_received", filter=Q(status=PayerPayment.PaymentStatus.POSTED)),
+                reversed_amount=Sum("amount_received", filter=Q(status=PayerPayment.PaymentStatus.REVERSED)),
+                posted_count=Count("id", filter=Q(status=PayerPayment.PaymentStatus.POSTED)),
+                reversed_count=Count("id", filter=Q(status=PayerPayment.PaymentStatus.REVERSED)),
+            )
+        }
+        for method_value, method_label in PayerPayment.PaymentMethod.choices:
+            method_row = method_rows.get(method_value, {})
+            method_posted = (method_row.get("posted_amount") or zero) + (method_row.get("reversed_amount") or zero)
+            method_reversed = method_row.get("reversed_amount") or zero
+            by_method[method_value] = {
+                "label": method_label,
+                "gross_posted_amount": str(money(method_posted)),
+                "reversed_amount": str(money(method_reversed)),
+                "net_collected_amount": str(money(method_posted - method_reversed)),
+                "posted_receipt_count": method_row.get("posted_count", 0),
+                "reversed_receipt_count": method_row.get("reversed_count", 0),
+            }
+
+        trend_rows = list(payments.values("payment_date", "amount_received", "status"))
+        trend_start = payment_start or (min((row["payment_date"].date() for row in trend_rows), default=None))
+        trend_end = payment_end or (max((row["payment_date"].date() for row in trend_rows), default=None))
+        trends = []
+        grouping = "daily"
+        if trend_start and trend_end:
+            grouping = "daily" if (trend_end - trend_start).days <= 92 else "monthly"
+            totals = {}
+            for row in trend_rows:
+                period = row["payment_date"].date()
+                if grouping == "monthly":
+                    period = period.replace(day=1)
+                bucket = totals.setdefault(period, {"gross_posted_amount": zero, "reversed_amount": zero})
+                bucket["gross_posted_amount"] += row["amount_received"]
+                if row["status"] == PayerPayment.PaymentStatus.REVERSED:
+                    bucket["reversed_amount"] += row["amount_received"]
+            cursor = trend_start if grouping == "daily" else trend_start.replace(day=1)
+            final_period = trend_end if grouping == "daily" else trend_end.replace(day=1)
+            while cursor <= final_period:
+                bucket = totals.get(cursor, {"gross_posted_amount": zero, "reversed_amount": zero})
+                trends.append({
+                    "period": cursor.isoformat(),
+                    "gross_posted_amount": str(money(bucket["gross_posted_amount"])),
+                    "reversed_amount": str(money(bucket["reversed_amount"])),
+                    "net_collected_amount": str(money(bucket["gross_posted_amount"] - bucket["reversed_amount"])),
+                })
+                if grouping == "daily":
+                    cursor += timedelta(days=1)
+                elif cursor.month == 12:
+                    cursor = cursor.replace(year=cursor.year + 1, month=1)
+                else:
+                    cursor = cursor.replace(month=cursor.month + 1)
+
+        response = {
+            "obligation_portfolio": {
+                "total_expected": str(money(total_expected)),
+                "total_posted": str(money(posted_total)),
+                "total_outstanding": str(total_outstanding),
+                "collection_rate": str(collection_rate),
+                "obligation_count": obligations.count(),
+                "status_counts": by_status,
+            },
+            "collections": {
+                "gross_posted_amount": str(money(gross_posted_total)),
+                "reversed_amount": str(money(reversed_total)),
+                "net_collected_amount": str(money(gross_posted_total - reversed_total)),
+                "posted_receipt_count": posted_payments.count(),
+                "reversed_receipt_count": reversed_payments.count(),
+                "by_payment_method": by_method,
+            },
+            "trends": {"grouping": grouping, "periods": trends},
+        }
+        if request.user.role == UserRole.SUPER_ADMIN:
+            agency_rows = list(obligations.values("agency_id", "agency__name").annotate(
+                expected=Sum("total_expected"),
+                outstanding_expected=Sum("total_expected", filter=Q(status__in=[PaymentObligation.ObligationStatus.OPEN, PaymentObligation.ObligationStatus.PARTIALLY_PAID])),
+                obligation_count=Count("id"),
+            ).order_by("agency__name"))
+            agency_payment_rows = {
+                row["obligation__agency_id"]: row
+                for row in payments.values("obligation__agency_id").annotate(
+                    posted=Sum("amount_received", filter=Q(status=PayerPayment.PaymentStatus.POSTED)),
+                    reversed=Sum("amount_received", filter=Q(status=PayerPayment.PaymentStatus.REVERSED)),
+                    posted_receipt_count=Count("id", filter=Q(status=PayerPayment.PaymentStatus.POSTED)),
+                )
+            }
+            response["agency_breakdown"] = []
+            for row in agency_rows:
+                payment_row = agency_payment_rows.get(row["agency_id"], {})
+                posted = payment_row.get("posted") or zero
+                reversed_amount = payment_row.get("reversed") or zero
+                gross = posted + reversed_amount
+                expected = row["expected"] or zero
+                response["agency_breakdown"].append({
+                    "agency_id": row["agency_id"],
+                    "agency_name": row["agency__name"],
+                    "expected": str(money(expected)),
+                    "net_collected": str(money(gross - reversed_amount)),
+                    "outstanding": str(money((row["outstanding_expected"] or zero) - posted)),
+                    "collection_rate": str(money((posted / expected * Decimal("100")) if expected else zero)),
+                    "obligation_count": row["obligation_count"],
+                    "posted_receipt_count": payment_row.get("posted_receipt_count", 0),
+                })
+        return Response(response)
+
+
 class GameViewSet(BaseSearchViewSet):
     serializer_class = GameSerializer
     permission_classes = [SuperAdminOnlyWrites]
@@ -680,7 +1471,7 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
         )
 
 
-class DailySheetImportBatchViewSet(viewsets.GenericViewSet):
+class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet):
     serializer_class = DailySheetImportBatchSerializer
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -1056,6 +1847,7 @@ class DailySheetViewSet(BaseSearchViewSet):
         reason = self._destructive_reason("confirm_reset")
         with transaction.atomic():
             sheet = DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            require_active_agency(sheet.agency)
             if sheet.is_archived:
                 raise ValidationError({"detail": "Archived sheets cannot be reset."})
             if not sheet.can_reset:
@@ -1076,6 +1868,7 @@ class DailySheetViewSet(BaseSearchViewSet):
         reason = self._destructive_reason("confirm_permanent_delete")
         with transaction.atomic():
             sheet = DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            require_active_agency(sheet.agency)
             if not sheet.can_delete:
                 raise ValidationError({"detail": "This daily sheet cannot be deleted. Reset or archive it instead."})
             metadata = self._safe_sheet_metadata(sheet, reason)
@@ -1093,6 +1886,7 @@ class DailySheetViewSet(BaseSearchViewSet):
     def submit(self, request, pk=None):
         with transaction.atomic():
             sheet = DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            require_active_agency(sheet.agency)
             require_assignment_flag(request.user, sheet.agency, "can_edit")
             if sheet.status not in {DailySheetStatus.DRAFT, DailySheetStatus.RETURNED, DailySheetStatus.REOPENED}:
                 raise ValidationError({"status": "Only draft, returned or reopened sheets can be submitted."})
@@ -1120,6 +1914,7 @@ class DailySheetViewSet(BaseSearchViewSet):
             raise PermissionDenied("Only Super Admin may approve sheets.")
         with transaction.atomic():
             sheet = DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            require_active_agency(sheet.agency)
             if sheet.status != DailySheetStatus.SUBMITTED:
                 raise ValidationError({"status": "Only submitted sheets can be approved."})
             old_status = sheet.status
@@ -1139,6 +1934,7 @@ class DailySheetViewSet(BaseSearchViewSet):
             raise ValidationError({"return_comment": "Return comment is required."})
         with transaction.atomic():
             sheet = DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            require_active_agency(sheet.agency)
             if sheet.status != DailySheetStatus.SUBMITTED:
                 raise ValidationError({"status": "Only submitted sheets can be returned."})
             old_status = sheet.status
@@ -1159,6 +1955,7 @@ class DailySheetViewSet(BaseSearchViewSet):
             raise ValidationError({"reopen_reason": "A reopen reason is required."})
         with transaction.atomic():
             sheet = DailySheet.objects.select_for_update().get(pk=self.get_object().pk)
+            require_active_agency(sheet.agency)
             if sheet.status != DailySheetStatus.APPROVED:
                 raise ValidationError({"status": "Only approved sheets can be reopened."})
             old_status = sheet.status

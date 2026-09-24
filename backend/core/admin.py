@@ -42,6 +42,16 @@ class UserAdmin(DjangoUserAdmin):
 
 @admin.register(Agency)
 class AgencyAdmin(admin.ModelAdmin):
+    # Lifecycle changes must use the audited API with explicit confirmations.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
     list_display = ("name", "code", "is_active", "created_at")
     list_filter = ("is_active", "created_at")
     search_fields = ("name", "code")

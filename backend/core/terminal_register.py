@@ -80,6 +80,8 @@ def save_terminal(obj, user, action_name, old=None, reason=""):
 
 def create_terminal(data, user, *, import_batch=False):
     code = resolve_owner(data)
+    from .agencies import require_active_agency
+    require_active_agency(code.person.agency)
     active = data.get("is_active", True)
     if not isinstance(active, bool):
         raise ValidationError({"is_active": "Use true or false."})
@@ -159,7 +161,10 @@ class TerminalNumberViewSet(SafeValidationMixin, viewsets.GenericViewSet):
 
     def locked_object(self):
         lock_register()
-        return self.get_queryset().select_for_update().get(pk=self.get_object().pk)
+        obj = self.get_queryset().select_for_update().get(pk=self.get_object().pk)
+        from .agencies import require_active_agency
+        require_active_agency(obj.agency)
+        return obj
 
     @transaction.atomic
     def partial_update(self, request, pk=None):
@@ -173,6 +178,9 @@ class TerminalNumberViewSet(SafeValidationMixin, viewsets.GenericViewSet):
 
     def change_status(self, request, active):
         obj = self.locked_object()
+        if active:
+            from .agencies import require_active_agency
+            require_active_agency(obj.agency)
         if obj.is_active != active:
             old = identity(obj)
             obj.is_active = active
@@ -201,6 +209,8 @@ class TerminalNumberViewSet(SafeValidationMixin, viewsets.GenericViewSet):
         if request.data.get("confirmed") is not True:
             raise ValidationError({"confirmed": "Explicit confirmation is required."})
         code = resolve_owner(request.data)
+        from .agencies import require_active_agency
+        require_active_agency(code.person.agency)
         if code.pk == obj.sub_agent_number_id:
             raise ValidationError("Choose a different Sub-Agent Number.")
         # An occupied target is never silently replaced: deactivate its terminal first.
@@ -473,6 +483,7 @@ class TerminalImportViewSet(SafeValidationMixin, viewsets.GenericViewSet):
     @action(detail=False, methods=["post"])
     @transaction.atomic
     def preview(self, request):
+        lock_register()
         agency = self.agency(request.data)
         upload = request.FILES.get("file")
         if not upload:

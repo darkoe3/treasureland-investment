@@ -7,6 +7,7 @@ import {
   Building2,
   CalendarDays,
   ClipboardList,
+  CreditCard,
   Monitor,
   FileClock,
   FileText,
@@ -23,6 +24,7 @@ import LogoutButton from "./LogoutButton";
 
 const superAdminItems = [
   { label: "Overview", href: "/dashboard", icon: Home },
+  { label: "Payments", href: "/dashboard/payments", icon: CreditCard },
   { label: "Daily Sheets", href: "/dashboard/daily-sheets", icon: ClipboardList },
   { label: "Terminal Numbers", href: "/dashboard/terminal-numbers", icon: Monitor },
   { label: "People & Sub-Agent Numbers", href: "/dashboard/people", icon: Users },
@@ -38,6 +40,7 @@ function accountantItems(user) {
   const canHistory = user.agency_assignments?.some((item) => item.can_view_history);
   return [
     { label: "Overview", href: "/dashboard", icon: Home },
+    ...(user.agency_assignments?.length ? [{ label: "Payments", href: "/dashboard/payments", icon: CreditCard }] : []),
     { label: "Daily Sheets", href: "/dashboard/daily-sheets", icon: ClipboardList },
   { label: "Terminal Numbers", href: "/dashboard/terminal-numbers", icon: Monitor },
     { label: "New Daily Sheet", href: "/dashboard/daily-sheets/new", icon: FileText },

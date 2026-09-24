@@ -254,3 +254,28 @@ Additive migrations: `0011_terminal_number_register` adds the two models, indexe
 Read-only readiness: `python manage.py terminal_readiness` reports active Sub-Agent Numbers without terminals, inactive Sub-Agent Numbers, duplicate terminal/active mappings, relationship conflicts and historical blank snapshots. There is no write mode.
 
 For isolated tests: `python manage.py test --settings=config.test_settings`. This forces an in-memory SQLite database and a fast test-only password hasher; never use that settings module for serving the application.
+
+## Standalone payments
+
+Payments are an independent ledger; they do not read from or write to `DailySheet`, `TPMDailyTransaction` or daily-sheet reports. A `PaymentPayer` belongs to one agency and may link active existing Sub-Agent Numbers from that agency. A payer can have multiple `PaymentObligation` records. Obligations move from `OPEN` to `PARTIALLY_PAID` to `PAID`, or to `CANCELLED` before posted payments. Partial payments are allowed.
+
+Payment endpoints include `payment-payers`, `payment-obligations`, `payer-payments` and `payments/analytics`. Lists are agency-scoped for Accountants and paginated. Supported filters include agency, payer, active/status, payer-name or description search, obligation number/date range, outstanding-only, receipt, payment method/date range and Super Admin-only recorder filters. Direct object IDs are scoped by the same queryset rules.
+
+Super Admin has access to all agencies, can manage payers and obligations, record payments, reverse posted payments and view all analytics. Accountants can act only in assigned active agencies and only with the relevant `can_create`, `can_edit` or `can_delete` flag. Accountants cannot reverse payments or inspect another agency by changing a query parameter or guessing an ID. There is no Teller/Cashier role.
+
+Payment posting requires a positive amount, an idempotency key and a non-cash reference when applicable. The obligation row is locked before the balance check; yearly obligation and receipt numbers use the locked `PaymentNumberSequence` row. A retry with identical payment data returns the original payment. Posted payments cannot be edited or deleted. Corrections use Super Admin reversal with confirmation and a required reason; the original receipt and snapshots remain visible.
+
+Analytics use Decimal-backed aggregates. The obligation portfolio reports expected, current posted, outstanding, collection rate and status counts. Collections report gross postings, reversals separately and net collected as gross minus reversals; active posted totals exclude reversed records. Payment dates filter collections and obligation dates filter the portfolio, both inclusively. Trends are daily for short ranges and monthly for longer ranges, with zero-filled periods where a range is supplied. Zero expected amounts produce a zero rate.
+
+Payment audit entries cover payer, Sub-Agent assignment, obligation, posting and reversal actions. Metadata contains IDs, state and safe financial identifiers only; payer names, notes, free-text reasons, credentials, tokens and complete request bodies are excluded. Receipt PDFs use stored payment snapshots. Migrations `0014` through `0018` add the payment tables, snapshots, yearly sequence and named positive/reversal constraints without destructive data operations.
+
+Local verification uses the isolated settings modules:
+
+```text
+python manage.py check --settings=config.test_settings
+python manage.py makemigrations --check --settings=config.test_settings
+python manage.py test --settings=config.test_settings
+python manage.py test core.tests.test_payment_management core.tests.test_payment_gate1b core.tests.test_payment_postgresql --settings=config.postgres_test_settings
+```
+
+The PostgreSQL payment settings require loopback host access and let libpq read credentials outside the repository from the local `pgpass.conf`. PostgreSQL concurrency coverage verifies locked balances, idempotency, reversals and yearly numbering. Known limitations are that receipt-view audit events are not enabled by the established audit policy, and local SQLite cannot prove PostgreSQL locking behavior; the isolated PostgreSQL suite must be run for that assurance.

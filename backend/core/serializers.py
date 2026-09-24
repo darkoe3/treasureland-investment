@@ -18,6 +18,10 @@ from .models import (
     DailySheetStatus,
     Game,
     OmittedTerminal,
+    PaymentObligation,
+    PaymentPayer,
+    PayerPayment,
+    PayerSubAgentAssignment,
     Person,
     TPMCode,
     TPMDailyTransaction,
@@ -106,10 +110,42 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 class AgencySerializer(serializers.ModelSerializer):
+    name = serializers.CharField(max_length=120)
+    code = serializers.RegexField(r"^[A-Za-z0-9_-]+$", max_length=40,
+        error_messages={"invalid": "Use 1-40 ASCII letters, digits, underscores or hyphens."})
+    confirm_code_change = serializers.BooleanField(write_only=True, required=False)
+    counts = serializers.SerializerMethodField()
+
     class Meta:
         model = Agency
-        fields = ("id", "name", "code", "is_active", "created_at", "updated_at")
-        read_only_fields = ("created_at", "updated_at")
+        fields = ("id", "name", "code", "is_active", "created_at", "updated_at", "counts", "confirm_code_change")
+        read_only_fields = ("id", "created_at", "updated_at")
+        validators = []
+
+    def get_counts(self, obj):
+        from .agencies import agency_counts
+        return agency_counts(obj)
+
+    def validate(self, attrs):
+        errors = {}
+        for field in ("name", "code"):
+            if field in attrs:
+                value = attrs[field].strip()
+                attrs[field] = value
+                matches = Agency.objects.filter(**{f"{field}__iexact": value})
+                if self.instance:
+                    matches = matches.exclude(pk=self.instance.pk)
+                if matches.exists():
+                    errors[field] = f"Agency {field} {value} already exists. Edit the existing agency instead."
+        confirmed = attrs.pop("confirm_code_change", False)
+        if self.instance:
+            if "is_active" in attrs:
+                errors["is_active"] = "Use the dedicated deactivate or reactivate workflow."
+            if attrs.get("code", self.instance.code) != self.instance.code and not confirmed:
+                errors["confirm_code_change"] = "Confirm the agency code change. Historical snapshots remain unchanged."
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
 
 class UserAgencyAssignmentSerializer(serializers.ModelSerializer):
@@ -137,10 +173,230 @@ class UserAgencyAssignmentSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("assigned_by", "created_at", "updated_at")
 
+    def validate_agency(self, agency):
+        from .agencies import require_active_agency
+        require_active_agency(agency)
+        return agency
+
     def validate_user(self, user):
         if user.role != UserRole.ACCOUNTANT:
             raise serializers.ValidationError("Only accountants can be assigned to agencies.")
         return user
+
+
+class PaymentPayerSerializer(serializers.ModelSerializer):
+    agency_name = serializers.CharField(source="agency.name", read_only=True)
+    created_by_name = serializers.CharField(source="created_by.full_name", read_only=True)
+    total_expected = serializers.SerializerMethodField()
+    total_collected = serializers.SerializerMethodField()
+    total_outstanding = serializers.SerializerMethodField()
+    active_obligations = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PaymentPayer
+        fields = (
+            "id",
+            "agency",
+            "agency_name",
+            "payer_name",
+            "telephone",
+            "email",
+            "address",
+            "notes",
+            "is_active",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+            "total_expected",
+            "total_collected",
+            "total_outstanding",
+            "active_obligations",
+        )
+        read_only_fields = ("id", "created_by", "created_at", "updated_at", "total_expected", "total_collected", "total_outstanding", "active_obligations")
+
+    def get_total_expected(self, payer):
+        annotated = getattr(payer, "_total_expected", None)
+        return money(annotated if annotated is not None else payer.obligations.aggregate(total=Sum("total_expected"))["total"] or 0)
+
+    def get_total_collected(self, payer):
+        annotated = getattr(payer, "_total_collected", None)
+        return money(annotated if annotated is not None else payer.obligations.filter(payments__status=PayerPayment.PaymentStatus.POSTED).aggregate(total=Sum("payments__amount_received"))["total"] or 0)
+
+    def get_total_outstanding(self, payer):
+        expected = self.get_total_expected(payer)
+        collected = self.get_total_collected(payer)
+        return money(expected - collected)
+
+    def get_active_obligations(self, payer):
+        annotated = getattr(payer, "_active_obligations", None)
+        return annotated if annotated is not None else payer.obligations.exclude(status=PaymentObligation.ObligationStatus.CANCELLED).count()
+
+    def validate_payer_name(self, value):
+        if value is None:
+            raise serializers.ValidationError("Payer name is required.")
+        normalized = " ".join(str(value).split())
+        if not normalized:
+            raise serializers.ValidationError("Payer name is required.")
+        return normalized
+
+    def validate_agency(self, agency):
+        from .agencies import require_active_agency
+        require_active_agency(agency)
+        return agency
+
+    def validate(self, attrs):
+        if self.instance and "agency" in attrs and attrs["agency"].id != self.instance.agency_id:
+            raise serializers.ValidationError({"agency": "A payer cannot be moved between agencies."})
+        return attrs
+
+
+class PayerSubAgentAssignmentSerializer(serializers.ModelSerializer):
+    payer_name = serializers.CharField(source="payer.payer_name", read_only=True)
+    sub_agent_number_code = serializers.CharField(source="sub_agent_number.code", read_only=True)
+    agency_name = serializers.CharField(source="payer.agency.name", read_only=True)
+
+    class Meta:
+        model = PayerSubAgentAssignment
+        fields = (
+            "id",
+            "payer",
+            "payer_name",
+            "sub_agent_number",
+            "sub_agent_number_code",
+            "agency_name",
+            "is_active",
+            "assigned_by",
+            "assigned_at",
+            "unassigned_by",
+            "unassigned_at",
+            "reassignment_reason",
+        )
+        read_only_fields = ("id", "assigned_by", "assigned_at", "unassigned_by", "unassigned_at")
+
+
+class PaymentObligationSerializer(serializers.ModelSerializer):
+    agency_name = serializers.CharField(source="agency.name", read_only=True)
+    payer_name = serializers.CharField(source="payer.payer_name", read_only=True)
+    total_paid = serializers.SerializerMethodField()
+    reversed_total = serializers.SerializerMethodField()
+    balance = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PaymentObligation
+        fields = (
+            "id",
+            "agency",
+            "agency_name",
+            "payer",
+            "payer_name",
+            "obligation_number",
+            "description",
+            "obligation_date",
+            "due_date",
+            "total_expected",
+            "notes",
+            "status",
+            "created_by",
+            "cancelled_by",
+            "cancelled_at",
+            "cancellation_reason",
+            "created_at",
+            "updated_at",
+            "total_paid",
+            "reversed_total",
+            "balance",
+        )
+        read_only_fields = ("id", "obligation_number", "created_by", "created_at", "updated_at", "total_paid", "reversed_total", "balance", "status", "cancelled_by", "cancelled_at")
+
+    def get_total_paid(self, obligation):
+        return money(getattr(obligation, "_posted_total", None) or 0)
+
+    def get_reversed_total(self, obligation):
+        return money(getattr(obligation, "_reversed_total", None) or 0)
+
+    def get_balance(self, obligation):
+        annotated = getattr(obligation, "_balance", None)
+        if annotated is not None:
+            return money(annotated)
+        return money(obligation.total_expected - self.get_total_paid(obligation))
+
+    def validate(self, attrs):
+        agency = attrs.get("agency") or getattr(self.instance, "agency", None)
+        payer = attrs.get("payer") or getattr(self.instance, "payer", None)
+        if agency and payer and payer.agency_id != agency.id:
+            raise serializers.ValidationError({"payer": "Payer and obligation agency must match."})
+        if self.instance and self.instance.payments.filter(status=PayerPayment.PaymentStatus.POSTED).exists():
+            if "agency" in attrs and attrs["agency"].id != self.instance.agency_id:
+                raise serializers.ValidationError({"agency": "Agency cannot change after the first posted payment."})
+            if "payer" in attrs and attrs["payer"].id != self.instance.payer_id:
+                raise serializers.ValidationError({"payer": "Payer cannot change after the first posted payment."})
+            if "total_expected" in attrs and attrs["total_expected"] != self.instance.total_expected:
+                raise serializers.ValidationError({"total_expected": "Expected amount cannot be changed after the first posted payment."})
+        return attrs
+
+    def validate_total_expected(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError("Total expected must be greater than zero.")
+        return value
+
+
+class PayerPaymentSerializer(serializers.ModelSerializer):
+    obligation_number = serializers.CharField(source="obligation.obligation_number", read_only=True)
+    payer_name = serializers.CharField(source="payer_name_snapshot", read_only=True)
+    agency_name = serializers.CharField(source="agency_snapshot", read_only=True)
+
+    class Meta:
+        model = PayerPayment
+        fields = (
+            "id",
+            "obligation",
+            "obligation_number",
+            "receipt_number",
+            "agency_snapshot",
+            "agency_name",
+            "payer_name_snapshot",
+            "payer_name",
+            "amount_received",
+            "payment_date",
+            "payment_method",
+            "payment_reference",
+            "notes",
+            "recorded_by_display_snapshot",
+            "amount_previously_paid",
+            "cumulative_amount_paid",
+            "balance_after_payment",
+            "expected_amount_snapshot",
+            "obligation_description_snapshot",
+            "obligation_date_snapshot",
+            "linked_sub_agent_numbers_snapshot",
+            "recorded_by",
+            "status",
+            "idempotency_key",
+            "reversed_by",
+            "reversed_at",
+            "reversal_reason",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "receipt_number", "agency_snapshot", "payer_name_snapshot", "recorded_by", "status", "created_at", "updated_at", "reversed_by", "reversed_at", "reversal_reason", "recorded_by_display_snapshot", "amount_previously_paid", "cumulative_amount_paid", "balance_after_payment", "expected_amount_snapshot", "obligation_description_snapshot", "obligation_date_snapshot", "linked_sub_agent_numbers_snapshot")
+        extra_kwargs = {"idempotency_key": {"validators": []}}
+
+    def validate_amount_received(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError("Payment amount must be greater than zero.")
+        return value
+
+    def validate(self, attrs):
+        obligation = attrs.get("obligation") or getattr(self.instance, "obligation", None)
+        payment_method = attrs.get("payment_method")
+        if payment_method and payment_method != PayerPayment.PaymentMethod.CASH and not attrs.get("payment_reference", "").strip():
+            raise serializers.ValidationError({"payment_reference": "A payment reference is required for non-cash payments."})
+        if obligation and obligation.status == PaymentObligation.ObligationStatus.CANCELLED:
+            raise serializers.ValidationError({"obligation": "Cancelled obligations reject new payments."})
+        if not attrs.get("idempotency_key", "").strip():
+            raise serializers.ValidationError({"idempotency_key": "An idempotency key is required when posting a payment."})
+        return attrs
 
 
 class AccountantAssignmentInputSerializer(serializers.Serializer):

@@ -107,6 +107,22 @@ function usePaymentData(view, recordId, user) {
   return { ...state, reload };
 }
 
+function QuickActions({ user }) {
+  const canManage = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.can_create);
+  return (
+    <section className="payment-quick-actions panel" aria-label="Payment quick actions">
+      <div className="quick-action-row">
+        {canManage ? <Link className="primary-button" href="/dashboard/payments/payers?create=1"><Plus size={17} aria-hidden="true" />Add payer</Link> : null}
+        <Link className="secondary-button" href="/dashboard/payments/payers">Manage payers</Link>
+        {canManage ? <Link className="primary-button" href="/dashboard/payments/obligations?create=1"><Plus size={17} aria-hidden="true" />New obligation</Link> : null}
+        <Link className="secondary-button" href="/dashboard/payments/obligations">View obligations</Link>
+        <Link className="secondary-button" href="/dashboard/payments/analytics">Payment analytics</Link>
+      </div>
+      <p className="payment-hint">Create or select a payer before creating a payment obligation.</p>
+    </section>
+  );
+}
+
 function Overview({ data, user, onRefresh }) {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const analytics = data.analytics || {};
@@ -115,6 +131,7 @@ function Overview({ data, user, onRefresh }) {
   const filteredNotice = Object.values(filters).some(Boolean) ? "Filters apply on the analytics screen." : "All permitted agencies";
   return <div className="page-stack payment-workspace">
     <PageHeading eyebrow="Payment operations" title="Collections overview" copy="A focused view of obligations, receipts, and outstanding balances." action={<Link className="primary-button" href="/dashboard/payments/obligations"><Plus size={17} aria-hidden="true" />Record a payment</Link>} />
+    <QuickActions user={user} />
     <div className="payment-filter-summary"><span>{filteredNotice}</span><Link className="text-link" href="/dashboard/payments/analytics">Open full analytics <ChevronRight size={15} aria-hidden="true" /></Link></div>
     <section className="payment-metric-grid" aria-label="Payment totals">
       <Metric label="Total expected" value={formatGhanaMoney(portfolio.total_expected)} />
@@ -138,9 +155,12 @@ function ObligationTable({ rows }) {
 
 function Payers({ data, user, onRefresh }) {
   const [search, setSearch] = useState("");
-  const [form, setForm] = useState(null);
-  const [error, setError] = useState("");
   const canCreate = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.can_create);
+  // Lazy initializer opens the create panel on first render only when ?create=1 is present and permitted.
+  const [form, setForm] = useState(() => (canCreate && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("create") === "1")
+    ? { agency: data.agencies[0]?.id || "", payer_name: "", telephone: "", email: "", address: "", notes: "" }
+    : null);
+  const [error, setError] = useState("");
   const canEdit = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.can_edit);
   const visible = (data.payers || []).filter((payer) => !search || `${payer.payer_name} ${payer.agency_name}`.toLowerCase().includes(search.toLowerCase()));
 
@@ -179,9 +199,12 @@ function Payers({ data, user, onRefresh }) {
 
 function Obligations({ data, user, onRefresh }) {
   const [filters, setFilters] = useState({ agency: "", payer: "", status: "" });
-  const [form, setForm] = useState(null);
-  const [error, setError] = useState("");
   const canCreate = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.can_create);
+  // Lazy initializer opens the create panel on first render only when ?create=1 is present and permitted.
+  const [form, setForm] = useState(() => (canCreate && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("create") === "1")
+    ? { agency: data.agencies[0]?.id || "", payer: data.payers[0]?.id || "", description: "", obligation_date: "", total_expected: "", notes: "" }
+    : null);
+  const [error, setError] = useState("");
   const visible = (data.obligations || []).filter((item) => (!filters.agency || String(item.agency) === filters.agency) && (!filters.payer || String(item.payer) === filters.payer) && (!filters.status || item.status === filters.status));
   async function create(event) { event.preventDefault(); setError(""); try { await clientRequest(apiPath("payment-obligations/"), { method: "POST", body: JSON.stringify({ ...form, total_expected: form.total_expected }) }); setForm(null); onRefresh(); } catch (failure) { setError(apiError(failure)); } }
   return <div className="page-stack payment-workspace"><PageHeading eyebrow="Payment ledger" title="Obligations" copy="Create expected amounts, monitor balances, and open an obligation to record receipts." action={canCreate ? <button className="primary-button" type="button" onClick={() => setForm({ agency: data.agencies[0]?.id || "", payer: data.payers[0]?.id || "", description: "", obligation_date: "", total_expected: "", notes: "" })}><Plus size={17} aria-hidden="true" />Create obligation</button> : null} /><div className="payment-filter-bar panel"><label>Agency<select value={filters.agency} onChange={(event) => setFilters({ ...filters, agency: event.target.value })}><option value="">All agencies</option>{data.agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label><label>Payer<select value={filters.payer} onChange={(event) => setFilters({ ...filters, payer: event.target.value })}><option value="">All payers</option>{data.payers.filter((payer) => !filters.agency || String(payer.agency) === filters.agency).map((payer) => <option key={payer.id} value={payer.id}>{payer.payer_name}</option>)}</select></label><label>Status<select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{["OPEN", "PARTIALLY_PAID", "PAID", "CANCELLED"].map((status) => <option key={status} value={status}>{paymentStatusLabel(status)}</option>)}</select></label></div><ErrorBox error={error} /><section className="panel payment-table-panel"><div className="payment-table-wrap"><table className="payment-table"><thead><tr><th>Obligation</th><th>Agency / payer</th><th>Date</th><th>Expected</th><th>Posted</th><th>Reversed</th><th>Balance</th><th>Status</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><Link className="text-link" href={`/dashboard/payments/obligations/${item.id}`}>{item.obligation_number}</Link><small>{item.description}</small></td><td>{item.agency_name}<small>{item.payer_name}</small></td><td>{item.obligation_date}</td><td>{formatGhanaMoney(item.total_expected)}</td><td>{formatGhanaMoney(item.total_paid)}</td><td>{formatGhanaMoney(item.reversed_total)}</td><td>{formatGhanaMoney(item.balance)}</td><td><StatusBadge status={item.status} /></td></tr>)}</tbody></table></div>{!visible.length ? <Empty>No obligations match these filters.</Empty> : null}</section>{form ? <dialog open className="payment-dialog"><form onSubmit={create}><div className="dialog-heading"><h3>Create obligation</h3><button className="icon-button" type="button" onClick={() => setForm(null)} aria-label="Close obligation form"><X size={18} /></button></div><label>Agency<select required value={form.agency} onChange={(event) => setForm({ ...form, agency: event.target.value, payer: "" })}>{data.agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label><label>Payer<select required value={form.payer} onChange={(event) => setForm({ ...form, payer: event.target.value })}>{data.payers.filter((payer) => String(payer.agency) === String(form.agency)).map((payer) => <option key={payer.id} value={payer.id}>{payer.payer_name}</option>)}</select></label><label>Description<input required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><label>Obligation date<input required type="date" value={form.obligation_date} onChange={(event) => setForm({ ...form, obligation_date: event.target.value })} /></label><label>Total expected<input required min="0.01" step="0.01" type="number" value={form.total_expected} onChange={(event) => setForm({ ...form, total_expected: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-button" type="submit">Create obligation</button></form></dialog> : null}</div>;

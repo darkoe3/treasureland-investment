@@ -1261,6 +1261,12 @@ th {
 .status-reversed, .status-cancelled, .status-inactive { color: var(--danger); background: #fff0ef; }
 .status-open, .status-partially_paid { color: var(--warning); background: #fff7df; }
 .payment-note { padding: .8rem 1rem; border-left: 3px solid var(--gold-500); background: var(--gold-100); color: var(--ink-700); }
+.payment-success { padding: 1.15rem; margin-bottom: 1rem; border: 1px solid var(--success); background: #eaf7ef; }
+.payment-success:focus-visible, .payment-success:focus { outline: 2px solid var(--blue-700); outline-offset: 2px; }
+.payment-success-heading { display: flex; align-items: flex-start; gap: .65rem; }
+.payment-success-heading > div { flex: 1; min-width: 0; }
+.payment-success-heading h3 { margin: 0; }
+.payment-success-heading p { margin: .25rem 0 0; color: var(--ink-700); font-weight: 700; }
 .payment-search { display: flex; align-items: center; gap: .6rem; max-width: 34rem; margin-bottom: 1rem; padding: .1rem .8rem; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
 .payment-search input { width: 100%; min-width: 0; border: 0; padding: .7rem 0; outline: 0; }
 .payment-filter-bar, .analytics-filters { display: flex; flex-wrap: wrap; gap: .8rem; align-items: end; padding: 1rem; margin-bottom: 1rem; }

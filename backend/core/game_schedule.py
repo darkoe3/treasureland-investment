@@ -57,7 +57,7 @@ APPROVED_WEEKLY_SCHEDULE = [
     timed(Weekday.WEDNESDAY, "VAG", 2, "15:30", "15:45"),
     whole_day(Weekday.WEDNESDAY, "Midweek", 3),
     timed(Weekday.WEDNESDAY, "Enugu", 4, "19:30", "19:45"),
-    whole_day(Weekday.WEDNESDAY, "Lucky", 5),
+    timed(Weekday.WEDNESDAY, "Lucky", 5, "22:30", "22:45"),
     timed(Weekday.WEDNESDAY, "Tota", 6, "09:00", "09:45"),
     timed(Weekday.THURSDAY, "Fairchance", 1, "12:30", "13:30"),
     timed(Weekday.THURSDAY, "Diamond", 2, "15:30", "15:45"),
@@ -190,3 +190,36 @@ def apply_approved_weekly_game_schedule():
             schedule.save(update_fields=["is_active", "updated_at"])
 
     return updated
+
+
+def validate_active_weekly_game_schedule():
+    expected_whole_day = {
+        Weekday.MONDAY: "Monday Special",
+        Weekday.TUESDAY: "Lucky G",
+        Weekday.WEDNESDAY: "Midweek",
+        Weekday.THURSDAY: "Fortune",
+        Weekday.FRIDAY: "Bonanza",
+        Weekday.SATURDAY: "National",
+        Weekday.SUNDAY: "Aseda",
+    }
+    errors = []
+    for weekday, whole_day_name in expected_whole_day.items():
+        entries = list(
+            WeeklyGameSchedule.objects.filter(
+                weekday=weekday, is_active=True, game__is_active=True,
+            ).select_related("game")
+        )
+        expected_count = 5 if weekday == Weekday.SUNDAY else 6
+        whole_day_entries = [entry for entry in entries if entry.is_whole_day]
+        if len(entries) != expected_count:
+            errors.append(f"{Weekday(weekday).label} must have {expected_count} active games; found {len(entries)}.")
+        if len(whole_day_entries) != 1 or whole_day_entries[0].game.name != whole_day_name:
+            errors.append(f"{Weekday(weekday).label} must have exactly one Whole Day game: {whole_day_name}.")
+        for entry in entries:
+            if entry.is_whole_day:
+                if entry.closing_time is not None or entry.draw_time is not None:
+                    errors.append(f"{Weekday(weekday).label} {entry.game.name} Whole Day times must be null.")
+            elif entry.closing_time is None or entry.draw_time is None or entry.draw_time <= entry.closing_time:
+                errors.append(f"{Weekday(weekday).label} {entry.game.name} must have valid timed-game times.")
+    if errors:
+        raise ValueError("Invalid active weekly game schedule: " + " ".join(errors))

@@ -8,6 +8,7 @@ from .views import (
     DailySheetViewSet,
     DailySheetImportBatchViewSet,
     GameViewSet,
+    HolidayGameOverrideViewSet,
     LoginView,
     OmittedTerminalViewSet,
     PaymentAnalyticsView,
@@ -39,6 +40,7 @@ router.register("people", PersonViewSet, basename="person")
 router.register("tpm-codes", TPMCodeViewSet, basename="tpm-code")
 router.register("games", GameViewSet, basename="game")
 router.register("weekly-game-schedules", WeeklyGameScheduleViewSet, basename="weekly-game-schedule")
+router.register("holiday-game-overrides", HolidayGameOverrideViewSet, basename="holiday-game-override")
 router.register("daily-sheets", DailySheetViewSet, basename="daily-sheet")
 router.register("daily-sheet-imports", DailySheetImportBatchViewSet, basename="daily-sheet-import")
 router.register("tpm-daily-transactions", TPMDailyTransactionViewSet, basename="tpm-daily-transaction")

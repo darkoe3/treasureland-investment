@@ -17,6 +17,7 @@ from .models import (
     DailySheetGame,
     DailySheetStatus,
     Game,
+    HolidayGameOverride,
     OmittedTerminal,
     PaymentObligation,
     PaymentPayer,
@@ -553,6 +554,7 @@ class GameSerializer(serializers.ModelSerializer):
 
 class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
     game_name = serializers.CharField(source="game.name", read_only=True)
+    game_is_active = serializers.BooleanField(source="game.is_active", read_only=True)
     weekday_display = serializers.CharField(source="get_weekday_display", read_only=True)
 
     class Meta:
@@ -561,6 +563,7 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
             "id",
             "game",
             "game_name",
+            "game_is_active",
             "weekday",
             "weekday_display",
             "is_whole_day",
@@ -611,6 +614,81 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class HolidayGameOverrideSerializer(serializers.ModelSerializer):
+    normal_game_name = serializers.CharField(source="normal_game.name", read_only=True)
+    replacement_game_name = serializers.CharField(source="replacement_game.name", read_only=True)
+    created_by_name = serializers.CharField(source="created_by.full_name", read_only=True)
+    is_used = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HolidayGameOverride
+        fields = (
+            "id", "holiday_date", "holiday_name", "normal_game", "normal_game_name",
+            "replacement_game", "replacement_game_name", "source_date", "notes", "is_active",
+            "created_by", "created_by_name", "created_at", "updated_at", "cancelled_by",
+            "cancelled_at", "cancellation_reason", "is_used", "can_edit",
+        )
+        read_only_fields = (
+            "created_by", "created_by_name", "created_at", "updated_at", "cancelled_by",
+            "cancelled_at", "cancellation_reason", "is_used", "can_edit",
+        )
+
+    def get_is_used(self, obj):
+        return DailySheet.objects.filter(holiday_override_id_snapshot=obj.id).exists()
+
+    def get_can_edit(self, obj):
+        from django.utils import timezone
+
+        return obj.holiday_date > timezone.localdate() and not self.get_is_used(obj) and obj.cancelled_at is None
+
+    def validate(self, attrs):
+        from django.utils import timezone
+
+        instance = self.instance
+        holiday_date = attrs.get("holiday_date", getattr(instance, "holiday_date", None))
+        source_date = attrs.get("source_date", getattr(instance, "source_date", None))
+        normal_game = attrs.get("normal_game", getattr(instance, "normal_game", None))
+        replacement_game = attrs.get("replacement_game", getattr(instance, "replacement_game", None))
+        is_active = attrs.get("is_active", getattr(instance, "is_active", True))
+        if not attrs.get("holiday_name", getattr(instance, "holiday_name", "")).strip():
+            raise serializers.ValidationError({"holiday_name": "Holiday name is required."})
+        if source_date and holiday_date and source_date >= holiday_date:
+            raise serializers.ValidationError({"source_date": "Source date must be earlier than the holiday date."})
+        if source_date and source_date > timezone.localdate():
+            raise serializers.ValidationError({"source_date": "Source date cannot be in the future."})
+        if normal_game and holiday_date and not WeeklyGameSchedule.objects.filter(
+            weekday=holiday_date.isoweekday(), game=normal_game, is_whole_day=True,
+            is_active=True, game__is_active=True,
+        ).exists():
+            raise serializers.ValidationError({"normal_game": "Select the active Whole Day game scheduled for the holiday date."})
+        if replacement_game and source_date and not WeeklyGameSchedule.objects.filter(
+            weekday=source_date.isoweekday(), game=replacement_game, is_whole_day=True,
+            is_active=True, game__is_active=True,
+        ).exists():
+            raise serializers.ValidationError({"replacement_game": "Select an active Whole Day game scheduled on the source date."})
+        if holiday_date and replacement_game and replacement_game != normal_game and WeeklyGameSchedule.objects.filter(
+            weekday=holiday_date.isoweekday(), game=replacement_game,
+            is_active=True, game__is_active=True,
+        ).exists():
+            raise serializers.ValidationError({"replacement_game": "The replacement game is already scheduled for the holiday date."})
+        if is_active:
+            duplicate = HolidayGameOverride.objects.filter(holiday_date=holiday_date, is_active=True)
+            if instance:
+                duplicate = duplicate.exclude(pk=instance.pk)
+            if duplicate.exists():
+                raise serializers.ValidationError({"holiday_date": "An active override already exists for this holiday date."})
+        if instance and set(attrs) - {"is_active"}:
+            used = DailySheet.objects.filter(holiday_override_id_snapshot=instance.id).exists()
+            if instance.holiday_date <= timezone.localdate() or used:
+                raise serializers.ValidationError("Only unused future overrides can be edited.")
+            if instance.cancelled_at:
+                raise serializers.ValidationError("Cancelled overrides cannot be edited.")
+        if instance and instance.cancelled_at and is_active:
+            raise serializers.ValidationError({"is_active": "A cancelled override cannot be activated."})
+        return attrs
+
+
 class DailySheetGameSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailySheetGame
@@ -620,6 +698,7 @@ class DailySheetGameSerializer(serializers.ModelSerializer):
             "game",
             "game_name_snapshot",
             "is_whole_day_snapshot",
+            "is_holiday_override_snapshot",
             "closing_time_snapshot",
             "draw_time_snapshot",
             "display_order",
@@ -849,6 +928,12 @@ class DailySheetSerializer(serializers.ModelSerializer):
             "status",
             "incoming_funds",
             "tax",
+            "holiday_override_applied",
+            "holiday_override_id_snapshot",
+            "holiday_name_snapshot",
+            "holiday_normal_game_name_snapshot",
+            "holiday_replacement_game_name_snapshot",
+            "holiday_source_date_snapshot",
             "reconciliation_note",
             "return_comment",
             "reopen_reason",
@@ -882,6 +967,12 @@ class DailySheetSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "is_archived",
+            "holiday_override_applied",
+            "holiday_override_id_snapshot",
+            "holiday_name_snapshot",
+            "holiday_normal_game_name_snapshot",
+            "holiday_replacement_game_name_snapshot",
+            "holiday_source_date_snapshot",
             "status",
             "return_comment",
             "reopen_reason",

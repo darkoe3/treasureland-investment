@@ -29,6 +29,15 @@ function StatusBadge({ active }) {
   return <span className={`status-pill ${active ? "approved" : "returned"}`}>{active ? "Active" : "Inactive"}</span>;
 }
 
+function emptyHolidayForm() {
+  return { holiday_date: "", holiday_name: "", normal_game: "", replacement_game: "", source_date: "", notes: "", is_active: true };
+}
+
+function localDateString() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 function ModeToggle({ value, onChange }) {
   return (
     <div className="segmented-control" role="group" aria-label="Schedule mode">
@@ -46,7 +55,11 @@ export default function GameScheduleClient({ user }) {
   const canMutate = user.role === "SUPER_ADMIN";
   const [entries, setEntries] = useState([]);
   const [games, setGames] = useState([]);
+  const [overrides, setOverrides] = useState([]);
   const [form, setForm] = useState(emptyScheduleForm());
+  const [holidayForm, setHolidayForm] = useState(emptyHolidayForm());
+  const [holidayEditingId, setHolidayEditingId] = useState("");
+  const [holidayChoices, setHolidayChoices] = useState({ normal: [], source: [] });
   const [editingId, setEditingId] = useState("");
   const [state, setState] = useState({ loading: true, saving: false, error: "", success: "" });
 
@@ -56,12 +69,14 @@ export default function GameScheduleClient({ user }) {
   async function loadData() {
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const [schedulePayloadResult, gamesPayload] = await Promise.all([
+      const [schedulePayloadResult, gamesPayload, overridesPayload] = await Promise.all([
         clientRequest(apiPath("/weekly-game-schedules/")),
         clientRequest(apiPath("/games/")),
+        clientRequest(apiPath("/holiday-game-overrides/")),
       ]);
       setEntries(listFromSchedulePayload(schedulePayloadResult));
       setGames(listFromApiPayload(gamesPayload));
+      setOverrides(listFromSchedulePayload(overridesPayload));
       setState((current) => ({ ...current, loading: false }));
     } catch (error) {
       setState({ loading: false, saving: false, error: error.message, success: "" });
@@ -127,6 +142,108 @@ export default function GameScheduleClient({ user }) {
     }
   }
 
+  async function loadHolidayChoices(target, selectedDate) {
+    if (!selectedDate) {
+      setHolidayChoices((current) => ({ ...current, [target]: [] }));
+      return;
+    }
+    try {
+      const [year, month, day] = selectedDate.split("-").map(Number);
+      const weekday = new Date(year, month - 1, day).getDay() || 7;
+      const path = target === "normal"
+        ? `/weekly-game-schedules/?weekday=${weekday}&active=true`
+        : `/games/for-date/?date=${selectedDate}`;
+      const payload = await clientRequest(apiPath(path));
+      setHolidayChoices((current) => ({
+        ...current,
+        [target]: listFromSchedulePayload(payload).filter((entry) => entry.is_whole_day),
+      }));
+    } catch (error) {
+      setState((current) => ({ ...current, error: error.message }));
+    }
+  }
+
+  function changeHolidayField(field, value) {
+    setHolidayForm((current) => ({ ...current, [field]: value }));
+    if (field === "holiday_date") loadHolidayChoices("normal", value);
+    if (field === "source_date") loadHolidayChoices("source", value);
+  }
+
+  function beginHolidayEdit(entry) {
+    if (!canMutate || !entry.can_edit) return;
+    setHolidayEditingId(String(entry.id));
+    setHolidayForm({
+      holiday_date: entry.holiday_date,
+      holiday_name: entry.holiday_name,
+      normal_game: String(entry.normal_game),
+      replacement_game: String(entry.replacement_game),
+      source_date: entry.source_date,
+      notes: entry.notes || "",
+      is_active: Boolean(entry.is_active),
+    });
+    loadHolidayChoices("normal", entry.holiday_date);
+    loadHolidayChoices("source", entry.source_date);
+  }
+
+  function resetHolidayForm() {
+    setHolidayEditingId("");
+    setHolidayForm(emptyHolidayForm());
+    setHolidayChoices({ normal: [], source: [] });
+  }
+
+  async function saveHolidayOverride(event) {
+    event.preventDefault();
+    if (!canMutate) return;
+    setState((current) => ({ ...current, saving: true, error: "", success: "" }));
+    try {
+      const wasEditing = Boolean(holidayEditingId);
+      const path = wasEditing ? `/holiday-game-overrides/${holidayEditingId}/` : "/holiday-game-overrides/";
+      await clientRequest(apiPath(path), {
+        method: wasEditing ? "PATCH" : "POST",
+        body: JSON.stringify({
+          ...holidayForm,
+          normal_game: Number(holidayForm.normal_game),
+          replacement_game: Number(holidayForm.replacement_game),
+        }),
+      });
+      resetHolidayForm();
+      await loadData();
+      setState({ loading: false, saving: false, error: "", success: wasEditing ? "Holiday override updated." : "Holiday override created." });
+    } catch (error) {
+      setState({ loading: false, saving: false, error: JSON.stringify(error.payload || error.message), success: "" });
+    }
+  }
+
+  async function setHolidayActive(entry, active) {
+    if (!canMutate) return;
+    try {
+      await clientRequest(apiPath(`/holiday-game-overrides/${entry.id}/`), {
+        method: "PATCH",
+        body: JSON.stringify({ is_active: active }),
+      });
+      await loadData();
+      setState({ loading: false, saving: false, error: "", success: `Holiday override ${active ? "activated" : "deactivated"}.` });
+    } catch (error) {
+      setState({ loading: false, saving: false, error: JSON.stringify(error.payload || error.message), success: "" });
+    }
+  }
+
+  async function cancelHolidayOverride(entry) {
+    if (!canMutate) return;
+    const reason = window.prompt(`Cancellation reason for ${entry.holiday_name} (${entry.holiday_date})`);
+    if (!reason?.trim()) return;
+    try {
+      await clientRequest(apiPath(`/holiday-game-overrides/${entry.id}/cancel/`), {
+        method: "POST",
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      await loadData();
+      setState({ loading: false, saving: false, error: "", success: "Holiday override cancelled." });
+    } catch (error) {
+      setState({ loading: false, saving: false, error: JSON.stringify(error.payload || error.message), success: "" });
+    }
+  }
+
   return (
     <div className="page-stack schedule-page">
       <section className="panel">
@@ -152,8 +269,11 @@ export default function GameScheduleClient({ user }) {
             <section className="panel schedule-day" key={group.value}>
               <div className="panel-heading">
                 <h2>{group.label}</h2>
-                <span>{group.entries.filter((entry) => entry.is_active).length} active</span>
+                <span>{group.entries.filter((entry) => entry.is_active && entry.game_is_active !== false).length}/{group.value === 7 ? 5 : 6} active</span>
               </div>
+              {group.entries.filter((entry) => entry.is_active && entry.game_is_active !== false).length !== (group.value === 7 ? 5 : 6) ? (
+                <p className="form-error" role="alert">Expected {group.value === 7 ? 5 : 6} active games for {group.label}.</p>
+              ) : null}
               <div className="table-wrap responsive-table">
                 <table className="schedule-table">
                   <thead>
@@ -173,7 +293,7 @@ export default function GameScheduleClient({ user }) {
                     {group.entries.map((entry) => (
                       <tr key={entry.id}>
                         <td data-label="Order">{entry.display_order}</td>
-                        <td data-label="Game"><strong>{entry.game_name}</strong></td>
+                        <td data-label="Game"><strong>{entry.game_name}</strong>{entry.game_name === "Monday Special" ? <small className="game-abbreviation">MSP</small> : null}</td>
                         <td data-label="Mode">{scheduleMode(entry)}</td>
                         <td data-label="Closing">{entry.is_whole_day ? "Whole Day" : formatTime(entry.closing_time)}</td>
                         <td data-label="Draw">{entry.is_whole_day ? "Whole Day" : formatTime(entry.draw_time)}</td>
@@ -253,6 +373,54 @@ export default function GameScheduleClient({ user }) {
               {editingId ? <Save size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
               {state.saving ? "Saving..." : editingId ? "Save entry" : "Create entry"}
             </button>
+          </form>
+        ) : null}
+      </section>
+      <section className="panel holiday-overrides-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Holiday Overrides</h2>
+            <p className="empty-state">Date-specific Ghana Whole Day replacements; the weekly schedule remains unchanged.</p>
+          </div>
+        </div>
+        <div className="table-wrap responsive-table">
+          <table className="schedule-table">
+            <thead><tr><th>Holiday date</th><th>Holiday</th><th>Normal game</th><th>Game sold</th><th>Source date</th><th>Status</th>{canMutate ? <th>Actions</th> : null}</tr></thead>
+            <tbody>
+              {!overrides.length ? <tr><td colSpan={canMutate ? 7 : 6} className="empty-cell">No holiday overrides.</td></tr> : null}
+              {overrides.map((entry) => (
+                <tr key={entry.id}>
+                  <td data-label="Holiday date">{entry.holiday_date}</td>
+                  <td data-label="Holiday">{entry.holiday_name}</td>
+                  <td data-label="Normal game">{entry.normal_game_name}</td>
+                  <td data-label="Game sold">{entry.replacement_game_name}</td>
+                  <td data-label="Source date">{entry.source_date}</td>
+                  <td data-label="Status"><StatusBadge active={entry.is_active} />{entry.cancelled_at ? " Cancelled" : ""}{entry.is_used ? " · Used" : ""}</td>
+                  {canMutate ? (
+                    <td data-label="Actions"><div className="button-row compact">
+                      {entry.can_edit ? <button className="icon-button" type="button" onClick={() => beginHolidayEdit(entry)} aria-label={`Edit ${entry.holiday_name}`}><Edit2 size={16} aria-hidden="true" /></button> : null}
+                      {!entry.cancelled_at ? <button className={`icon-button ${entry.is_active ? "danger-soft" : "success-soft"}`} type="button" onClick={() => setHolidayActive(entry, !entry.is_active)} aria-label={`${entry.is_active ? "Deactivate" : "Activate"} ${entry.holiday_name}`}>{entry.is_active ? <PowerOff size={16} aria-hidden="true" /> : <Power size={16} aria-hidden="true" />}</button> : null}
+                      {!entry.cancelled_at ? <button className="secondary-button compact-button" type="button" onClick={() => cancelHolidayOverride(entry)}>Cancel</button> : null}
+                    </div></td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {canMutate ? (
+          <form className="form-panel holiday-override-form" onSubmit={saveHolidayOverride}>
+            <div className="panel-heading"><h3>{holidayEditingId ? "Edit Holiday Override" : "Add Holiday Override"}</h3>{holidayEditingId ? <button className="icon-button" type="button" onClick={resetHolidayForm} aria-label="Cancel edit"><X size={18} /></button> : null}</div>
+            <div className="field-grid">
+              <label className="field-group">Holiday date<input type="date" required value={holidayForm.holiday_date} onChange={(event) => changeHolidayField("holiday_date", event.target.value)} /></label>
+              <label className="field-group">Holiday name<input required maxLength="160" value={holidayForm.holiday_name} onChange={(event) => changeHolidayField("holiday_name", event.target.value)} /></label>
+              <label className="field-group">Normal scheduled Whole Day game<select required value={holidayForm.normal_game} onChange={(event) => changeHolidayField("normal_game", event.target.value)}><option value="">Select game</option>{holidayChoices.normal.map((game) => <option key={game.game} value={game.game}>{game.game_name}</option>)}</select></label>
+              <label className="field-group">Source date<input type="date" required max={localDateString()} value={holidayForm.source_date} onChange={(event) => changeHolidayField("source_date", event.target.value)} /></label>
+              <label className="field-group">Previous Whole Day game<select required value={holidayForm.replacement_game} onChange={(event) => changeHolidayField("replacement_game", event.target.value)}><option value="">Select game from source date</option>{holidayChoices.source.map((game) => <option key={game.game} value={game.game}>{game.game_name}</option>)}</select></label>
+              <label className="field-group">Notes<textarea value={holidayForm.notes} onChange={(event) => changeHolidayField("notes", event.target.value)} rows="2" /></label>
+              <label className="switch-row strong"><input type="checkbox" checked={holidayForm.is_active} onChange={(event) => changeHolidayField("is_active", event.target.checked)} />Active</label>
+            </div>
+            <button className="primary-button" type="submit" disabled={state.saving || !holidayChoices.normal.length || !holidayChoices.source.length}><Save size={16} aria-hidden="true" />{state.saving ? "Saving..." : holidayEditingId ? "Save override" : "Create override"}</button>
           </form>
         ) : null}
       </section>

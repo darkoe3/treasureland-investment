@@ -39,6 +39,7 @@ from .models import (
     DailySheetImportStatus,
     DailySheetStatus,
     Game,
+    HolidayGameOverride,
     OmittedTerminal,
     PaymentObligation,
     PaymentPayer,
@@ -72,6 +73,7 @@ from .serializers import (
     DailySheetSerializer,
     EmailTokenObtainPairSerializer,
     GameSerializer,
+    HolidayGameOverrideSerializer,
     OmittedTerminalSerializer,
     PaymentObligationSerializer,
     PaymentPayerSerializer,
@@ -1384,12 +1386,25 @@ class GameViewSet(BaseSearchViewSet):
             selected_date = timezone.datetime.fromisoformat(date_text).date()
         except ValueError as exc:
             raise ValidationError({"date": "Use YYYY-MM-DD."}) from exc
-        schedules = WeeklyGameSchedule.objects.select_related("game").filter(
-            weekday=selected_date.isoweekday(),
-            is_active=True,
-            game__is_active=True,
-        ).order_by("display_order", "id")
-        return Response(WeeklyGameScheduleSerializer(schedules, many=True).data)
+        from .holiday_overrides import effective_schedule_for_date
+
+        schedules, _override = effective_schedule_for_date(selected_date)
+        return Response([
+            {
+                "id": schedule.id,
+                "game": schedule.game.id,
+                "game_name": schedule.game.name,
+                "weekday": selected_date.isoweekday(),
+                "weekday_display": selected_date.strftime("%A"),
+                "is_whole_day": schedule.is_whole_day,
+                "closing_time": schedule.closing_time,
+                "draw_time": schedule.draw_time,
+                "display_order": schedule.display_order,
+                "is_active": True,
+                "is_holiday_override": schedule.is_holiday_override,
+            }
+            for schedule in schedules
+        ])
 
 
 class WeeklyGameScheduleViewSet(BaseSearchViewSet):
@@ -1469,6 +1484,82 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
             new_values=self._values_for_audit(instance),
             description=f"Schedule deactivated: {instance.game.name} on {instance.get_weekday_display()}",
         )
+
+
+class HolidayGameOverrideViewSet(BaseSearchViewSet):
+    serializer_class = HolidayGameOverrideSerializer
+    permission_classes = [SuperAdminOnlyWrites]
+    queryset = HolidayGameOverride.objects.select_related("normal_game", "replacement_game", "created_by", "cancelled_by")
+    ordering_fields = ["holiday_date", "created_at", "is_active"]
+
+    def get_queryset(self):
+        queryset = super().get_queryset().order_by("holiday_date", "id")
+        holiday_date = self.request.query_params.get("holiday_date")
+        active = self.request.query_params.get("active")
+        if holiday_date:
+            queryset = queryset.filter(holiday_date=holiday_date)
+        if active in {"true", "false"}:
+            queryset = queryset.filter(is_active=active == "true")
+        return queryset
+
+    @staticmethod
+    def _audit_values(override):
+        return {
+            "holiday_date": override.holiday_date,
+            "holiday_name": override.holiday_name,
+            "normal_game_id": override.normal_game_id,
+            "normal_game_name": override.normal_game.name,
+            "replacement_game_id": override.replacement_game_id,
+            "replacement_game_name": override.replacement_game.name,
+            "source_date": override.source_date,
+            "is_active": override.is_active,
+            "is_cancelled": override.cancelled_at is not None,
+        }
+
+    def perform_create(self, serializer):
+        override = serializer.save(created_by=self.request.user)
+        log_audit(
+            self.request.user, None, AuditAction.HOLIDAY_OVERRIDE_CREATED,
+            "HolidayGameOverride", override.id, new_values=self._audit_values(override),
+            description=f"Holiday override created for {override.holiday_date}.",
+        )
+
+    def perform_update(self, serializer):
+        override = self.get_object()
+        old_values = self._audit_values(override)
+        updated = serializer.save()
+        action_value = AuditAction.HOLIDAY_OVERRIDE_UPDATED
+        if not old_values["is_active"] and updated.is_active:
+            action_value = AuditAction.HOLIDAY_OVERRIDE_ACTIVATED
+        elif old_values["is_active"] and not updated.is_active:
+            action_value = AuditAction.HOLIDAY_OVERRIDE_DEACTIVATED
+        log_audit(
+            self.request.user, None, action_value, "HolidayGameOverride", updated.id,
+            old_values=old_values, new_values=self._audit_values(updated),
+            description=f"Holiday override updated for {updated.holiday_date}.",
+        )
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel(self, request, pk=None):
+        override = self.get_object()
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            raise ValidationError({"reason": "A cancellation reason is required."})
+        if override.cancelled_at:
+            raise ValidationError({"detail": "This holiday override has already been cancelled."})
+        old_values = self._audit_values(override)
+        override.is_active = False
+        override.cancelled_by = request.user
+        override.cancelled_at = timezone.now()
+        override.cancellation_reason = reason
+        override.save()
+        log_audit(
+            request.user, None, AuditAction.HOLIDAY_OVERRIDE_CANCELLED,
+            "HolidayGameOverride", override.id, old_values=old_values,
+            new_values=self._audit_values(override),
+            description=f"Holiday override cancelled for {override.holiday_date}.",
+        )
+        return Response(self.get_serializer(override).data)
 
 
 class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet):

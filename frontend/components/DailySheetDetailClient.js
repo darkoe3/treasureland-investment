@@ -181,6 +181,11 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
         </div>
         {message.error ? <p className="form-error">{message.error}</p> : null}
         {message.success ? <p className="form-success">{message.success}</p> : null}
+        {sheet.holiday_override_applied ? (
+          <p className="holiday-override-notice" role="status">
+            Holiday override: {sheet.holiday_replacement_game_name_snapshot} from {sheet.holiday_source_date_snapshot} is being sold for {sheet.holiday_name_snapshot}.
+          </p>
+        ) : null}
       </section>
 
       <section className="panel">

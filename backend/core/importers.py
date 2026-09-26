@@ -13,7 +13,8 @@ from django.utils.text import get_valid_filename
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from .models import DailySheet, DailySheetGame, TPMCode, TerminalNumber, WeeklyGameSchedule, money
+from .holiday_overrides import effective_schedule_for_date
+from .models import DailySheet, DailySheetGame, TPMCode, TerminalNumber, money
 
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
@@ -94,9 +95,7 @@ def build_daily_sheet_template(agency, transaction_date):
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center")
 
-    schedules = WeeklyGameSchedule.objects.select_related("game").filter(
-        weekday=transaction_date.isoweekday(), is_active=True, game__is_active=True,
-    ).order_by("display_order", "id")
+    schedules, _holiday_override = effective_schedule_for_date(transaction_date)
     for column, schedule in zip(range(3, 10), schedules):
         raw_sheet.cell(3, column).value = schedule.game.name
 
@@ -283,11 +282,7 @@ def scheduled_games_for_date(transaction_date, existing_sheet):
     if existing_sheet:
         rows = existing_sheet.sheet_games.select_related("game").order_by("display_order", "id")
         return {row.game_name_snapshot.lower(): row for row in rows}
-    schedules = (
-        WeeklyGameSchedule.objects.select_related("game")
-        .filter(weekday=transaction_date.isoweekday(), is_active=True, game__is_active=True)
-        .order_by("display_order", "id")
-    )
+    schedules, _holiday_override = effective_schedule_for_date(transaction_date)
     return {schedule.game.name.lower(): schedule for schedule in schedules}
 
 
@@ -304,11 +299,7 @@ def schedule_snapshot_for_date(transaction_date, existing_sheet):
             }
             for row in rows
         ]
-    schedules = (
-        WeeklyGameSchedule.objects.select_related("game")
-        .filter(weekday=transaction_date.isoweekday(), is_active=True, game__is_active=True)
-        .order_by("display_order", "id")
-    )
+    schedules, _holiday_override = effective_schedule_for_date(transaction_date)
     return [
         {
             "game_name": schedule.game.name,

@@ -8,6 +8,7 @@ const COLLECTION_METHODS = {
   "tpm-daily-transactions": new Set(["GET", "POST"]),
   "omitted-terminals": new Set(["GET", "POST"]),
   "weekly-game-schedules": new Set(["GET", "POST"]),
+  "holiday-game-overrides": new Set(["GET", "POST"]),
   "audit-logs": new Set(["GET"]),
   "payment-payers": new Set(["GET", "POST"]),
   "payment-obligations": new Set(["GET", "POST"]),
@@ -23,6 +24,7 @@ const DETAIL_METHODS = {
   "tpm-daily-transactions": new Set(["GET", "PATCH", "DELETE"]),
   "omitted-terminals": new Set(["GET", "PATCH", "DELETE"]),
   "weekly-game-schedules": new Set(["GET", "PATCH", "DELETE"]),
+  "holiday-game-overrides": new Set(["GET", "PATCH"]),
   "payment-payers": new Set(["GET", "PATCH"]),
   "payment-obligations": new Set(["GET", "PATCH"]),
   "payer-payments": new Set(["GET"]),
@@ -101,6 +103,7 @@ export function isAllowedBackendProxyPath(path, method = "GET") {
   if (/^agencies\/\d+\/(deactivate|reactivate)$/.test(cleanPath)) return normalizedMethod === "POST";
   if (/^payment-payers\/\d+\/(deactivate|reactivate|assign_sub_agent|unassign_sub_agent|reassign_sub_agent)$/.test(cleanPath)) return normalizedMethod === "POST";
   if (/^payment-obligations\/\d+\/cancel$/.test(cleanPath)) return normalizedMethod === "POST";
+  if (/^holiday-game-overrides\/\d+\/cancel$/.test(cleanPath)) return normalizedMethod === "POST";
   if (/^payer-payments\/\d+\/reverse$/.test(cleanPath)) return normalizedMethod === "POST";
   if (/^payer-payments\/\d+\/receipt$/.test(cleanPath)) return normalizedMethod === "GET";
   if (cleanPath === "payments/analytics") return normalizedMethod === "GET";

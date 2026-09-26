@@ -1,3 +1,32 @@
+.game-abbreviation {
+  display: inline-block;
+  margin-left: 0.5rem;
+  color: var(--muted-foreground, #52636a);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.holiday-overrides-panel,
+.holiday-override-form {
+  min-width: 0;
+}
+
+.holiday-override-form {
+  margin-top: 1.25rem;
+}
+
+.holiday-override-notice {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid #b46c1d;
+  background: #fff4df;
+  color: #55370f;
+  font-weight: 600;
+}
+
+.compact-button {
+  padding: 0.35rem 0.55rem;
+}
 @import "tailwindcss";
 
 :root {

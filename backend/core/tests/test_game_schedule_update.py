@@ -57,7 +57,7 @@ class ApprovedGameScheduleTests(TestCase):
             .values_list("game__name", flat=True)
         )
 
-        self.assertEqual(whole_day_names, ["Monday Special", "Lucky G", "Midweek", "Lucky", "Fortune", "Bonanza", "National", "Aseda"])
+        self.assertEqual(whole_day_names, ["Monday Special", "Lucky G", "Midweek", "Fortune", "Bonanza", "National", "Aseda"])
         self.assertFalse(WeeklyGameSchedule.objects.filter(is_whole_day=True, closing_time__isnull=False).exists())
         self.assertFalse(WeeklyGameSchedule.objects.filter(is_whole_day=True, draw_time__isnull=False).exists())
 

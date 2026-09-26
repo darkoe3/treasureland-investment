@@ -310,6 +310,80 @@ class WeeklyGameSchedule(TimeStampedModel):
         return f"{self.game.name} - {self.get_weekday_display()}"
 
 
+class HolidayGameOverride(TimeStampedModel):
+    holiday_date = models.DateField(db_index=True)
+    holiday_name = models.CharField(max_length=160)
+    normal_game = models.ForeignKey(Game, on_delete=models.PROTECT, related_name="normal_holiday_overrides")
+    replacement_game = models.ForeignKey(Game, on_delete=models.PROTECT, related_name="replacement_holiday_overrides")
+    source_date = models.DateField()
+    notes = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name="created_holiday_game_overrides")
+    cancelled_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True, related_name="cancelled_holiday_game_overrides")
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["holiday_date", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["holiday_date"], condition=Q(is_active=True),
+                name="unique_active_holiday_game_override_date",
+            ),
+            models.CheckConstraint(condition=~Q(holiday_name=""), name="holiday_override_name_not_empty"),
+            models.CheckConstraint(
+                condition=Q(source_date__lt=models.F("holiday_date")),
+                name="holiday_override_source_before_holiday",
+            ),
+        ]
+
+    def clean(self):
+        errors = {}
+        if not self.holiday_name.strip():
+            errors["holiday_name"] = "Holiday name is required."
+        if self.holiday_date and self.source_date:
+            if self.source_date >= self.holiday_date:
+                errors["source_date"] = "Source date must be earlier than the holiday date."
+            if self.source_date > timezone.localdate():
+                errors["source_date"] = "Source date cannot be in the future."
+        if self.holiday_date and self.normal_game_id:
+            if not WeeklyGameSchedule.objects.filter(
+                weekday=self.holiday_date.isoweekday(), game_id=self.normal_game_id,
+                is_whole_day=True, is_active=True, game__is_active=True,
+            ).exists():
+                errors["normal_game"] = "Select the active Whole Day game scheduled for the holiday date."
+        if self.source_date and self.replacement_game_id:
+            if not WeeklyGameSchedule.objects.filter(
+                weekday=self.source_date.isoweekday(), game_id=self.replacement_game_id,
+                is_whole_day=True, is_active=True, game__is_active=True,
+            ).exists():
+                errors["replacement_game"] = "Select an active Whole Day game scheduled on the source date."
+            if self.holiday_date and self.replacement_game_id != self.normal_game_id and WeeklyGameSchedule.objects.filter(
+                weekday=self.holiday_date.isoweekday(), game_id=self.replacement_game_id,
+                is_active=True, game__is_active=True,
+            ).exists():
+                errors["replacement_game"] = "The replacement game is already scheduled for the holiday date."
+        if self.is_active:
+            duplicate = type(self).objects.filter(holiday_date=self.holiday_date, is_active=True)
+            if self.pk:
+                duplicate = duplicate.exclude(pk=self.pk)
+            if duplicate.exists():
+                errors["holiday_date"] = "An active override already exists for this holiday date."
+        if self.cancelled_at and self.is_active:
+            errors["is_active"] = "A cancelled override cannot be activated."
+        if self.cancelled_at and (not self.cancelled_by_id or not self.cancellation_reason.strip()):
+            errors["cancellation_reason"] = "Cancelled overrides require an actor and reason."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.holiday_name} - {self.holiday_date}"
+
+
 MONEY_PLACES = Decimal("0.01")
 COMMISSION_RATE = Decimal("0.05")
 TO_PAY_RATE = Decimal("0.95")
@@ -380,6 +454,11 @@ class AuditAction(models.TextChoices):
     SCHEDULE_UPDATED = "SCHEDULE_UPDATED", "Schedule updated"
     SCHEDULE_ACTIVATED = "SCHEDULE_ACTIVATED", "Schedule activated"
     SCHEDULE_DEACTIVATED = "SCHEDULE_DEACTIVATED", "Schedule deactivated"
+    HOLIDAY_OVERRIDE_CREATED = "HOLIDAY_OVERRIDE_CREATED", "Holiday override created"
+    HOLIDAY_OVERRIDE_UPDATED = "HOLIDAY_OVERRIDE_UPDATED", "Holiday override updated"
+    HOLIDAY_OVERRIDE_ACTIVATED = "HOLIDAY_OVERRIDE_ACTIVATED", "Holiday override activated"
+    HOLIDAY_OVERRIDE_DEACTIVATED = "HOLIDAY_OVERRIDE_DEACTIVATED", "Holiday override deactivated"
+    HOLIDAY_OVERRIDE_CANCELLED = "HOLIDAY_OVERRIDE_CANCELLED", "Holiday override cancelled"
     IMPORT_PREVIEWED = "IMPORT_PREVIEWED", "Import previewed"
     IMPORT_CONFIRMED = "IMPORT_CONFIRMED", "Import confirmed"
     IMPORT_CANCELLED = "IMPORT_CANCELLED", "Import cancelled"
@@ -700,6 +779,12 @@ class DailySheet(TimeStampedModel):
     is_archived = models.BooleanField(default=False)
     incoming_funds = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     tax = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    holiday_override_applied = models.BooleanField(default=False)
+    holiday_override_id_snapshot = models.PositiveBigIntegerField(null=True, blank=True)
+    holiday_name_snapshot = models.CharField(max_length=160, blank=True, default="")
+    holiday_normal_game_name_snapshot = models.CharField(max_length=120, blank=True, default="")
+    holiday_replacement_game_name_snapshot = models.CharField(max_length=120, blank=True, default="")
+    holiday_source_date_snapshot = models.DateField(null=True, blank=True)
     reconciliation_note = models.TextField(blank=True)
     return_comment = models.TextField(blank=True)
     reopen_reason = models.TextField(blank=True)
@@ -769,11 +854,9 @@ class DailySheet(TimeStampedModel):
         )
 
     def copy_weekday_games(self):
-        schedules = WeeklyGameSchedule.objects.select_related("game").filter(
-            weekday=self.transaction_date.isoweekday(),
-            is_active=True,
-            game__is_active=True,
-        ).order_by("display_order", "id")
+        from .holiday_overrides import effective_schedule_for_date
+
+        schedules, holiday_override = effective_schedule_for_date(self.transaction_date)
         DailySheetGame.objects.bulk_create(
             [
                 DailySheetGame(
@@ -784,11 +867,24 @@ class DailySheet(TimeStampedModel):
                     closing_time_snapshot=schedule.closing_time,
                     draw_time_snapshot=schedule.draw_time,
                     display_order=schedule.display_order,
+                    is_holiday_override_snapshot=schedule.is_holiday_override,
                 )
                 for schedule in schedules
             ],
             ignore_conflicts=True,
         )
+        if holiday_override:
+            self.holiday_override_applied = True
+            self.holiday_override_id_snapshot = holiday_override.pk
+            self.holiday_name_snapshot = holiday_override.holiday_name
+            self.holiday_normal_game_name_snapshot = holiday_override.normal_game.name
+            self.holiday_replacement_game_name_snapshot = holiday_override.replacement_game.name
+            self.holiday_source_date_snapshot = holiday_override.source_date
+            self.save(update_fields=[
+                "holiday_override_applied", "holiday_override_id_snapshot", "holiday_name_snapshot",
+                "holiday_normal_game_name_snapshot", "holiday_replacement_game_name_snapshot",
+                "holiday_source_date_snapshot", "updated_at",
+            ])
 
     def totals(self):
         sales = (
@@ -832,6 +928,7 @@ class DailySheetGame(models.Model):
     game = models.ForeignKey(Game, on_delete=models.PROTECT, related_name="daily_sheet_games")
     game_name_snapshot = models.CharField(max_length=120)
     is_whole_day_snapshot = models.BooleanField(default=False)
+    is_holiday_override_snapshot = models.BooleanField(default=False)
     closing_time_snapshot = models.TimeField(null=True, blank=True)
     draw_time_snapshot = models.TimeField(null=True, blank=True)
     display_order = models.PositiveSmallIntegerField(default=0)

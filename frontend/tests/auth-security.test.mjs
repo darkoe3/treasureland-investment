@@ -478,6 +478,17 @@ test("weekly schedule proxy allowlist permits exact paths and methods only", () 
   assert.equal(isAllowedBackendProxyPath("games", "POST"), false);
 });
 
+test("holiday override proxy allowlist permits reads and protected lifecycle mutations only", () => {
+  assert.equal(isAllowedBackendProxyPath("holiday-game-overrides", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("holiday-game-overrides", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("holiday-game-overrides/4", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("holiday-game-overrides/4", "PATCH"), true);
+  assert.equal(isAllowedBackendProxyPath("holiday-game-overrides/4/cancel", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("holiday-game-overrides", "DELETE"), false);
+  assert.equal(isAllowedBackendProxyPath("holiday-game-overrides/4/cancel", "GET"), false);
+  assert.equal(isAllowedBackendProxyPath("holiday-game-overrides/abc", "PATCH"), false);
+});
+
 test("weekly schedule proxy keeps csrf enforcement before unsafe forwarding", async () => {
   const { result, calls } = await resolveProxy({
     segments: ["weekly-game-schedules"],
@@ -605,6 +616,20 @@ test("weekly schedule screen hides mutation controls from accountants and keeps 
   assert.match(component, /weekly-game-schedules/);
   assert.match(css, /\.schedule-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(300px, 360px\);[^}]*max-width:\s*100%;/s);
   assert.match(css, /@media \(max-width: 980px\)[\s\S]*\.schedule-layout\s*\{[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\);/);
+});
+
+test("holiday overrides use controlled date-specific whole-day choices and role-gated controls", async () => {
+  const component = await file("components/GameScheduleClient.js");
+  const dailySheet = await file("components/DailySheetDetailClient.js");
+
+  assert.match(component, /holiday-game-overrides/);
+  assert.match(component, /games\/for-date/);
+  assert.match(component, /filter\(\(entry\) => entry\.is_whole_day\)/);
+  assert.match(component, /canMutate = user\.role === "SUPER_ADMIN"/);
+  assert.match(component, /Holiday Overrides/);
+  assert.match(component, /Expected .* active games/);
+  assert.match(component, /entry\.game_name === "Monday Special"/);
+  assert.match(dailySheet, /Holiday override: \{sheet\.holiday_replacement_game_name_snapshot\} from \{sheet\.holiday_source_date_snapshot\} is being sold for \{sheet\.holiday_name_snapshot\}/);
 });
 
 test("phase 4 people parsing and search handles names and tpm codes", () => {

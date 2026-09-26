@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand
 from django.utils.text import slugify
 
-from core.game_schedule import apply_approved_weekly_game_schedule
+from core.game_schedule import apply_approved_weekly_game_schedule, validate_active_weekly_game_schedule
 from core.models import Agency
 
 
@@ -17,5 +17,6 @@ class Command(BaseCommand):
             )
 
         apply_approved_weekly_game_schedule()
+        validate_active_weekly_game_schedule()
 
         self.stdout.write(self.style.SUCCESS("Initial data seeded successfully."))

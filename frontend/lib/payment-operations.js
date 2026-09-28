@@ -1,3 +1,5 @@
+import { formatCurrency } from "./currency.js";
+
 export function paymentList(payload) {
   if (Array.isArray(payload)) return payload;
   return Array.isArray(payload?.results) ? payload.results : [];
@@ -8,8 +10,8 @@ export function paymentMoney(value) {
   return Number.isFinite(amount) ? amount : 0;
 }
 
-export function formatGhanaMoney(value) {
-  return `GH₵ ${paymentMoney(value).toLocaleString("en-GH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export function formatPaymentMoney(value) {
+  return formatCurrency(paymentMoney(value));
 }
 
 export function paymentStatusLabel(status) {

@@ -141,7 +141,7 @@ Authorised Accountants can record full or partial payments in assigned agencies.
 
 The receipt action uses the exact `GET /api/backend/payer-payments/{id}/receipt/` proxy route. The BFF preserves authentication, status, PDF content type, safe disposition and binary response body. Browser object URLs are revoked after download. Payment proxy methods are exact and mutations remain CSRF-protected.
 
-Analytics filters distinguish inclusive obligation-date portfolio filters from inclusive payment-date collection filters. The UI displays backend-provided portfolio, collection, status, method, trend and Super Admin agency breakdowns with Ghana currency formatting. Reversed amounts remain separate from active collections.
+Analytics filters distinguish inclusive obligation-date portfolio filters from inclusive payment-date collection filters. The UI displays backend-provided portfolio, collection, status, method, trend and Super Admin agency breakdowns with Nigerian Naira formatting (`NGN`, `₦`, locale `en-NG`). Reversed amounts remain separate from active collections.
 
 Frontend verification:
 

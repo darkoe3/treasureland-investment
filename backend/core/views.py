@@ -30,6 +30,7 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .agencies import AgencyWriteLockMixin, require_active_agency, agency_counts, agency_identity, agency_audit
+from .currency import CURRENCY_CODE, CURRENCY_NAME, PDF_CURRENCY_FONT_NAME, format_currency, register_pdf_currency_font
 from .models import (
     Agency,
     AuditAction,
@@ -1172,8 +1173,10 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
         payment = self.get_object()
         buffer = BytesIO()
         document = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm, pageCompression=0)
+        register_pdf_currency_font()
         styles = getSampleStyleSheet()
         story = [Paragraph("Treasureland Investment Limited", styles["Title"]), Paragraph(f"Receipt: {payment.receipt_number}", styles["Heading2"]), Spacer(1, 6)]
+        story.append(Paragraph(f"Currency: {CURRENCY_NAME} ({CURRENCY_CODE})", styles["BodyText"]))
         if payment.status == PayerPayment.PaymentStatus.REVERSED:
             story.append(Paragraph("REVERSED", styles["Heading1"]))
         rows = [
@@ -1182,14 +1185,14 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
             ("Linked Sub-Agent Numbers", ", ".join(payment.linked_sub_agent_numbers_snapshot) or "None"),
             ("Obligation", f"{payment.obligation_number_snapshot} - {payment.obligation_description_snapshot}"),
             ("Obligation date", payment.obligation_date_snapshot.isoformat()),
-            ("Expected amount", str(payment.expected_amount_snapshot)), ("Previously paid", str(payment.amount_previously_paid)),
-            ("Amount received", str(payment.amount_received)), ("Cumulative paid", str(payment.cumulative_amount_paid)),
-            ("Outstanding balance", str(payment.balance_after_payment)), ("Payment method", payment.get_payment_method_display()),
+            ("Total expected", format_currency(payment.expected_amount_snapshot)), ("Previously paid", format_currency(payment.amount_previously_paid)),
+            ("Amount received", format_currency(payment.amount_received)), ("Cumulative paid", format_currency(payment.cumulative_amount_paid)),
+            ("Outstanding balance", format_currency(payment.balance_after_payment)), ("Payment method", payment.get_payment_method_display()),
             ("Payment reference", payment.payment_reference or "None"), ("Recorded by", payment.recorded_by_display_snapshot),
             ("Notes", payment.notes or "None"),
         ]
         table = Table(rows, colWidths=[48 * mm, 125 * mm])
-        table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold")]))
+        table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTNAME", (0, 0), (-1, -1), PDF_CURRENCY_FONT_NAME)]))
         story.append(table)
         document.build(story)
         response = HttpResponse(buffer.getvalue(), content_type="application/pdf")

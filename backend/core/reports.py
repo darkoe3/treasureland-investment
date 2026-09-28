@@ -14,6 +14,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from rest_framework.exceptions import NotFound, ValidationError
 
+from .currency import EXCEL_CURRENCY_NUMBER_FORMAT
 from .models import (
     AgentType,
     Agency,
@@ -395,7 +396,7 @@ def build_workbook(report):
     for row in ws.iter_rows():
         for cell in row:
             if isinstance(cell.value, float):
-                cell.number_format = '#,##0.00'
+                cell.number_format = EXCEL_CURRENCY_NUMBER_FORMAT
     for col_idx, column in enumerate(ws.columns, start=1):
         max_len = max(len(str(cell.value or "")) for cell in column)
         ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 12), 32)

@@ -52,6 +52,8 @@ export function validateReportFilters(filters) {
   return "";
 }
 
+import { formatCurrency } from "./currency.js";
+
 export function buildReportQuery(filters) {
   const error = validateReportFilters(filters);
   if (error) {
@@ -75,7 +77,7 @@ export function buildReportQuery(filters) {
 
 export function moneyText(value) {
   const number = Number(value || 0);
-  return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(number);
+  return formatCurrency(number);
 }
 
 export function differenceClass(value) {

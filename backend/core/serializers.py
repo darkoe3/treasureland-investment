@@ -657,6 +657,10 @@ class HolidayGameOverrideSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"source_date": "Source date must be earlier than the holiday date."})
         if source_date and source_date > timezone.localdate():
             raise serializers.ValidationError({"source_date": "Source date cannot be in the future."})
+        if holiday_date and holiday_date <= timezone.localdate() and (
+            instance is None or "holiday_date" in attrs or (is_active and not instance.is_active)
+        ):
+            raise serializers.ValidationError({"holiday_date": "Holiday date must be in the future."})
         if normal_game and holiday_date and not WeeklyGameSchedule.objects.filter(
             weekday=holiday_date.isoweekday(), game=normal_game, is_whole_day=True,
             is_active=True, game__is_active=True,

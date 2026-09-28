@@ -110,9 +110,9 @@ test("success banner shows amount, receipt number, balance, status, download and
   const ui = harness({ obligation: refreshedObligation, success: createdPayment });
   const html = ui.html();
   assert.match(html, /Payment recorded successfully\./);
-  assert.match(html, /GH₵ 40\.00/);
+  assert.match(html, /₦40\.00/);
   assert.match(html, /TLI-PAY-000009/);
-  assert.match(html, /GH₵ 20\.00/);
+  assert.match(html, /₦20\.00/);
   assert.match(html, /POSTED/);
   assert.match(html, /Download receipt/);
   assert.match(html, /Record another payment/);

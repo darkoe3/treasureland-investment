@@ -1,3 +1,5 @@
+import { formatCurrency } from "./currency.js";
+
 export function listFromPayload(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.results)) return payload.results;
@@ -10,7 +12,7 @@ export function moneyNumber(value) {
 }
 
 export function moneyText(value) {
-  return moneyNumber(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return formatCurrency(moneyNumber(value));
 }
 
 export function roleAgencyIds(user) {

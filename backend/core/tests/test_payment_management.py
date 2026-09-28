@@ -1,12 +1,45 @@
 from decimal import Decimal
+from pathlib import Path
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from unittest.mock import patch
+from reportlab.pdfbase import pdfmetrics
 from rest_framework.test import APIClient
 
+from core.currency import CURRENCY_SYMBOL, PDF_CURRENCY_FONT_NAME, PDF_CURRENCY_FONT_PATH, format_currency, register_pdf_currency_font
 from core.models import Agency, PaymentObligation, PayerPayment, PaymentPayer, User, UserAgencyAssignment, UserRole
+
+
+class CurrencySourceTests(SimpleTestCase):
+    def test_active_backend_source_contains_no_legacy_ghana_currency_references(self):
+        source_root = Path(__file__).resolve().parents[1]
+        excluded = {"tests", "migrations", "__pycache__"}
+        source_files = [path for path in source_root.rglob("*.py") if not excluded.intersection(path.parts)]
+        legacy_terms = (
+            "GH" + "\u20b5",
+            "G" + "HS",
+            "GH" + "\u00a2",
+            "ce" + "di",
+            "en-" + "GH",
+        )
+        matches = [str(path) for path in source_files if any(term.casefold() in path.read_text(encoding="utf-8").casefold() for term in legacy_terms)]
+        self.assertEqual(matches, [])
+
+    def test_bundled_receipt_font_is_present_and_maps_naira_glyph(self):
+        self.assertTrue(PDF_CURRENCY_FONT_PATH.is_file())
+        self.assertEqual(register_pdf_currency_font(), PDF_CURRENCY_FONT_NAME)
+        self.assertIn(ord(CURRENCY_SYMBOL), pdfmetrics.getFont(PDF_CURRENCY_FONT_NAME).face.charToGlyph)
+
+    def test_missing_receipt_font_fails_with_configuration_error(self):
+        with patch("core.currency.PDF_CURRENCY_FONT_PATH", Path("missing-DejaVuSans.ttf")):
+            register_pdf_currency_font.cache_clear()
+            try:
+                with self.assertRaisesMessage(ImproperlyConfigured, "Bundled receipt font is missing"):
+                    register_pdf_currency_font()
+            finally:
+                register_pdf_currency_font.cache_clear()
 
 
 class PaymentManagementModelTests(TestCase):
@@ -274,11 +307,30 @@ class PaymentManagementApiTests(TestCase):
     def test_receipt_pdf_headers_content_and_reversed_status(self):
         response = self.post_payment()
         payment = PayerPayment.objects.get(pk=response.data["id"])
+        original_amounts = (
+            payment.expected_amount_snapshot,
+            payment.amount_previously_paid,
+            payment.amount_received,
+            payment.cumulative_amount_paid,
+            payment.balance_after_payment,
+        )
         receipt = self.client.get(f"/api/payer-payments/{payment.id}/receipt/")
         self.assertEqual(receipt.status_code, 200)
         self.assertEqual(receipt["Content-Type"], "application/pdf")
         self.assertIn(f"{payment.receipt_number}.pdf", receipt["Content-Disposition"])
         self.assertTrue(receipt.content.startswith(b"%PDF"))
+        self.assertIn(b"NGN", receipt.content)
+        self.assertIn(b"/FontFile2", receipt.content)
+        self.assertEqual(format_currency(payment.amount_received), "\u20a640.00")
+        self.assertIn(ord(CURRENCY_SYMBOL), pdfmetrics.getFont(PDF_CURRENCY_FONT_NAME).face.charToGlyph)
+        payment.refresh_from_db()
+        self.assertEqual(original_amounts, (
+            payment.expected_amount_snapshot,
+            payment.amount_previously_paid,
+            payment.amount_received,
+            payment.cumulative_amount_paid,
+            payment.balance_after_payment,
+        ))
         self.client.post(f"/api/payer-payments/{payment.id}/reverse/", {"reason": "Correction", "confirmed": True}, format="json")
         reversed_receipt = self.client.get(f"/api/payer-payments/{payment.id}/receipt/")
         self.assertEqual(reversed_receipt.status_code, 200)

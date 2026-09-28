@@ -346,6 +346,8 @@ class HolidayGameOverride(TimeStampedModel):
                 errors["source_date"] = "Source date must be earlier than the holiday date."
             if self.source_date > timezone.localdate():
                 errors["source_date"] = "Source date cannot be in the future."
+        if self.is_active and self.holiday_date and self.holiday_date <= timezone.localdate():
+            errors["holiday_date"] = "Holiday date must be in the future."
         if self.holiday_date and self.normal_game_id:
             if not WeeklyGameSchedule.objects.filter(
                 weekday=self.holiday_date.isoweekday(), game_id=self.normal_game_id,

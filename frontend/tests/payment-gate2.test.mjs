@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import { isAllowedBackendProxyPath, isBinaryBackendProxyPath } from "../lib/controlled-proxy-path.js";
-import { createPaymentIdempotencyKey, formatGhanaMoney, paymentFingerprint } from "../lib/payment-operations.js";
+import { createPaymentIdempotencyKey, formatPaymentMoney, paymentFingerprint } from "../lib/payment-operations.js";
+import { formatCurrency } from "../lib/currency.js";
+import { moneyText } from "../lib/phase4-operations.js";
+import { moneyText as reportMoneyText } from "../lib/report-operations.js";
 
 async function file(path) {
   return readFile(new URL(`../${path}`, import.meta.url), "utf8");
+}
+
+async function sourceFiles(directory) {
+  const entries = await readdir(new URL(`../${directory}/`, import.meta.url), { withFileTypes: true });
+  const contents = await Promise.all(entries.map((entry) => {
+    const path = `${directory}/${entry.name}`;
+    if (entry.isDirectory()) return sourceFiles(path);
+    return entry.name.endsWith(".js") ? file(path) : null;
+  }));
+  return contents.flat().filter(Boolean);
 }
 
 test("payment proxy allowlist is exact and method restricted", () => {
@@ -79,7 +92,27 @@ test("analytics labels and responsive containment contracts exist", async () => 
   assert.match(css, /overflow-x: auto/);
   assert.match(css, /max-width: 600px/);
   assert.match(css, /max-width: 980px/);
-  assert.equal(formatGhanaMoney(1234.56), "GH₵ 1,234.56");
+  assert.equal(formatPaymentMoney(1234.56), "₦1,234.56");
+});
+
+test("shared NGN formatting is consistent across dashboard, Daily Sheet, reports and payments", () => {
+  for (const formatter of [formatCurrency, moneyText, reportMoneyText, formatPaymentMoney]) {
+    assert.equal(formatter(1250), "₦1,250.00");
+    assert.equal(formatter(0), "₦0.00");
+  }
+});
+
+test("active frontend source contains no legacy Ghana currency references", async () => {
+  const legacyTerms = [
+    `GH${String.fromCodePoint(0x20b5)}`,
+    `G${"HS"}`,
+    `GH${String.fromCodePoint(0x00a2)}`,
+    `ce${"di"}`,
+    `en-${"GH"}`,
+  ];
+  const legacyCurrency = new RegExp(legacyTerms.join("|"), "iu");
+  const sources = (await Promise.all(["app", "components", "lib"].map(sourceFiles))).flat();
+  for (const source of sources) assert.doesNotMatch(source, legacyCurrency);
 });
 
 test("dashboard navigation exposes Payments only to permitted roles", async () => {

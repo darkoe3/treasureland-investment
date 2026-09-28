@@ -1,8 +1,9 @@
-from datetime import date, timedelta
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -21,8 +22,6 @@ from core.models import (
 
 
 User = get_user_model()
-HOLIDAY_DATE = date(2026, 9, 28)
-SOURCE_DATE = date(2026, 9, 25)
 
 
 def game_on_whole_day(weekday, name):
@@ -61,14 +60,19 @@ class HolidayGameOverrideAPITests(APITestCase):
         call_command("seed_initial_data", verbosity=0)
         self.normal_game = game_on_whole_day(Weekday.MONDAY, "Monday Special")
         self.previous_game = game_on_whole_day(Weekday.FRIDAY, "Bonanza")
+        today = timezone.localdate()
+        days_until_monday = (7 - today.weekday()) % 7 or 7
+        days_since_friday = (today.weekday() - 4) % 7
+        self.holiday_date = today + timedelta(days=days_until_monday)
+        self.source_date = today - timedelta(days=days_since_friday)
 
     def payload(self, **updates):
         return {
-            "holiday_date": HOLIDAY_DATE.isoformat(),
+            "holiday_date": self.holiday_date.isoformat(),
             "holiday_name": "Founders Day",
             "normal_game": self.normal_game.id,
             "replacement_game": self.previous_game.id,
-            "source_date": SOURCE_DATE.isoformat(),
+            "source_date": self.source_date.isoformat(),
             "notes": "private-note-marker",
             "is_active": True,
             **updates,
@@ -84,7 +88,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.create_override()
         self.client.force_authenticate(self.accountant)
 
-        read = self.client.get(f"/api/holiday-game-overrides/?holiday_date={HOLIDAY_DATE.isoformat()}")
+        read = self.client.get(f"/api/holiday-game-overrides/?holiday_date={self.holiday_date.isoformat()}")
         create = self.client.post("/api/holiday-game-overrides/", self.payload(), format="json")
         update = self.client.patch(f"/api/holiday-game-overrides/{read.data[0]['id']}/", {"is_active": False}, format="json")
 
@@ -97,12 +101,16 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.client.force_authenticate(self.admin)
         missing = self.client.post(
             "/api/holiday-game-overrides/",
-            {"holiday_date": HOLIDAY_DATE.isoformat(), "holiday_name": "Founders Day"},
+            {"holiday_date": self.holiday_date.isoformat(), "holiday_name": "Founders Day"},
             format="json",
         )
+        future_holiday_date = self.holiday_date + timedelta(days=7)
         future_source = self.client.post(
             "/api/holiday-game-overrides/",
-            self.payload(holiday_date=date(2026, 10, 5).isoformat(), source_date=date(2026, 10, 2).isoformat()),
+            self.payload(
+                holiday_date=future_holiday_date.isoformat(),
+                source_date=(timezone.localdate() + timedelta(days=1)).isoformat(),
+            ),
             format="json",
         )
         timed_replacement = self.client.post(
@@ -115,6 +123,21 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.assertEqual(future_source.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("future", str(future_source.data).lower())
         self.assertEqual(timed_replacement.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_past_holiday_date_is_rejected(self):
+        self.client.force_authenticate(self.admin)
+        days_since_monday = timezone.localdate().weekday() or 7
+        past_holiday_date = timezone.localdate() - timedelta(days=days_since_monday)
+        response = self.client.post(
+            "/api/holiday-game-overrides/",
+            self.payload(
+                holiday_date=past_holiday_date.isoformat(),
+                source_date=(past_holiday_date - timedelta(days=3)).isoformat(),
+            ),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("future", str(response.data).lower())
 
     def test_duplicate_active_holiday_date_is_rejected(self):
         self.client.force_authenticate(self.admin)
@@ -148,7 +171,7 @@ class HolidayGameOverrideAPITests(APITestCase):
             format="json",
         )
 
-        self.assertEqual(edited.status_code, status.HTTP_200_OK)
+        self.assertEqual(edited.status_code, status.HTTP_200_OK, edited.data)
         self.assertEqual(inactive.status_code, status.HTTP_200_OK)
         self.assertEqual(active.status_code, status.HTTP_200_OK)
         self.assertEqual(missing_reason.status_code, status.HTTP_400_BAD_REQUEST)
@@ -171,7 +194,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.client.force_authenticate(self.accountant)
         normal_sheet_response = self.client.post(
             "/api/daily-sheets/",
-            {"agency": self.agency.id, "transaction_date": HOLIDAY_DATE.isoformat()},
+            {"agency": self.agency.id, "transaction_date": self.holiday_date.isoformat()},
             format="json",
         )
         self.assertEqual(normal_sheet_response.status_code, status.HTTP_201_CREATED)
@@ -187,7 +210,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.client.force_authenticate(self.accountant)
         holiday_sheet_response = self.client.post(
             "/api/daily-sheets/",
-            {"agency": second_agency.id, "transaction_date": HOLIDAY_DATE.isoformat()},
+            {"agency": second_agency.id, "transaction_date": self.holiday_date.isoformat()},
             format="json",
         )
         self.assertEqual(holiday_sheet_response.status_code, status.HTTP_201_CREATED, holiday_sheet_response.data)
@@ -195,7 +218,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         names = [row["game_name_snapshot"] for row in sheet_data["sheet_games"]]
         self.assertTrue(sheet_data["holiday_override_applied"])
         self.assertEqual(sheet_data["holiday_name_snapshot"], "Founders Day")
-        self.assertEqual(sheet_data["holiday_source_date_snapshot"], SOURCE_DATE.isoformat())
+        self.assertEqual(sheet_data["holiday_source_date_snapshot"], self.source_date.isoformat())
         self.assertIn("Bonanza", names)
         self.assertNotIn("Monday Special", names)
         replacement = next(row for row in sheet_data["sheet_games"] if row["game_name_snapshot"] == "Bonanza")
@@ -208,7 +231,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.client.force_authenticate(self.admin)
         override_data = self.create_override()
         second_agency = Agency.objects.create(name="Holiday Agency 2", code="holiday-agency-2")
-        sheet = DailySheet.objects.create(agency=second_agency, transaction_date=HOLIDAY_DATE, created_by=self.accountant)
+        sheet = DailySheet.objects.create(agency=second_agency, transaction_date=self.holiday_date, created_by=self.accountant)
         sheet.copy_weekday_games()
         before = list(sheet.sheet_games.values_list("game_name_snapshot", "is_holiday_override_snapshot", "closing_time_snapshot"))
 
@@ -219,7 +242,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         )
         sheet.refresh_from_db()
         after = list(sheet.sheet_games.values_list("game_name_snapshot", "is_holiday_override_snapshot", "closing_time_snapshot"))
-        later_sheet = DailySheet.objects.create(agency=self.agency, transaction_date=HOLIDAY_DATE, created_by=self.accountant)
+        later_sheet = DailySheet.objects.create(agency=self.agency, transaction_date=self.holiday_date, created_by=self.accountant)
         later_sheet.copy_weekday_games()
 
         self.assertEqual(deactivated.status_code, status.HTTP_200_OK)
@@ -231,7 +254,7 @@ class HolidayGameOverrideAPITests(APITestCase):
     def test_used_override_cannot_be_edited(self):
         self.client.force_authenticate(self.admin)
         override_data = self.create_override()
-        sheet = DailySheet.objects.create(agency=self.agency, transaction_date=HOLIDAY_DATE, created_by=self.admin)
+        sheet = DailySheet.objects.create(agency=self.agency, transaction_date=self.holiday_date, created_by=self.admin)
         sheet.copy_weekday_games()
 
         response = self.client.patch(

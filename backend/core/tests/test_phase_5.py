@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from core.currency import EXCEL_CURRENCY_NUMBER_FORMAT
 from core.models import (
     Agency,
     AgentType,
@@ -194,6 +195,9 @@ class Phase5ReportAPITests(Phase5Mixin, APITestCase):
         self.assertIn("Sub-Agent Number", flat)
         self.assertIn("'+TPM-A", flat)
         self.assertTrue(any(isinstance(item, (int, float)) and item == 100 for item in flat))
+        monetary_cells = [cell for row in ws.iter_rows() for cell in row if isinstance(cell.value, (int, float)) and cell.number_format == EXCEL_CURRENCY_NUMBER_FORMAT]
+        self.assertTrue(monetary_cells)
+        self.assertTrue(all(isinstance(cell.value, (int, float)) for cell in monetary_cells))
         self.assertTrue(AuditLog.objects.filter(action="REPORT_EXPORTED", agency=self.agency).exists())
 
     def test_json_and_excel_totals_agree(self):

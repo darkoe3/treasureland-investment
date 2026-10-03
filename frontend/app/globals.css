@@ -1296,6 +1296,7 @@ th {
 .payment-success-heading > div { flex: 1; min-width: 0; }
 .payment-success-heading h3 { margin: 0; }
 .payment-success-heading p { margin: .25rem 0 0; color: var(--ink-700); font-weight: 700; }
+.payment-success-actions { margin-top: .9rem; }
 .payment-search { display: flex; align-items: center; gap: .6rem; max-width: 34rem; margin-bottom: 1rem; padding: .1rem .8rem; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
 .payment-search input { width: 100%; min-width: 0; border: 0; padding: .7rem 0; outline: 0; }
 .payment-filter-bar, .analytics-filters { display: flex; flex-wrap: wrap; gap: .8rem; align-items: end; padding: 1rem; margin-bottom: 1rem; }
@@ -1358,4 +1359,6 @@ th {
   .assignment-controls button { width: 100%; }
   .compact-stats { grid-template-columns: 1fr 1fr 1fr; }
   .payment-dialog { padding: 1rem; }
+  .payment-success-actions { align-items: stretch; flex-direction: column; }
+  .payment-success-actions > .primary-button, .payment-success-actions > .secondary-button { width: 100%; justify-content: center; }
 }

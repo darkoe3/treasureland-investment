@@ -9,6 +9,14 @@ import { analyticsQuery, createPaymentIdempotencyKey, formatPaymentMoney, paymen
 const EMPTY_FILTERS = { agency: "", payer: "", status: "", payment_method: "", obligation_start: "", obligation_end: "", payment_start: "", payment_end: "" };
 const EMPTY_PAYMENT = { amount_received: "", payment_method: "CASH", payment_reference: "", notes: "", payment_date: "" };
 
+function emptyPayer(agency = "") {
+  return { agency, payer_name: "", telephone: "", email: "", address: "", notes: "" };
+}
+
+function emptyObligation(agency = "", payer = "") {
+  return { agency, payer, description: "", obligation_date: "", total_expected: "", notes: "" };
+}
+
 function errorText(error) {
   if (!error) return "";
   if (typeof error === "string") return error;
@@ -33,6 +41,20 @@ function Loading() { return <div className="payment-loading" role="status"><span
 
 function ErrorBox({ error }) { return error ? <div className="payment-alert" role="alert"><ShieldAlert size={18} aria-hidden="true" /><span>{errorText(error)}</span></div> : null; }
 
+function SuccessBanner({ title, onDismiss, children, actions }) {
+  const ref = useRef(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  return <section className="panel payment-success" role="status" aria-live="polite" tabIndex={-1} ref={ref}>
+    <div className="payment-success-heading">
+      <CheckCircle2 size={22} aria-hidden="true" />
+      <div><h3>{title}</h3></div>
+      <button className="icon-button" type="button" onClick={onDismiss} aria-label="Dismiss success message"><X size={18} /></button>
+    </div>
+    {children}
+    {actions ? <div className="card-actions payment-success-actions">{actions}</div> : null}
+  </section>;
+}
+
 function FilterBar({ filters, setFilters, agencies, payers, showPayment = true }) {
   function change(key, value) { setFilters((current) => ({ ...current, [key]: value })); }
   return <div className="payment-filter-bar panel">
@@ -55,12 +77,14 @@ function PageHeading({ eyebrow, title, copy, action }) {
 function Empty({ children }) { return <div className="payment-empty"><CheckCircle2 size={24} aria-hidden="true" /><p>{children}</p></div>; }
 
 function usePaymentData(view, recordId, user) {
-  const [state, setState] = useState({ loading: true, error: "", data: {} });
+  const [state, setState] = useState({ loading: true, error: "", data: null });
   const reload = useCallback(async () => {
-    setState((current) => ({ ...current, loading: true, error: "" }));
+    setState((current) => ({ ...current, loading: current.data ? current.loading : true, error: "" }));
     try {
       const agenciesPayload = await clientRequest(apiPath("agencies/?page_size=100"));
       const agencies = paymentList(agenciesPayload);
+      let refreshError = "";
+      let data;
       if (view === "overview" || view === "analytics") {
         const query = view === "analytics" ? "" : "&page_size=8";
         const [analytics, payments, obligations] = await Promise.all([
@@ -68,10 +92,10 @@ function usePaymentData(view, recordId, user) {
           view === "overview" ? clientRequest(apiPath("payer-payments/?page_size=8")) : Promise.resolve([]),
           view === "overview" ? clientRequest(apiPath("payment-obligations/?outstanding_only=true&page_size=8")) : Promise.resolve([]),
         ]);
-        setState({ loading: false, error: "", data: { agencies, analytics, payments: paymentList(payments), obligations: paymentList(obligations) } });
+        data = { agencies, analytics, payments: paymentList(payments), obligations: paymentList(obligations) };
       } else if (view === "payers") {
         const payload = await clientRequest(apiPath("payment-payers/?page_size=100"));
-        setState({ loading: false, error: "", data: { agencies, payers: paymentList(payload) } });
+        data = { agencies, payers: paymentList(payload) };
       } else if (view === "payer") {
         const [payer, obligations, codes, payers] = await Promise.all([
           clientRequest(apiPath(`payment-payers/${recordId}/`)),
@@ -79,25 +103,36 @@ function usePaymentData(view, recordId, user) {
           clientRequest(apiPath(`tpm-codes/?page_size=100`)),
           clientRequest(apiPath("payment-payers/?page_size=100")),
         ]);
-        setState({ loading: false, error: "", data: { agencies, payer, payers: paymentList(payers), obligations: paymentList(obligations), codes: paymentList(codes) } });
+        data = { agencies, payer, payers: paymentList(payers), obligations: paymentList(obligations), codes: paymentList(codes) };
       } else if (view === "obligations") {
         const [obligations, payers] = await Promise.all([
           clientRequest(apiPath("payment-obligations/?page_size=100")),
           clientRequest(apiPath("payment-payers/?page_size=100")),
         ]);
-        setState({ loading: false, error: "", data: { agencies, obligations: paymentList(obligations), payers: paymentList(payers) } });
+        data = { agencies, obligations: paymentList(obligations), payers: paymentList(payers) };
       } else if (view === "obligation") {
         const [obligation, payments] = await Promise.all([
           clientRequest(apiPath(`payment-obligations/${recordId}/`)),
           clientRequest(apiPath(`payer-payments/?obligation=${recordId}&page_size=100`)),
         ]);
-        setState({ loading: false, error: "", data: { agencies, obligation, payments: paymentList(payments) } });
+        data = { agencies, obligation, payments: paymentList(payments) };
       } else if (view === "receipt") {
         const payment = await clientRequest(apiPath(`payer-payments/${recordId}/`));
-        setState({ loading: false, error: "", data: { agencies, payment } });
+        data = { agencies, payment };
       }
+      if (view === "obligations" || view === "obligation") {
+        try {
+          data.analytics = await clientRequest(apiPath("payments/analytics/"));
+        } catch (failure) {
+          refreshError = apiError(failure);
+        }
+      }
+      const next = { loading: false, error: refreshError, data };
+      setState(next);
+      return next;
     } catch (failure) {
-      setState({ loading: false, error: apiError(failure), data: {} });
+      setState((current) => ({ ...current, loading: false, error: apiError(failure) }));
+      return null;
     }
   }, [view, recordId]);
   useEffect(() => {
@@ -158,21 +193,36 @@ function Payers({ data, user, onRefresh }) {
   const canCreate = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.can_create);
   // Lazy initializer opens the create panel on first render only when ?create=1 is present and permitted.
   const [form, setForm] = useState(() => (canCreate && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("create") === "1")
-    ? { agency: data.agencies[0]?.id || "", payer_name: "", telephone: "", email: "", address: "", notes: "" }
+    ? emptyPayer(data.agencies[0]?.id || "")
     : null);
   const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const [success, setSuccess] = useState(null);
   const canEdit = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.can_edit);
   const visible = (data.payers || []).filter((payer) => !search || `${payer.payer_name} ${payer.agency_name}`.toLowerCase().includes(search.toLowerCase()));
 
   async function save(event) {
     event.preventDefault();
+    if (pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
     setError("");
     try {
-      await clientRequest(apiPath(form.id ? `payment-payers/${form.id}/` : "payment-payers/"), { method: form.id ? "PATCH" : "POST", body: JSON.stringify(form) });
-      setForm(null);
-      onRefresh();
+      const created = await clientRequest(apiPath(form.id ? `payment-payers/${form.id}/` : "payment-payers/"), { method: form.id ? "PATCH" : "POST", body: JSON.stringify(form) });
+      if (!form.id) {
+        setForm(null);
+        setSuccess({ payer: { ...created, agency_name: created.agency_name || data.agencies.find((agency) => String(agency.id) === String(created.agency))?.name }, linkedCount: Array.isArray(created.linked_sub_agent_numbers) ? created.linked_sub_agent_numbers.length : 0 });
+        await onRefresh();
+      } else {
+        setForm(null);
+        await onRefresh();
+      }
     } catch (failure) {
       setError(apiError(failure));
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
     }
   }
 
@@ -188,11 +238,23 @@ function Payers({ data, user, onRefresh }) {
 
   return (
     <div className="page-stack payment-workspace">
-      <PageHeading eyebrow="Payment directory" title="Payers" copy="Manage payment names within their agencies. Historical receipts remain unchanged after reassignment." action={canCreate ? <button className="primary-button" type="button" onClick={() => setForm({ agency: data.agencies[0]?.id || "", payer_name: "", telephone: "", email: "", address: "", notes: "" })}><Plus size={17} aria-hidden="true" />Add payer</button> : null} />
+      <PageHeading eyebrow="Payment directory" title="Payers" copy="Manage payment names within their agencies. Historical receipts remain unchanged after reassignment." action={canCreate ? <button className="primary-button" type="button" onClick={() => { setSuccess(null); setError(""); setForm(emptyPayer(data.agencies[0]?.id || "")); }}><Plus size={17} aria-hidden="true" />Add payer</button> : null} />
       <div className="payment-search"><Search size={18} aria-hidden="true" /><input aria-label="Search payers" placeholder="Search payer or agency" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
       <ErrorBox error={error} />
-      <section className="payer-grid">{visible.map((payer) => <article className="panel payer-card" key={payer.id}><div className="payer-card-top"><div><p className="eyebrow">{payer.agency_name}</p><h3>{payer.payer_name}</h3></div><StatusBadge status={payer.is_active ? "ACTIVE" : "INACTIVE"} /></div><dl className="compact-stats"><div><dt>Expected</dt><dd>{formatPaymentMoney(payer.total_expected)}</dd></div><div><dt>Outstanding</dt><dd>{formatPaymentMoney(payer.total_outstanding)}</dd></div><div><dt>Obligations</dt><dd>{payer.active_obligations || 0}</dd></div></dl><div className="card-actions"><Link className="secondary-button" href={`/dashboard/payments/payers/${payer.id}`}>View payer</Link>{canEdit && <button className="icon-text-button" type="button" onClick={() => setForm({ id: payer.id, agency: payer.agency, payer_name: payer.payer_name, telephone: payer.telephone || "", email: payer.email || "", address: payer.address || "", notes: payer.notes || "" })}>Edit</button>}{canEdit && <button className="icon-text-button" type="button" onClick={() => toggle(payer)}>{payer.is_active ? "Deactivate" : "Activate"}</button>}</div></article>)}{!visible.length ? <Empty>No payers match this search.</Empty> : null}</section>
-      {form ? <dialog open className="payment-dialog"><form onSubmit={save}><div className="dialog-heading"><h3>{form.id ? "Edit payer" : "Add payer"}</h3><button className="icon-button" type="button" onClick={() => setForm(null)} aria-label="Close payer form"><X size={18} /></button></div><label>Agency<select required disabled={Boolean(form.id)} value={form.agency} onChange={(event) => setForm({ ...form, agency: event.target.value })}>{data.agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label><label>Payer name<input required maxLength={200} value={form.payer_name} onChange={(event) => setForm({ ...form, payer_name: event.target.value })} /></label><label>Telephone<input value={form.telephone} onChange={(event) => setForm({ ...form, telephone: event.target.value })} /></label><label>Email<input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label>Address<input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-button" type="submit">Save payer</button></form></dialog> : null}
+      {success ? <SuccessBanner title="Payer added successfully." onDismiss={() => setSuccess(null)}>
+        <dl className="compact-stats">
+          <div><dt>Payer</dt><dd>{success.payer.payer_name}</dd></div>
+          <div><dt>Agency</dt><dd>{success.payer.agency_name}</dd></div>
+          <div><dt>Linked Sub-Agent Numbers</dt><dd>{success.linkedCount}</dd></div>
+          <div><dt>Status</dt><dd>{success.payer.is_active ? "Active" : "Inactive"}</dd></div>
+        </dl>
+        <div className="card-actions payment-success-actions">
+          <Link className="primary-button" href={`/dashboard/payments/payers/${success.payer.id}`}>View payer</Link>
+          <button className="secondary-button" type="button" onClick={() => { setSuccess(null); setError(""); setForm(emptyPayer(data.agencies[0]?.id || "")); }}>Add another payer</button>
+        </div>
+      </SuccessBanner> : null}
+      <section className="payer-grid">{visible.map((payer) => <article className="panel payer-card" key={payer.id}><div className="payer-card-top"><div><p className="eyebrow">{payer.agency_name}</p><h3>{payer.payer_name}</h3></div><StatusBadge status={payer.is_active ? "ACTIVE" : "INACTIVE"} /></div><dl className="compact-stats"><div><dt>Expected</dt><dd>{formatPaymentMoney(payer.total_expected)}</dd></div><div><dt>Outstanding</dt><dd>{formatPaymentMoney(payer.total_outstanding)}</dd></div><div><dt>Obligations</dt><dd>{payer.active_obligations || 0}</dd></div></dl><div className="card-actions"><Link className="secondary-button" href={`/dashboard/payments/payers/${payer.id}`}>View payer</Link>{canEdit && <button className="icon-text-button" type="button" onClick={() => { setSuccess(null); setForm({ id: payer.id, agency: payer.agency, payer_name: payer.payer_name, telephone: payer.telephone || "", email: payer.email || "", address: payer.address || "", notes: payer.notes || "" }); }}>Edit</button>}{canEdit && <button className="icon-text-button" type="button" onClick={() => { setSuccess(null); toggle(payer); }}>{payer.is_active ? "Deactivate" : "Activate"}</button>}</div></article>)}{!visible.length ? <Empty>No payers match this search.</Empty> : null}</section>
+      {form ? <dialog open className="payment-dialog"><form onSubmit={save}><div className="dialog-heading"><h3>{form.id ? "Edit payer" : "Add payer"}</h3><button className="icon-button" type="button" onClick={() => setForm(null)} aria-label="Close payer form" disabled={pending}><X size={18} /></button></div><label>Agency<select required disabled={pending || Boolean(form.id)} value={form.agency} onChange={(event) => setForm({ ...form, agency: event.target.value })}>{data.agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label><label>Payer name<input required maxLength={200} disabled={pending} value={form.payer_name} onChange={(event) => setForm({ ...form, payer_name: event.target.value })} /></label><label>Telephone<input disabled={pending} value={form.telephone} onChange={(event) => setForm({ ...form, telephone: event.target.value })} /></label><label>Email<input disabled={pending} type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label>Address<input disabled={pending} value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-button" type="submit" disabled={pending} aria-busy={pending}>{pending ? (form.id ? "Saving payer…" : "Adding payer…") : "Save payer"}</button></form></dialog> : null}
     </div>
   );
 }
@@ -202,55 +264,93 @@ function Obligations({ data, user, onRefresh }) {
   const canCreate = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.can_create);
   // Lazy initializer opens the create panel on first render only when ?create=1 is present and permitted.
   const [form, setForm] = useState(() => (canCreate && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("create") === "1")
-    ? { agency: data.agencies[0]?.id || "", payer: data.payers[0]?.id || "", description: "", obligation_date: "", total_expected: "", notes: "" }
+    ? emptyObligation(data.agencies[0]?.id || "", data.payers.find((payer) => String(payer.agency) === String(data.agencies[0]?.id))?.id || "")
     : null);
   const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const [success, setSuccess] = useState(null);
   const visible = (data.obligations || []).filter((item) => (!filters.agency || String(item.agency) === filters.agency) && (!filters.payer || String(item.payer) === filters.payer) && (!filters.status || item.status === filters.status));
-  async function create(event) { event.preventDefault(); setError(""); try { await clientRequest(apiPath("payment-obligations/"), { method: "POST", body: JSON.stringify({ ...form, total_expected: form.total_expected }) }); setForm(null); onRefresh(); } catch (failure) { setError(apiError(failure)); } }
-  return <div className="page-stack payment-workspace"><PageHeading eyebrow="Payment ledger" title="Obligations" copy="Create expected amounts, monitor balances, and open an obligation to record receipts." action={canCreate ? <button className="primary-button" type="button" onClick={() => setForm({ agency: data.agencies[0]?.id || "", payer: data.payers[0]?.id || "", description: "", obligation_date: "", total_expected: "", notes: "" })}><Plus size={17} aria-hidden="true" />Create obligation</button> : null} /><div className="payment-filter-bar panel"><label>Agency<select value={filters.agency} onChange={(event) => setFilters({ ...filters, agency: event.target.value })}><option value="">All agencies</option>{data.agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label><label>Payer<select value={filters.payer} onChange={(event) => setFilters({ ...filters, payer: event.target.value })}><option value="">All payers</option>{data.payers.filter((payer) => !filters.agency || String(payer.agency) === filters.agency).map((payer) => <option key={payer.id} value={payer.id}>{payer.payer_name}</option>)}</select></label><label>Status<select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{["OPEN", "PARTIALLY_PAID", "PAID", "CANCELLED"].map((status) => <option key={status} value={status}>{paymentStatusLabel(status)}</option>)}</select></label></div><ErrorBox error={error} /><section className="panel payment-table-panel"><div className="payment-table-wrap"><table className="payment-table"><thead><tr><th>Obligation</th><th>Agency / payer</th><th>Date</th><th>Expected</th><th>Posted</th><th>Reversed</th><th>Balance</th><th>Status</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><Link className="text-link" href={`/dashboard/payments/obligations/${item.id}`}>{item.obligation_number}</Link><small>{item.description}</small></td><td>{item.agency_name}<small>{item.payer_name}</small></td><td>{item.obligation_date}</td><td>{formatPaymentMoney(item.total_expected)}</td><td>{formatPaymentMoney(item.total_paid)}</td><td>{formatPaymentMoney(item.reversed_total)}</td><td>{formatPaymentMoney(item.balance)}</td><td><StatusBadge status={item.status} /></td></tr>)}</tbody></table></div>{!visible.length ? <Empty>No obligations match these filters.</Empty> : null}</section>{form ? <dialog open className="payment-dialog"><form onSubmit={create}><div className="dialog-heading"><h3>Create obligation</h3><button className="icon-button" type="button" onClick={() => setForm(null)} aria-label="Close obligation form"><X size={18} /></button></div><label>Agency<select required value={form.agency} onChange={(event) => setForm({ ...form, agency: event.target.value, payer: "" })}>{data.agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label><label>Payer<select required value={form.payer} onChange={(event) => setForm({ ...form, payer: event.target.value })}>{data.payers.filter((payer) => String(payer.agency) === String(form.agency)).map((payer) => <option key={payer.id} value={payer.id}>{payer.payer_name}</option>)}</select></label><label>Description<input required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><label>Obligation date<input required type="date" value={form.obligation_date} onChange={(event) => setForm({ ...form, obligation_date: event.target.value })} /></label><label>Total expected<input required min="0.01" step="0.01" type="number" value={form.total_expected} onChange={(event) => setForm({ ...form, total_expected: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-button" type="submit">Create obligation</button></form></dialog> : null}</div>;
+  async function create(event) {
+    event.preventDefault();
+    if (pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    setError("");
+    try {
+      const created = await clientRequest(apiPath("payment-obligations/"), { method: "POST", body: JSON.stringify({ ...form, total_expected: form.total_expected }) });
+      setForm(null);
+      setSuccess({ obligation: { ...created, agency_name: created.agency_name || data.agencies.find((agency) => String(agency.id) === String(created.agency))?.name, payer_name: created.payer_name || data.payers.find((payer) => String(payer.id) === String(created.payer))?.payer_name } });
+      await onRefresh();
+    } catch (failure) {
+      setError(apiError(failure));
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  }
+  const successCanRecord = success && (user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => String(item.agency.id) === String(success.obligation.agency) && item.can_create));
+  return <div className="page-stack payment-workspace"><PageHeading eyebrow="Payment ledger" title="Obligations" copy="Create expected amounts, monitor balances, and open an obligation to record receipts." action={canCreate ? <button className="primary-button" type="button" onClick={() => { setSuccess(null); setError(""); setForm(emptyObligation(data.agencies[0]?.id || "", data.payers.find((payer) => String(payer.agency) === String(data.agencies[0]?.id))?.id || "")); }}><Plus size={17} aria-hidden="true" />Create obligation</button> : null} /><div className="payment-filter-bar panel"><label>Agency<select value={filters.agency} onChange={(event) => setFilters({ ...filters, agency: event.target.value })}><option value="">All agencies</option>{data.agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label><label>Payer<select value={filters.payer} onChange={(event) => setFilters({ ...filters, payer: event.target.value })}><option value="">All payers</option>{data.payers.filter((payer) => !filters.agency || String(payer.agency) === filters.agency).map((payer) => <option key={payer.id} value={payer.id}>{payer.payer_name}</option>)}</select></label><label>Status<select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">All statuses</option>{["OPEN", "PARTIALLY_PAID", "PAID", "CANCELLED"].map((status) => <option key={status} value={status}>{paymentStatusLabel(status)}</option>)}</select></label></div><ErrorBox error={error} />{success ? <SuccessBanner title="Payment obligation created successfully." onDismiss={() => setSuccess(null)}>
+    <dl className="compact-stats">
+      <div><dt>Obligation</dt><dd>{success.obligation.obligation_number}</dd></div>
+      <div><dt>Payer</dt><dd>{success.obligation.payer_name}</dd></div>
+      <div><dt>Agency</dt><dd>{success.obligation.agency_name}</dd></div>
+      <div><dt>Description</dt><dd>{success.obligation.description}</dd></div>
+      <div><dt>Expected amount</dt><dd>{formatPaymentMoney(success.obligation.total_expected)}</dd></div>
+      <div><dt>Obligation date</dt><dd>{success.obligation.obligation_date}</dd></div>
+      <div><dt>Status</dt><dd><StatusBadge status={success.obligation.status} /></dd></div>
+    </dl>
+    <div className="card-actions payment-success-actions">
+      <Link className="primary-button" href={`/dashboard/payments/obligations/${success.obligation.id}`}>View obligation</Link>
+      <button className="secondary-button" type="button" onClick={() => { setSuccess(null); setError(""); setForm(emptyObligation(data.agencies[0]?.id || "", data.payers.find((payer) => String(payer.agency) === String(data.agencies[0]?.id))?.id || "")); }}>Create another obligation</button>
+      {successCanRecord ? <Link className="secondary-button" href={`/dashboard/payments/obligations/${success.obligation.id}?record=1`}>Record payment</Link> : null}
+    </div>
+  </SuccessBanner> : null}<section className="panel payment-table-panel"><div className="payment-table-wrap"><table className="payment-table"><thead><tr><th>Obligation</th><th>Agency / payer</th><th>Date</th><th>Expected</th><th>Posted</th><th>Reversed</th><th>Balance</th><th>Status</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><Link className="text-link" href={`/dashboard/payments/obligations/${item.id}`}>{item.obligation_number}</Link><small>{item.description}</small></td><td>{item.agency_name}<small>{item.payer_name}</small></td><td>{item.obligation_date}</td><td>{formatPaymentMoney(item.total_expected)}</td><td>{formatPaymentMoney(item.total_paid)}</td><td>{formatPaymentMoney(item.reversed_total)}</td><td>{formatPaymentMoney(item.balance)}</td><td><StatusBadge status={item.status} /></td></tr>)}</tbody></table></div>{!visible.length ? <Empty>No obligations match these filters.</Empty> : null}</section>{form ? <dialog open className="payment-dialog"><form onSubmit={create}><div className="dialog-heading"><h3>Create obligation</h3><button className="icon-button" type="button" onClick={() => setForm(null)} aria-label="Close obligation form" disabled={pending}><X size={18} /></button></div><label>Agency<select required disabled={pending} value={form.agency} onChange={(event) => setForm({ ...form, agency: event.target.value, payer: "" })}>{data.agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></label><label>Payer<select required disabled={pending} value={form.payer} onChange={(event) => setForm({ ...form, payer: event.target.value })}>{data.payers.filter((payer) => String(payer.agency) === String(form.agency)).map((payer) => <option key={payer.id} value={payer.id}>{payer.payer_name}</option>)}</select></label><label>Description<input required disabled={pending} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><label>Obligation date<input required disabled={pending} type="date" value={form.obligation_date} onChange={(event) => setForm({ ...form, obligation_date: event.target.value })} /></label><label>Total expected<input required disabled={pending} min="0.01" step="0.01" type="number" value={form.total_expected} onChange={(event) => setForm({ ...form, total_expected: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-button" type="submit" disabled={pending} aria-busy={pending}>{pending ? "Creating obligation…" : "Create obligation"}</button></form></dialog> : null}</div>;
 }
 
 function PaymentSuccessBanner({ payment, obligation, canRecord, onDismiss, onRecordAnother, onDownload }) {
-  const ref = useRef(null);
-  useEffect(() => { ref.current?.focus(); }, []);
-  const outstanding = paymentMoney(obligation.balance) > 0 && obligation.status !== "PAID" && obligation.status !== "CANCELLED";
+  const balance = payment.balance_after_payment ?? obligation.balance;
+  const totalPaid = payment.cumulative_amount_paid ?? obligation.total_paid;
+  const obligationStatus = payment.balance_after_payment === undefined
+    ? obligation.status
+    : paymentMoney(payment.balance_after_payment) <= 0 ? "PAID" : "PARTIALLY_PAID";
+  const outstanding = paymentMoney(balance) > 0 && obligationStatus !== "PAID" && obligationStatus !== "CANCELLED";
   return (
-    <section className="panel payment-success" role="status" aria-live="polite" tabIndex={-1} ref={ref}>
-      <div className="payment-success-heading">
-        <CheckCircle2 size={22} aria-hidden="true" />
-        <div>
-          <h3>Payment recorded successfully.</h3>
-          {obligation.status === "PAID" ? <p>Obligation fully paid.</p> : null}
-        </div>
-        <button className="icon-button" type="button" onClick={onDismiss} aria-label="Dismiss success message"><X size={18} /></button>
-      </div>
+    <SuccessBanner title="Payment recorded successfully." onDismiss={onDismiss}>
+      {obligationStatus === "PAID" ? <p>Obligation fully paid.</p> : null}
       <dl className="compact-stats">
         <div><dt>Amount received</dt><dd>{formatPaymentMoney(payment.amount_received)}</dd></div>
         <div><dt>Receipt number</dt><dd>{payment.receipt_number}</dd></div>
-        <div><dt>Remaining balance</dt><dd>{formatPaymentMoney(obligation.balance)}</dd></div>
-        {payment.status ? <div><dt>Status</dt><dd><StatusBadge status={payment.status} /></dd></div> : null}
+        {payment.status ? <div><dt>Payment status</dt><dd><StatusBadge status={payment.status} /></dd></div> : null}
+        <div><dt>Total paid</dt><dd>{formatPaymentMoney(totalPaid)}</dd></div>
+        <div><dt>Remaining balance</dt><dd>{formatPaymentMoney(balance)}</dd></div>
+        <div><dt>Obligation status</dt><dd><StatusBadge status={obligationStatus} /></dd></div>
       </dl>
       <div className="card-actions">
         <button className="primary-button" type="button" onClick={() => onDownload(payment)}><Download size={17} aria-hidden="true" />Download receipt</button>
         {canRecord && outstanding ? <button className="secondary-button" type="button" onClick={onRecordAnother}>Record another payment</button> : null}
       </div>
-    </section>
+    </SuccessBanner>
   );
 }
 
 function ObligationDetail({ data, user, onRefresh, onDownload }) {
-  const [paymentOpen, setPaymentOpen] = useState(false);
+  const obligation = data.obligation;
+  const canRecord = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => String(item.agency.id) === String(obligation?.agency) && item.can_create);
+  const [paymentOpen, setPaymentOpen] = useState(() => (canRecord && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("record") === "1"));
   const [cancelOpen, setCancelOpen] = useState(false);
   const [success, setSuccess] = useState(null);
   const [error, setError] = useState("");
-  const obligation = data.obligation;
-  const canRecord = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.agency.id === obligation?.agency && item.can_create);
   const canCancel = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.agency.id === obligation?.agency && item.can_delete);
   function openPayment() { setSuccess(null); setPaymentOpen(true); }
-  function recordPayment(payment) { setPaymentOpen(false); setSuccess(payment); onRefresh(); }
+  async function recordPayment(payment) {
+    setPaymentOpen(false);
+    await onRefresh();
+    setSuccess(payment);
+  }
   async function cancel(event) { event.preventDefault(); setError(""); try { await clientRequest(apiPath(`payment-obligations/${obligation.id}/cancel/`), { method: "POST", body: JSON.stringify({ reason: event.currentTarget.reason.value }) }); setCancelOpen(false); onRefresh(); } catch (failure) { setError(apiError(failure)); } }
   if (!obligation) return null;
-  return <div className="page-stack payment-workspace"><Link className="back-link" href="/dashboard/payments/obligations"><ArrowLeft size={16} aria-hidden="true" />All obligations</Link><PageHeading eyebrow={`${obligation.agency_name} · ${obligation.payer_name}`} title={obligation.obligation_number} copy={obligation.description} action={<div className="card-actions">{canRecord && obligation.status !== "CANCELLED" && obligation.status !== "PAID" ? <button className="primary-button" type="button" onClick={openPayment}>Record payment</button> : null}{canCancel && obligation.status !== "CANCELLED" && obligation.status !== "PAID" ? <button className="danger-button" type="button" onClick={() => setCancelOpen(true)}>Cancel obligation</button> : null}</div>} /><div className="payment-metric-grid"><Metric label="Expected" value={formatPaymentMoney(obligation.total_expected)} /><Metric label="Posted" value={formatPaymentMoney(obligation.total_paid)} tone="positive" /><Metric label="Reversed" value={formatPaymentMoney(obligation.reversed_total)} /><Metric label="Balance" value={formatPaymentMoney(obligation.balance)} tone="warning" /></div><div className="detail-meta"><span>Obligation date <strong>{obligation.obligation_date}</strong></span><span>Status <StatusBadge status={obligation.status} /></span></div>{obligation.status === "PAID" ? <p className="payment-note">This obligation is fully paid. Posted payments cannot be edited or deleted.</p> : null}{obligation.status === "CANCELLED" ? <p className="payment-note">This obligation is cancelled and cannot receive payments.</p> : null}<ErrorBox error={error} />{success ? <PaymentSuccessBanner payment={success} obligation={obligation} canRecord={canRecord} onDismiss={() => setSuccess(null)} onRecordAnother={openPayment} onDownload={onDownload} /> : null}<section className="panel payment-table-panel"><div className="panel-heading"><div><p className="eyebrow">Immutable ledger</p><h3>Payment history</h3></div></div><PaymentTable rows={data.payments || []} /></section>{paymentOpen ? <PaymentForm obligation={obligation} user={user} onClose={() => setPaymentOpen(false)} onSuccess={recordPayment} /> : null}{cancelOpen ? <dialog open className="payment-dialog"><form onSubmit={cancel}><div className="dialog-heading"><h3>Cancel obligation</h3><button className="icon-button" type="button" onClick={() => setCancelOpen(false)} aria-label="Close cancellation"><X size={18} /></button></div><p>This cannot be undone and obligations with posted payments cannot be cancelled.</p><label>Required reason<textarea name="reason" required maxLength={500} rows="4" /></label><button className="danger-button" type="submit">Confirm cancellation</button></form></dialog> : null}</div>;
+  return <div className="page-stack payment-workspace"><Link className="back-link" href="/dashboard/payments/obligations"><ArrowLeft size={16} aria-hidden="true" />All obligations</Link><PageHeading eyebrow={`${obligation.agency_name} · ${obligation.payer_name}`} title={obligation.obligation_number} copy={obligation.description} action={<div className="card-actions">{canRecord && obligation.status !== "CANCELLED" && obligation.status !== "PAID" ? <button className="primary-button" type="button" onClick={openPayment}>Record payment</button> : null}{canCancel && obligation.status !== "CANCELLED" && obligation.status !== "PAID" ? <button className="danger-button" type="button" onClick={() => setCancelOpen(true)}>Cancel obligation</button> : null}</div>} /><div className="payment-metric-grid"><Metric label="Expected" value={formatPaymentMoney(obligation.total_expected)} /><Metric label="Posted" value={formatPaymentMoney(obligation.total_paid)} tone="positive" /><Metric label="Reversed" value={formatPaymentMoney(obligation.reversed_total)} /><Metric label="Balance" value={formatPaymentMoney(obligation.balance)} tone="warning" /></div><div className="detail-meta"><span>Obligation date <strong>{obligation.obligation_date}</strong></span><span>Status <StatusBadge status={obligation.status} /></span></div>{obligation.status === "PAID" ? <p className="payment-note">This obligation is fully paid. Posted payments cannot be edited or deleted.</p> : null}{obligation.status === "CANCELLED" ? <p className="payment-note">This obligation is cancelled and cannot receive payments.</p> : null}<ErrorBox error={error} />{success ? <PaymentSuccessBanner payment={success} obligation={data.obligation || obligation} canRecord={canRecord} onDismiss={() => setSuccess(null)} onRecordAnother={openPayment} onDownload={onDownload} /> : null}<section className="panel payment-table-panel"><div className="panel-heading"><div><p className="eyebrow">Immutable ledger</p><h3>Payment history</h3></div></div><PaymentTable rows={data.payments || []} /></section>{paymentOpen ? <PaymentForm obligation={obligation} user={user} onClose={() => setPaymentOpen(false)} onSuccess={recordPayment} /> : null}{cancelOpen ? <dialog open className="payment-dialog"><form onSubmit={cancel}><div className="dialog-heading"><h3>Cancel obligation</h3><button className="icon-button" type="button" onClick={() => setCancelOpen(false)} aria-label="Close cancellation"><X size={18} /></button></div><p>This cannot be undone and obligations with posted payments cannot be cancelled.</p><label>Required reason<textarea name="reason" required maxLength={500} rows="4" /></label><button className="danger-button" type="submit">Confirm cancellation</button></form></dialog> : null}</div>;
 }
 
 function PaymentForm({ obligation, onClose, onSuccess }) {
@@ -258,20 +358,22 @@ function PaymentForm({ obligation, onClose, onSuccess }) {
   const [error, setError] = useState("");
   const [fields, setFields] = useState({});
   const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
   const keyRef = useRef(createPaymentIdempotencyKey());
   const fingerprintRef = useRef(paymentFingerprint(form));
   function update(next) { const value = { ...form, ...next }; if (paymentFingerprint(value) !== fingerprintRef.current) { keyRef.current = createPaymentIdempotencyKey(); fingerprintRef.current = paymentFingerprint(value); } setForm(value); }
   async function submit(event) {
-    event.preventDefault(); if (pending) return;
+    event.preventDefault(); if (pending || pendingRef.current) return;
+    pendingRef.current = true;
     setPending(true); setError(""); setFields({});
     try {
       const created = await clientRequest(apiPath("payer-payments/"), { method: "POST", body: JSON.stringify({ ...form, obligation: obligation.id, idempotency_key: keyRef.current }) });
       setForm(EMPTY_PAYMENT);
       onSuccess(created);
     } catch (failure) { setError(apiError(failure)); setFields(failure?.payload || {}); }
-    finally { setPending(false); }
+    finally { pendingRef.current = false; setPending(false); }
   }
-  return <dialog open className="payment-dialog payment-form-dialog"><form onSubmit={submit}><div className="dialog-heading"><div><p className="eyebrow">New receipt</p><h3>Record payment</h3></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close payment form"><X size={18} /></button></div><div className="payment-confirmation"><strong>{obligation.payer_name}</strong><span>{obligation.agency_name} · {obligation.obligation_number}</span><span>Expected {formatPaymentMoney(obligation.total_expected)} · Already paid {formatPaymentMoney(obligation.total_paid)} · Balance {formatPaymentMoney(obligation.balance)}</span></div><label>Amount received<input required min="0.01" max={paymentMoney(obligation.balance)} step="0.01" type="number" value={form.amount_received} onChange={(event) => update({ amount_received: event.target.value })} aria-describedby="amount-error" />{fields.amount_received ? <span id="amount-error" className="field-error" role="alert">{errorText(fields.amount_received)}</span> : null}</label><label>Payment method<select value={form.payment_method} onChange={(event) => update({ payment_method: event.target.value })}><option value="CASH">Cash</option><option value="MOBILE_MONEY">Mobile Money</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CHEQUE">Cheque</option><option value="OTHER">Other</option></select></label>{form.payment_method !== "CASH" ? <label>Reference<input required value={form.payment_reference} onChange={(event) => update({ payment_reference: event.target.value })} />{fields.payment_reference ? <span className="field-error" role="alert">{errorText(fields.payment_reference)}</span> : null}</label> : null}<label>Payment date<input type="date" value={form.payment_date} onChange={(event) => update({ payment_date: event.target.value })} /></label><label>Note <span className="muted">optional</span><textarea rows="2" value={form.notes} onChange={(event) => update({ notes: event.target.value })} /></label><ErrorBox error={error} /><div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={pending}>Cancel</button><button className="primary-button" type="submit" disabled={pending} aria-busy={pending}>{pending ? "Recording payment…" : "Post payment"}</button></div></form></dialog>;
+  return <dialog open className="payment-dialog payment-form-dialog"><form onSubmit={submit}><div className="dialog-heading"><div><p className="eyebrow">New receipt</p><h3>Record payment</h3></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close payment form" disabled={pending}><X size={18} /></button></div><div className="payment-confirmation"><strong>{obligation.payer_name}</strong><span>{obligation.agency_name} · {obligation.obligation_number}</span><span>Expected {formatPaymentMoney(obligation.total_expected)} · Already paid {formatPaymentMoney(obligation.total_paid)} · Balance {formatPaymentMoney(obligation.balance)}</span></div><label>Amount received<input required min="0.01" max={paymentMoney(obligation.balance)} step="0.01" type="number" value={form.amount_received} onChange={(event) => update({ amount_received: event.target.value })} aria-describedby="amount-error" />{fields.amount_received ? <span id="amount-error" className="field-error" role="alert">{errorText(fields.amount_received)}</span> : null}</label><label>Payment method<select value={form.payment_method} onChange={(event) => update({ payment_method: event.target.value })}><option value="CASH">Cash</option><option value="MOBILE_MONEY">Mobile Money</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CHEQUE">Cheque</option><option value="OTHER">Other</option></select></label>{form.payment_method !== "CASH" ? <label>Reference<input required value={form.payment_reference} onChange={(event) => update({ payment_reference: event.target.value })} />{fields.payment_reference ? <span className="field-error" role="alert">{errorText(fields.payment_reference)}</span> : null}</label> : null}<label>Payment date<input type="date" value={form.payment_date} onChange={(event) => update({ payment_date: event.target.value })} /></label><label>Note <span className="muted">optional</span><textarea rows="2" value={form.notes} onChange={(event) => update({ notes: event.target.value })} /></label><ErrorBox error={error} /><div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose} disabled={pending}>Cancel</button><button className="primary-button" type="submit" disabled={pending} aria-busy={pending}>{pending ? "Recording payment…" : "Post payment"}</button></div></form></dialog>;
 }
 
 function Receipt({ data, onDownload }) {
@@ -295,17 +397,18 @@ export default function PaymentsClient({ user, view = "overview", recordId = nul
   async function download(payment) {
     try { const result = await clientDownload(apiPath(`payer-payments/${payment.id}/receipt/`)); const url = URL.createObjectURL(result.blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${payment.receipt_number || "receipt"}.pdf`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 0); } catch { /* The page stays usable when a download is denied. */ }
   }
-  if (state.loading) return <div className="page-stack payment-workspace"><Loading /></div>;
+  if (state.loading && !state.data) return <div className="page-stack payment-workspace"><Loading /></div>;
+  const hasData = Boolean(state.data);
   return <>
     <ErrorBox error={state.error} />
     {state.error ? <div className="payment-retry"><button className="secondary-button" type="button" onClick={state.reload}>Retry</button></div> : null}
-    {!state.error && view === "overview" ? <Overview data={state.data} user={user} onRefresh={state.reload} /> : null}
-    {!state.error && view === "analytics" ? <Analytics data={state.data} /> : null}
-    {!state.error && view === "payers" ? <Payers data={state.data} user={user} onRefresh={state.reload} /> : null}
-    {!state.error && view === "payer" ? <PayerDetail data={state.data} user={user} onRefresh={state.reload} /> : null}
-    {!state.error && view === "obligations" ? <Obligations data={state.data} user={user} onRefresh={state.reload} /> : null}
-    {!state.error && view === "obligation" ? <ObligationDetail data={state.data} user={user} onRefresh={state.reload} onDownload={download} /> : null}
-    {!state.error && view === "receipt" ? <Receipt data={state.data} onDownload={download} /> : null}
+    {hasData && view === "overview" ? <Overview data={state.data} user={user} onRefresh={state.reload} /> : null}
+    {hasData && view === "analytics" ? <Analytics data={state.data} /> : null}
+    {hasData && view === "payers" ? <Payers data={state.data} user={user} onRefresh={state.reload} /> : null}
+    {hasData && view === "payer" ? <PayerDetail data={state.data} user={user} onRefresh={state.reload} /> : null}
+    {hasData && view === "obligations" ? <Obligations data={state.data} user={user} onRefresh={state.reload} /> : null}
+    {hasData && view === "obligation" ? <ObligationDetail data={state.data} user={user} onRefresh={state.reload} onDownload={download} /> : null}
+    {hasData && view === "receipt" ? <Receipt data={state.data} onDownload={download} /> : null}
   </>;
 }
 

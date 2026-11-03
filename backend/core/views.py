@@ -944,7 +944,7 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
     pagination_class = PaymentPagination
     serializer_class = PaymentObligationSerializer
     permission_classes = [IsAuthenticated]
-    search_fields = ["obligation_number", "description", "payer__payer_name"]
+    search_fields = ["obligation_number", "description", "payer__payer_name", "sub_agent_number_snapshot", "terminal_number_snapshot"]
     ordering_fields = ["obligation_date", "total_expected", "created_at", "status", "obligation_number"]
 
     def get_queryset(self):
@@ -987,15 +987,23 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
             raise ValidationError({"outstanding_only": "Use true or false."})
         if outstanding == "true":
             queryset = queryset.filter(status__in=[PaymentObligation.ObligationStatus.OPEN, PaymentObligation.ObligationStatus.PARTIALLY_PAID])
-        return queryset
+        from .payment_numbers import filter_numbers
+        return filter_numbers(queryset, self.request.query_params)
 
+    @transaction.atomic
     def perform_create(self, serializer):
+        from .terminal_register import lock_register
+        lock_register()
         payer = serializer.validated_data["payer"]
         agency = payer.agency
         if self.request.user.role != UserRole.SUPER_ADMIN:
             require_assignment_flag(self.request.user, agency, "can_create")
-        obligation = serializer.save(agency=agency, created_by=self.request.user)
-        log_audit(self.request.user, agency, AuditAction.PAYMENT_OBLIGATION_CREATED, "PaymentObligation", obligation.id, new_values={"agency_id": agency.id, "payer_id": payer.id, "obligation_number": obligation.obligation_number, "total_expected": str(obligation.total_expected), "status": obligation.status, "actor_id": self.request.user.id})
+        number = TPMCode.objects.select_for_update().select_related("person__agency").get(pk=serializer.validated_data["sub_agent_number"].pk)
+        payer = PaymentPayer.objects.select_for_update().get(pk=payer.pk)
+        from .payment_numbers import validate_number
+        validate_number(number, payer, agency)
+        obligation = serializer.save(agency=agency, payer=payer, sub_agent_number=number, created_by=self.request.user)
+        log_audit(self.request.user, agency, AuditAction.PAYMENT_OBLIGATION_CREATED, "PaymentObligation", obligation.id, new_values={"agency_id": agency.id, "payer_id": payer.id, "obligation_id": obligation.pk, "sub_agent_number_id": number.pk, "source": "PAYMENT_OBLIGATION", "actor_id": self.request.user.id})
 
     def perform_update(self, serializer):
         obligation = self.get_object()
@@ -1074,7 +1082,8 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
             if self.request.user.role != UserRole.SUPER_ADMIN:
                 raise PermissionDenied("Only Super Admin can filter by recorder.")
             queryset = queryset.filter(recorded_by_id=recorder)
-        return queryset
+        from .payment_numbers import filter_numbers
+        return filter_numbers(queryset, self.request.query_params, prefix="obligation__")
 
     def perform_create(self, serializer):
         with transaction.atomic():
@@ -1107,9 +1116,13 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
             if amount <= 0:
                 raise ValidationError({"amount_received": "Payment amount must be greater than zero."})
             payment = serializer.save(
-                agency_snapshot=obligation_locked.agency.name,
-                payer_name_snapshot=obligation_locked.payer.payer_name,
-                linked_sub_agent_numbers_snapshot=list(obligation_locked.payer.sub_agent_assignments.filter(is_active=True).values_list("sub_agent_number__code", flat=True)),
+                agency_snapshot=obligation_locked.agency_name_snapshot or obligation_locked.agency.name,
+                agency_id_snapshot=obligation_locked.agency_id_snapshot or obligation_locked.agency_id,
+                payer_id_snapshot=obligation_locked.payer_id_snapshot or obligation_locked.payer_id,
+                sub_agent_number_snapshot=obligation_locked.sub_agent_number_snapshot,
+                terminal_number_snapshot=obligation_locked.terminal_number_snapshot,
+                payer_name_snapshot=obligation_locked.payer_name_snapshot or obligation_locked.payer.payer_name,
+                linked_sub_agent_numbers_snapshot=[obligation_locked.sub_agent_number_snapshot] if obligation_locked.sub_agent_number_id else [],
                 obligation_number_snapshot=obligation_locked.obligation_number,
                 obligation_description_snapshot=obligation_locked.description,
                 obligation_date_snapshot=obligation_locked.obligation_date,
@@ -1182,7 +1195,8 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
         rows = [
             ("Status", payment.status), ("Payment date/time", payment.payment_date.isoformat()),
             ("Agency", payment.agency_snapshot), ("Payer", payment.payer_name_snapshot),
-            ("Linked Sub-Agent Numbers", ", ".join(payment.linked_sub_agent_numbers_snapshot) or "None"),
+            ("Sub-Agent Number", payment.sub_agent_number_snapshot or "Not assigned — legacy obligation."),
+            ("Terminal Number", payment.terminal_number_snapshot or "Not assigned"),
             ("Obligation", f"{payment.obligation_number_snapshot} - {payment.obligation_description_snapshot}"),
             ("Obligation date", payment.obligation_date_snapshot.isoformat()),
             ("Total expected", format_currency(payment.expected_amount_snapshot)), ("Previously paid", format_currency(payment.amount_previously_paid)),
@@ -1226,6 +1240,8 @@ class PaymentAnalyticsView(APIView):
         if obligation_end:
             obligations = obligations.filter(obligation_date__lte=obligation_end)
 
+        from .payment_numbers import filter_numbers
+        obligations = filter_numbers(obligations, request.query_params)
         payments = PayerPayment.objects.filter(obligation__in=obligations)
         payment_start, payment_end = validate_date_range(request.query_params, "payment_start", "payment_end")
         if payment_start:
@@ -1320,7 +1336,9 @@ class PaymentAnalyticsView(APIView):
                 else:
                     cursor = cursor.replace(month=cursor.month + 1)
 
+        from .payment_numbers import number_breakdown
         response = {
+            "number_breakdown": number_breakdown(obligations, payments, request),
             "obligation_portfolio": {
                 "total_expected": str(money(total_expected)),
                 "total_posted": str(money(posted_total)),

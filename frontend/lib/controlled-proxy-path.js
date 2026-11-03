@@ -106,6 +106,8 @@ export function isAllowedBackendProxyPath(path, method = "GET") {
   if (/^holiday-game-overrides\/\d+\/cancel$/.test(cleanPath)) return normalizedMethod === "POST";
   if (/^payer-payments\/\d+\/reverse$/.test(cleanPath)) return normalizedMethod === "POST";
   if (/^payer-payments\/\d+\/receipt$/.test(cleanPath)) return normalizedMethod === "GET";
+  if (/^agencies\/\d+\/payment-numbers$/.test(cleanPath)) return ["GET", "POST"].includes(normalizedMethod);
+  if (/^payment-payers\/\d+\/numbers$/.test(cleanPath)) return normalizedMethod === "GET";
   if (cleanPath === "payments/analytics") return normalizedMethod === "GET";
   if (/^agencies\/\d+\/impact$/.test(cleanPath)) return normalizedMethod === "GET";
   const parts = cleanPath.split("/").filter(Boolean);

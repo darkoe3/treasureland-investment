@@ -186,6 +186,7 @@ class UserAgencyAssignmentSerializer(serializers.ModelSerializer):
 
 
 class PaymentPayerSerializer(serializers.ModelSerializer):
+    sub_agent_number_count = serializers.SerializerMethodField()
     agency_name = serializers.CharField(source="agency.name", read_only=True)
     created_by_name = serializers.CharField(source="created_by.full_name", read_only=True)
     total_expected = serializers.SerializerMethodField()
@@ -213,8 +214,12 @@ class PaymentPayerSerializer(serializers.ModelSerializer):
             "total_collected",
             "total_outstanding",
             "active_obligations",
+            "sub_agent_number_count",
         )
         read_only_fields = ("id", "created_by", "created_at", "updated_at", "total_expected", "total_collected", "total_outstanding", "active_obligations")
+
+    def get_sub_agent_number_count(self, payer):
+        return payer.sub_agent_assignments.filter(is_active=True).count()
 
     def get_total_expected(self, payer):
         annotated = getattr(payer, "_total_expected", None)
@@ -287,6 +292,8 @@ class PaymentObligationSerializer(serializers.ModelSerializer):
         model = PaymentObligation
         fields = (
             "id",
+            "sub_agent_number", "sub_agent_number_snapshot", "terminal_number_snapshot",
+            "payer_name_snapshot", "payer_id_snapshot", "agency_name_snapshot", "agency_id_snapshot",
             "agency",
             "agency_name",
             "payer",
@@ -308,7 +315,13 @@ class PaymentObligationSerializer(serializers.ModelSerializer):
             "reversed_total",
             "balance",
         )
-        read_only_fields = ("id", "obligation_number", "created_by", "created_at", "updated_at", "total_paid", "reversed_total", "balance", "status", "cancelled_by", "cancelled_at")
+        read_only_fields = ("sub_agent_number_snapshot", "terminal_number_snapshot", "payer_name_snapshot", "payer_id_snapshot", "agency_name_snapshot", "agency_id_snapshot", "id", "obligation_number", "created_by", "created_at", "updated_at", "total_paid", "reversed_total", "balance", "status", "cancelled_by", "cancelled_at")
+
+    def to_representation(self, instance):
+        result = super().to_representation(instance)
+        result["payer_name"] = instance.payer_name_snapshot or result["payer_name"]
+        result["agency_name"] = instance.agency_name_snapshot or result["agency_name"]
+        return result
 
     def get_total_paid(self, obligation):
         return money(getattr(obligation, "_posted_total", None) or 0)
@@ -323,8 +336,19 @@ class PaymentObligationSerializer(serializers.ModelSerializer):
         return money(obligation.total_expected - self.get_total_paid(obligation))
 
     def validate(self, attrs):
+        number = attrs.get("sub_agent_number")
+        if not self.instance and not number:
+            raise serializers.ValidationError({"sub_agent_number": "Explicitly select a Sub-Agent Number."})
+        if self.instance and "sub_agent_number" in attrs and getattr(number, "pk", None) != self.instance.sub_agent_number_id:
+            raise serializers.ValidationError({"sub_agent_number": "The obligation number assignment is immutable."})
         agency = attrs.get("agency") or getattr(self.instance, "agency", None)
         payer = attrs.get("payer") or getattr(self.instance, "payer", None)
+        if self.instance and self.instance.sub_agent_number_id:
+            if agency.pk != self.instance.agency_id or payer.pk != self.instance.payer_id:
+                raise serializers.ValidationError({"payer": "Number-linked obligations cannot change payer or agency."})
+        if not self.instance and number and agency and payer:
+            from .payment_numbers import validate_number
+            validate_number(number, payer, agency)
         if agency and payer and payer.agency_id != agency.id:
             raise serializers.ValidationError({"payer": "Payer and obligation agency must match."})
         if self.instance and self.instance.payments.filter(status=PayerPayment.PaymentStatus.POSTED).exists():
@@ -351,6 +375,7 @@ class PayerPaymentSerializer(serializers.ModelSerializer):
         model = PayerPayment
         fields = (
             "id",
+            "sub_agent_number_snapshot", "terminal_number_snapshot", "payer_id_snapshot", "agency_id_snapshot",
             "obligation",
             "obligation_number",
             "receipt_number",
@@ -380,7 +405,7 @@ class PayerPaymentSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "receipt_number", "agency_snapshot", "payer_name_snapshot", "recorded_by", "status", "created_at", "updated_at", "reversed_by", "reversed_at", "reversal_reason", "recorded_by_display_snapshot", "amount_previously_paid", "cumulative_amount_paid", "balance_after_payment", "expected_amount_snapshot", "obligation_description_snapshot", "obligation_date_snapshot", "linked_sub_agent_numbers_snapshot")
+        read_only_fields = ("sub_agent_number_snapshot", "terminal_number_snapshot", "payer_id_snapshot", "agency_id_snapshot", "id", "receipt_number", "agency_snapshot", "payer_name_snapshot", "recorded_by", "status", "created_at", "updated_at", "reversed_by", "reversed_at", "reversal_reason", "recorded_by_display_snapshot", "amount_previously_paid", "cumulative_amount_paid", "balance_after_payment", "expected_amount_snapshot", "obligation_description_snapshot", "obligation_date_snapshot", "linked_sub_agent_numbers_snapshot")
         extra_kwargs = {"idempotency_key": {"validators": []}}
 
     def validate_amount_received(self, value):

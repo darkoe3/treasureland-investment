@@ -66,6 +66,7 @@ function harness({ user = admin, obligation = partialObligation, payments = [], 
     if (name === "next/link") return { __esModule: true, default: (props) => require("react/jsx-runtime").jsx("a", { href: props.href, className: props.className, children: props.children }) };
     if (name === "../lib/client-api") return { ...clientApi, clientRequest: request, clientDownload: async () => ({ blob: {}, contentType: "application/pdf", contentDisposition: "" }) };
     if (name === "../lib/payment-operations") return operations;
+    if (name === "./PaymentNumberPicker" || name === "./PaymentNumberLedger") return {}; // Unused on the obligation-detail route under test.
     throw new Error(`Unexpected test import ${name}`);
   } });
   const render = () => { stateIndex = 0; refIndex = 0; return compiledModule.exports.default({ user, view: "obligation", recordId: obligation.id }); };

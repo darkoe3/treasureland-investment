@@ -424,6 +424,8 @@ class VarianceStatus(models.TextChoices):
 
 
 class AuditAction(models.TextChoices):
+    PAYMENT_NUMBER_CREATED = "PAYMENT_NUMBER_CREATED", "Payment Sub-Agent Number created"
+    PAYMENT_TERMINAL_CREATED = "PAYMENT_TERMINAL_CREATED", "Payment Terminal Number created"
     AGENCY_CREATED = "AGENCY_CREATED", "Agency created"
     AGENCY_UPDATED = "AGENCY_UPDATED", "Agency updated"
     AGENCY_DEACTIVATED = "AGENCY_DEACTIVATED", "Agency deactivated"
@@ -480,6 +482,7 @@ class AuditAction(models.TextChoices):
 
 
 class PaymentPayer(TimeStampedModel):
+    register_person = models.ForeignKey(Person, on_delete=models.PROTECT, null=True, blank=True, related_name="payment_payers")
     agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="payment_payers")
     payer_name = models.CharField(max_length=200)
     telephone = models.CharField(max_length=80, blank=True, default="")
@@ -588,6 +591,13 @@ class PaymentObligation(TimeStampedModel):
 
     agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="payment_obligations")
     payer = models.ForeignKey(PaymentPayer, on_delete=models.PROTECT, related_name="obligations")
+    sub_agent_number = models.ForeignKey(TPMCode, on_delete=models.PROTECT, null=True, blank=True, related_name="payment_obligations")
+    sub_agent_number_snapshot = models.CharField(max_length=80, blank=True, default="", editable=False)
+    terminal_number_snapshot = models.CharField(max_length=80, blank=True, default="", editable=False)
+    payer_name_snapshot = models.CharField(max_length=200, blank=True, default="", editable=False)
+    payer_id_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
+    agency_name_snapshot = models.CharField(max_length=200, blank=True, default="", editable=False)
+    agency_id_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
     obligation_number = models.CharField(max_length=40, unique=True)
     description = models.CharField(max_length=255)
     obligation_date = models.DateField()
@@ -620,6 +630,12 @@ class PaymentObligation(TimeStampedModel):
             raise ValidationError({"payer": "Inactive payers cannot carry obligations."})
         if self.pk:
             original = PaymentObligation.objects.filter(pk=self.pk).first()
+            if original:
+                fields = ("sub_agent_number_id", "sub_agent_number_snapshot", "terminal_number_snapshot", "payer_name_snapshot", "payer_id_snapshot", "agency_name_snapshot", "agency_id_snapshot")
+                if any(getattr(self, field) != getattr(original, field) for field in fields):
+                    raise ValidationError("Obligation number assignment and snapshots are immutable.")
+                if original.sub_agent_number_id and (original.payer_id != self.payer_id or original.agency_id != self.agency_id):
+                    raise ValidationError("Number-linked obligations cannot change payer or agency.")
             has_posted_payments = self.payments.filter(status=PayerPayment.PaymentStatus.POSTED).exists() if original else False
             if has_posted_payments:
                 if self.agency_id and original.agency_id != self.agency_id:
@@ -655,6 +671,15 @@ class PaymentObligation(TimeStampedModel):
 
     def save(self, *args, **kwargs):
         self.total_expected = money(self.total_expected)
+        if self._state.adding and self.sub_agent_number_id:
+            from .payment_numbers import validate_number
+            terminal = validate_number(self.sub_agent_number, self.payer, self.agency)
+            self.sub_agent_number_snapshot = self.sub_agent_number.code
+            self.terminal_number_snapshot = terminal.terminal_number if terminal else ""
+            self.payer_name_snapshot = self.payer.payer_name
+            self.payer_id_snapshot = self.payer_id
+            self.agency_name_snapshot = self.agency.name
+            self.agency_id_snapshot = self.agency_id
         self.description = " ".join(self.description.split()) if self.description else ""
         if isinstance(self.obligation_date, str):
             self.obligation_date = timezone.datetime.strptime(self.obligation_date, "%Y-%m-%d").date()
@@ -687,6 +712,10 @@ class PayerPayment(TimeStampedModel):
     agency_snapshot = models.CharField(max_length=200)
     payer_name_snapshot = models.CharField(max_length=200)
     linked_sub_agent_numbers_snapshot = models.JSONField(default=list, blank=True)
+    sub_agent_number_snapshot = models.CharField(max_length=80, blank=True, default="", editable=False)
+    terminal_number_snapshot = models.CharField(max_length=80, blank=True, default="", editable=False)
+    payer_id_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
+    agency_id_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
     obligation_number_snapshot = models.CharField(max_length=40)
     obligation_description_snapshot = models.CharField(max_length=255)
     obligation_date_snapshot = models.DateField()
@@ -741,8 +770,12 @@ class PayerPayment(TimeStampedModel):
 
         if self.pk:
             original = PayerPayment.objects.filter(pk=self.pk).first()
+            snapshot_fields = ("sub_agent_number_snapshot", "terminal_number_snapshot", "payer_id_snapshot", "agency_id_snapshot", "agency_snapshot", "payer_name_snapshot")
+            if original and any(getattr(original, field) != getattr(self, field) for field in snapshot_fields):
+                raise ValidationError({"detail": "Payment identity snapshots are immutable."})
             if original and original.status == self.PaymentStatus.POSTED:
                 immutable_fields = (
+                    "sub_agent_number_snapshot", "terminal_number_snapshot", "payer_id_snapshot", "agency_id_snapshot",
                     "obligation_id", "receipt_number", "agency_snapshot", "payer_name_snapshot",
                     "linked_sub_agent_numbers_snapshot", "obligation_number_snapshot",
                     "obligation_description_snapshot", "obligation_date_snapshot",

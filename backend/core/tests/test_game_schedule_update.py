@@ -57,7 +57,7 @@ class ApprovedGameScheduleTests(TestCase):
             .values_list("game__name", flat=True)
         )
 
-        self.assertEqual(whole_day_names, ["Monday Special", "Lucky G", "Midweek", "Fortune", "Bonanza", "National", "Aseda"])
+        self.assertEqual(whole_day_names, [name for ghana in ["MSP", "Lucky Ghana", "Midweek", "Fortune", "Bonanza", "National", "Aseda"] for name in [ghana, "Double Chance"]])
         self.assertFalse(WeeklyGameSchedule.objects.filter(is_whole_day=True, closing_time__isnull=False).exists())
         self.assertFalse(WeeklyGameSchedule.objects.filter(is_whole_day=True, draw_time__isnull=False).exists())
 
@@ -86,7 +86,7 @@ class ApprovedGameScheduleTests(TestCase):
         second_counts = (Game.objects.count(), WeeklyGameSchedule.objects.count())
 
         self.assertEqual(first_counts, second_counts)
-        self.assertEqual(WeeklyGameSchedule.objects.filter(is_active=True).count(), 41)
+        self.assertEqual(WeeklyGameSchedule.objects.filter(is_active=True).count(), 48)
 
     def test_no_duplicate_active_game_day_schedule(self):
         game = Game.objects.create(name="Duplicate Game")
@@ -103,7 +103,7 @@ class ApprovedGameScheduleTests(TestCase):
         sheet = DailySheet.objects.create(agency=agency, transaction_date=date(2026, 8, 24), created_by=user)
         sheet.copy_weekday_games()
 
-        monday_special = sheet.sheet_games.get(game_name_snapshot="Monday Special")
+        monday_special = sheet.sheet_games.get(game_name_snapshot="MSP")
         self.assertTrue(monday_special.is_whole_day_snapshot)
         self.assertIsNone(monday_special.closing_time_snapshot)
         self.assertIsNone(monday_special.draw_time_snapshot)
@@ -117,6 +117,7 @@ class ApprovedGameScheduleTests(TestCase):
         snapshot = sheet.sheet_games.get(game_name_snapshot="Peoples")
 
         schedule = WeeklyGameSchedule.objects.get(weekday=Weekday.MONDAY, game__name="Peoples", is_active=True)
+        schedule.category = "GHANA"
         schedule.is_whole_day = True
         schedule.closing_time = None
         schedule.draw_time = None
@@ -128,13 +129,13 @@ class ApprovedGameScheduleTests(TestCase):
         self.assertEqual(snapshot.draw_time_snapshot, time(12, 45))
 
     def test_canonical_naming_and_06_string_preservation(self):
-        Game.objects.create(name="MSP")
+        Game.objects.get_or_create(name="MSP")
         Game.objects.create(name="MK II")
         Game.objects.create(name="C/Master")
 
         apply_approved_weekly_game_schedule()
 
-        self.assertTrue(Game.objects.filter(name="Monday Special").exists())
+        self.assertTrue(Game.objects.filter(name="MSP").exists())
         self.assertTrue(Game.objects.filter(name="Mark II").exists())
         self.assertTrue(Game.objects.filter(name="Club Master").exists())
         game = Game.objects.get(name="06")
@@ -158,7 +159,7 @@ class WeeklyGameScheduleAPITests(APITestCase):
 
         created = self.client.post(
             "/api/weekly-game-schedules/",
-            {"game": game.id, "weekday": Weekday.SUNDAY, "display_order": 9, "is_whole_day": True, "closing_time": None, "draw_time": None, "is_active": False},
+            {"game": game.id, "weekday": Weekday.SUNDAY, "display_order": 9, "category": "GHANA", "is_whole_day": True, "closing_time": None, "draw_time": None, "is_active": False},
             format="json",
         )
         self.assertEqual(created.status_code, status.HTTP_201_CREATED)
@@ -166,7 +167,7 @@ class WeeklyGameScheduleAPITests(APITestCase):
 
         updated = self.client.patch(
             f"/api/weekly-game-schedules/{schedule_id}/",
-            {"is_whole_day": False, "closing_time": "08:00", "draw_time": "08:30", "is_active": True},
+            {"category": "TIMED", "is_whole_day": False, "closing_time": "08:00", "draw_time": "08:30", "is_active": True},
             format="json",
         )
         self.assertEqual(updated.status_code, status.HTTP_200_OK)
@@ -231,6 +232,6 @@ class WeeklyGameScheduleAPITests(APITestCase):
         self.assertEqual(schedule.status_code, status.HTTP_200_OK)
         self.assertEqual([item["game_name"] for item in schedule.data], APPROVED_WEEKLY_GAME_NAMES[Weekday.MONDAY])
         self.assertEqual(sheet.status_code, status.HTTP_201_CREATED)
-        monday_special = [item for item in sheet.data["sheet_games"] if item["game_name_snapshot"] == "Monday Special"][0]
+        monday_special = [item for item in sheet.data["sheet_games"] if item["game_name_snapshot"] == "MSP"][0]
         self.assertTrue(monday_special["is_whole_day_snapshot"])
         self.assertIsNone(monday_special["closing_time_snapshot"])

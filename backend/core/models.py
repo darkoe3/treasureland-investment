@@ -269,9 +269,16 @@ class Weekday(models.IntegerChoices):
     SUNDAY = 7, "Sunday"
 
 
+class GameCategory(models.TextChoices):
+    TIMED = "TIMED", "Timed"
+    GHANA = "GHANA", "Ghana Game"
+    DOUBLE_CHANCE = "DOUBLE_CHANCE", "Double Chance"
+
+
 class WeeklyGameSchedule(TimeStampedModel):
     game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="weekly_schedules")
     weekday = models.PositiveSmallIntegerField(choices=Weekday.choices)
+    category = models.CharField(max_length=20, choices=GameCategory.choices, default=GameCategory.TIMED)
     is_whole_day = models.BooleanField(default=False)
     closing_time = models.TimeField(null=True, blank=True)
     draw_time = models.TimeField(null=True, blank=True)
@@ -293,6 +300,8 @@ class WeeklyGameSchedule(TimeStampedModel):
         ]
 
     def clean(self):
+        if self.is_whole_day != (self.category != GameCategory.TIMED):
+            raise ValidationError({"category": "Category and Whole Day status must agree."})
         if self.is_whole_day:
             if self.closing_time is not None or self.draw_time is not None:
                 raise ValidationError({"is_whole_day": "Whole Day schedules must not have closing or draw times."})
@@ -348,18 +357,13 @@ class HolidayGameOverride(TimeStampedModel):
                 errors["source_date"] = "Source date cannot be in the future."
         if self.is_active and self.holiday_date and self.holiday_date <= timezone.localdate():
             errors["holiday_date"] = "Holiday date must be in the future."
+        from .game_schedule import is_ghana_game_on_weekday
         if self.holiday_date and self.normal_game_id:
-            if not WeeklyGameSchedule.objects.filter(
-                weekday=self.holiday_date.isoweekday(), game_id=self.normal_game_id,
-                is_whole_day=True, is_active=True, game__is_active=True,
-            ).exists():
-                errors["normal_game"] = "Select the active Whole Day game scheduled for the holiday date."
+            if not is_ghana_game_on_weekday(self.normal_game, self.holiday_date.isoweekday()):
+                errors["normal_game"] = "Select the active Ghana game scheduled for the holiday date."
         if self.source_date and self.replacement_game_id:
-            if not WeeklyGameSchedule.objects.filter(
-                weekday=self.source_date.isoweekday(), game_id=self.replacement_game_id,
-                is_whole_day=True, is_active=True, game__is_active=True,
-            ).exists():
-                errors["replacement_game"] = "Select an active Whole Day game scheduled on the source date."
+            if not is_ghana_game_on_weekday(self.replacement_game, self.source_date.isoweekday()):
+                errors["replacement_game"] = "Select an active Ghana game scheduled on the source date."
             if self.holiday_date and self.replacement_game_id != self.normal_game_id and WeeklyGameSchedule.objects.filter(
                 weekday=self.holiday_date.isoweekday(), game_id=self.replacement_game_id,
                 is_active=True, game__is_active=True,
@@ -891,6 +895,8 @@ class DailySheet(TimeStampedModel):
     def copy_weekday_games(self):
         from .holiday_overrides import effective_schedule_for_date
 
+        if self.sheet_games.exists():
+            return
         schedules, holiday_override = effective_schedule_for_date(self.transaction_date)
         DailySheetGame.objects.bulk_create(
             [
@@ -898,6 +904,7 @@ class DailySheet(TimeStampedModel):
                     daily_sheet=self,
                     game=schedule.game,
                     game_name_snapshot=schedule.game.name,
+                    category_snapshot=schedule.category,
                     is_whole_day_snapshot=schedule.is_whole_day,
                     closing_time_snapshot=schedule.closing_time,
                     draw_time_snapshot=schedule.draw_time,
@@ -962,6 +969,7 @@ class DailySheetGame(models.Model):
     daily_sheet = models.ForeignKey(DailySheet, on_delete=models.CASCADE, related_name="sheet_games")
     game = models.ForeignKey(Game, on_delete=models.PROTECT, related_name="daily_sheet_games")
     game_name_snapshot = models.CharField(max_length=120)
+    category_snapshot = models.CharField(max_length=20, choices=GameCategory.choices, null=True, blank=True)
     is_whole_day_snapshot = models.BooleanField(default=False)
     is_holiday_override_snapshot = models.BooleanField(default=False)
     closing_time_snapshot = models.TimeField(null=True, blank=True)

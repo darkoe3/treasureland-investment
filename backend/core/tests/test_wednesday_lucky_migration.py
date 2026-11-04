@@ -1,6 +1,7 @@
 import importlib
 from datetime import date, time
 
+from django.core.management import call_command
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
@@ -16,13 +17,21 @@ class WednesdayLuckyDataMigrationTests(TransactionTestCase):
     def setUp(self):
         super().setUp()
         executor = MigrationExecutor(connection)
+        self.latest_targets = executor.loader.graph.leaf_nodes()
+        self.addCleanup(self.restore_latest_schema)
+        executor.migrate(self.latest_targets)
+        # Test database creation applies 0023. Its deliberately non-destructive
+        # reverse leaves games (including Midweek) behind on a schema rollback.
+        # Flush at the current schema before constructing this test's 0019 data.
+        call_command("flush", database=connection.alias, interactive=False, verbosity=0)
+        executor = MigrationExecutor(connection)
         executor.migrate([MIGRATE_FROM])
         self.old_apps = MigrationExecutor(connection).loader.project_state([MIGRATE_FROM]).apps
 
-    def tearDown(self):
-        executor = MigrationExecutor(connection)
-        executor.migrate(executor.loader.graph.leaf_nodes())
-        super().tearDown()
+    def restore_latest_schema(self):
+        # Cleanup runs even if setUp fails, before TransactionTestCase flushes
+        # fixture data in _post_teardown using the current model definitions.
+        MigrationExecutor(connection).migrate(self.latest_targets)
 
     def create_wednesday_schedule(self, include_lucky=True):
         Game = self.old_apps.get_model("core", "Game")

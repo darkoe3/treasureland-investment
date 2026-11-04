@@ -31,6 +31,7 @@ User = get_user_model()
 
 class Phase2Mixin:
     def build_base(self):
+        WeeklyGameSchedule.objects.all().delete()  # This fixture defines its own schedule.
         self.super_admin = User.objects.create_superuser("admin@example.com", "pass-12345", full_name="Admin")
         self.accountant = User.objects.create_user("acct@example.com", "pass-12345", full_name="Acct")
         self.other_accountant = User.objects.create_user("other@example.com", "pass-12345", full_name="Other")

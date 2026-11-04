@@ -34,7 +34,7 @@ def game_on_whole_day(weekday, name):
 
 
 class CorrectedWednesdayScheduleTests(TestCase):
-    def test_wednesday_has_six_games_and_only_midweek_is_whole_day(self):
+    def test_wednesday_has_seven_games_and_two_whole_day_categories(self):
         call_command("seed_initial_data", verbosity=0)
         validate_active_weekly_game_schedule()
 
@@ -43,8 +43,8 @@ class CorrectedWednesdayScheduleTests(TestCase):
                 weekday=Weekday.WEDNESDAY, is_active=True, game__is_active=True,
             ).select_related("game").order_by("display_order")
         )
-        self.assertEqual(len(rows), 6)
-        self.assertEqual([row.game.name for row in rows if row.is_whole_day], ["Midweek"])
+        self.assertEqual(len(rows), 7)
+        self.assertEqual([row.game.name for row in rows if row.is_whole_day], ["Midweek", "Double Chance"])
         lucky = next(row for row in rows if row.game.name == "Lucky")
         self.assertFalse(lucky.is_whole_day)
         self.assertEqual(lucky.closing_time.isoformat(), "22:30:00")
@@ -58,7 +58,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.agency = Agency.objects.create(name="Holiday Agency", code="holiday-agency")
         UserAgencyAssignment.objects.create(user=self.accountant, agency=self.agency, can_create=True, can_edit=True)
         call_command("seed_initial_data", verbosity=0)
-        self.normal_game = game_on_whole_day(Weekday.MONDAY, "Monday Special")
+        self.normal_game = game_on_whole_day(Weekday.MONDAY, "MSP")
         self.previous_game = game_on_whole_day(Weekday.FRIDAY, "Bonanza")
         today = timezone.localdate()
         days_until_monday = (7 - today.weekday()) % 7 or 7
@@ -199,7 +199,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         )
         self.assertEqual(normal_sheet_response.status_code, status.HTTP_201_CREATED)
         self.assertFalse(normal_sheet_response.data["holiday_override_applied"])
-        self.assertIn("Monday Special", [row["game_name_snapshot"] for row in normal_sheet_response.data["sheet_games"]])
+        self.assertIn("MSP", [row["game_name_snapshot"] for row in normal_sheet_response.data["sheet_games"]])
 
         second_agency = Agency.objects.create(name="Holiday Agency 2", code="holiday-agency-2")
         UserAgencyAssignment.objects.create(user=self.accountant, agency=second_agency, can_create=True)
@@ -219,8 +219,12 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.assertTrue(sheet_data["holiday_override_applied"])
         self.assertEqual(sheet_data["holiday_name_snapshot"], "Founders Day")
         self.assertEqual(sheet_data["holiday_source_date_snapshot"], self.source_date.isoformat())
+        self.assertEqual(len(names), 7)
+        self.assertIn("Double Chance", names)
+        dc = next(row for row in sheet_data["sheet_games"] if row["category_snapshot"] == "DOUBLE_CHANCE")
+        self.assertFalse(dc["is_holiday_override_snapshot"])
         self.assertIn("Bonanza", names)
-        self.assertNotIn("Monday Special", names)
+        self.assertNotIn("MSP", names)
         replacement = next(row for row in sheet_data["sheet_games"] if row["game_name_snapshot"] == "Bonanza")
         self.assertTrue(replacement["is_holiday_override_snapshot"])
         self.assertTrue(replacement["is_whole_day_snapshot"])
@@ -249,7 +253,7 @@ class HolidayGameOverrideAPITests(APITestCase):
         self.assertTrue(sheet.holiday_override_applied)
         self.assertEqual(before, after)
         self.assertFalse(later_sheet.holiday_override_applied)
-        self.assertTrue(later_sheet.sheet_games.filter(game_name_snapshot="Monday Special").exists())
+        self.assertTrue(later_sheet.sheet_games.filter(game_name_snapshot="MSP").exists())
 
     def test_used_override_cannot_be_edited(self):
         self.client.force_authenticate(self.admin)
@@ -265,3 +269,49 @@ class HolidayGameOverrideAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(HolidayGameOverride.objects.get(pk=override_data["id"]).holiday_name, "Founders Day")
+    def test_double_chance_cannot_be_holiday_normal_or_replacement(self):
+        self.client.force_authenticate(self.admin)
+        double = Game.objects.get(name="Double Chance")
+        for field in ("normal_game", "replacement_game"):
+            response = self.client.post("/api/holiday-game-overrides/", self.payload(**{field: double.pk}), format="json")
+            self.assertEqual(response.status_code, 400)
+            self.assertIn(field, response.data)
+
+    def test_holiday_excel_preview_and_confirmation_share_effective_categories(self):
+        from core.models import Person, TPMCode
+        from core.tests.test_daily_sheet_imports import workbook_upload
+        from core.holiday_overrides import effective_schedule_for_date
+        self.client.force_authenticate(self.admin)
+        override = self.client.post("/api/holiday-game-overrides/", self.payload(), format="json")
+        self.assertEqual(override.status_code, 201)
+        person = Person.objects.create(agency=self.agency, full_name="Holiday importer", agent_type="SUBAGENT")
+        code = TPMCode.objects.create(person=person, code="HOLIDAY-IMPORT")
+        schedule, _ = effective_schedule_for_date(self.holiday_date)
+        headers = [row.game.name for row in schedule]
+        preview = self.client.post("/api/daily-sheet-imports/preview/", {
+            "agency": self.agency.pk, "transaction_date": self.holiday_date.isoformat(),
+            "file": workbook_upload(headers=headers, raw_date=self.holiday_date,
+                rows=[{"sub": "HOLIDAY", "amounts": [10] * 7}], register_rows=[("HOLIDAY", code.code, person.full_name)]),
+        }, format="multipart")
+        self.assertEqual(preview.status_code, 201, preview.data)
+        self.assertEqual(preview.data["errors"], [])
+        confirm = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json")
+        self.assertEqual(confirm.status_code, 200, confirm.data)
+        sheet = DailySheet.objects.get(pk=confirm.data["daily_sheet"])
+        self.assertEqual(sheet.sheet_games.get(category_snapshot="GHANA").game_name_snapshot, "Bonanza")
+        self.assertTrue(sheet.sheet_games.filter(category_snapshot="DOUBLE_CHANCE").exists())
+
+    def test_legacy_override_game_reference_still_applies_without_rewriting_it(self):
+        from core.holiday_overrides import effective_schedule_for_date
+        from core.tests.test_game_categories import migrate_schedule
+        self.client.force_authenticate(self.admin)
+        response = self.client.post("/api/holiday-game-overrides/", self.payload(), format="json")
+        legacy = Game.objects.create(name="Monday Special")
+        HolidayGameOverride.objects.filter(pk=response.data["id"]).update(normal_game=legacy)
+        before = HolidayGameOverride.objects.values().get(pk=response.data["id"])
+        migrate_schedule()
+        rows, override = effective_schedule_for_date(self.holiday_date)
+        self.assertEqual([r.game.name for r in rows if r.category == "GHANA"], ["Bonanza"])
+        self.assertEqual(HolidayGameOverride.objects.values().get(pk=override.pk), before)
+        cancelled = self.client.post(f"/api/holiday-game-overrides/{override.pk}/cancel/", {"reason": "Cancelled holiday"}, format="json")
+        self.assertEqual(cancelled.status_code, 200, cancelled.data)

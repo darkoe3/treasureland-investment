@@ -160,6 +160,8 @@ def build_report(params, user, audit_action=AuditAction.REPORT_PREVIEWED):
                 game_columns[key] = {
                     "key": key,
                     "name": sheet_game.game_name_snapshot,
+                    "category": sheet_game.category_snapshot,
+                    "is_whole_day": sheet_game.is_whole_day_snapshot,
                     "display_order": sheet_game.display_order,
                     "first_date": sheet.transaction_date.isoformat(),
                 }

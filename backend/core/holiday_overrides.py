@@ -10,6 +10,7 @@ from .models import HolidayGameOverride, WeeklyGameSchedule
 class EffectiveScheduleEntry:
     id: int
     game: object
+    category: str
     is_whole_day: bool
     closing_time: time | None
     draw_time: time | None
@@ -34,6 +35,7 @@ def effective_schedule_for_date(transaction_date: date):
         EffectiveScheduleEntry(
             id=schedule.id,
             game=schedule.game,
+            category=schedule.category,
             is_whole_day=schedule.is_whole_day,
             closing_time=schedule.closing_time,
             draw_time=schedule.draw_time,
@@ -44,20 +46,28 @@ def effective_schedule_for_date(transaction_date: date):
     if not override:
         return entries, None
 
+    from .game_schedule import canonical_game_name
+
     normal_index = next(
         (
             index for index, entry in enumerate(entries)
-            if entry.game.id == override.normal_game_id and entry.is_whole_day
+            if canonical_game_name(entry.game.name) == canonical_game_name(override.normal_game.name) and entry.category == "GHANA"
         ),
         None,
     )
     if normal_index is None:
-        raise ValidationError({"holiday_override": "The configured normal Whole Day game is no longer scheduled for this date."})
+        raise ValidationError({"holiday_override": "The configured normal Ghana game is no longer scheduled for this date."})
 
+    source = next((row for row in WeeklyGameSchedule.objects.select_related("game").filter(
+        weekday=override.source_date.isoweekday(), category="GHANA", is_active=True, game__is_active=True,
+    ) if canonical_game_name(row.game.name) == canonical_game_name(override.replacement_game.name)), None)
+    if source is None:
+        raise ValidationError({"holiday_override": "The replacement must be an active Ghana game on the source weekday."})
     normal_entry = entries[normal_index]
     entries[normal_index] = EffectiveScheduleEntry(
         id=normal_entry.id,
-        game=override.replacement_game,
+        game=source.game,
+        category="GHANA",
         is_whole_day=True,
         closing_time=None,
         draw_time=None,

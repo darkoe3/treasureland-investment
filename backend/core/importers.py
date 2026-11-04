@@ -40,6 +40,8 @@ UNSUPPORTED_PARTS = (
 UNSUPPORTED_EXTENSIONS = (".exe", ".dll", ".js", ".jar", ".bat", ".cmd", ".ps1", ".scr", ".com")
 
 GAME_ALIASES = {
+    "lucky g": "Lucky Ghana",
+    "lucky ghana": "Lucky Ghana",
     "f/chance": "Fairchance",
     "fairchance": "Fairchance",
     "diamondq": "Diamond",
@@ -54,8 +56,8 @@ GAME_ALIASES = {
     "club master": "Club Master",
     "o6": "06",
     "06": "06",
-    "msp": "Monday Special",
-    "monday special": "Monday Special",
+    "msp": "MSP",
+    "monday special": "MSP",
 }
 
 
@@ -281,9 +283,9 @@ def registration_lookup(sheet, warnings, errors, known_sub_codes=()):
 def scheduled_games_for_date(transaction_date, existing_sheet):
     if existing_sheet:
         rows = existing_sheet.sheet_games.select_related("game").order_by("display_order", "id")
-        return {row.game_name_snapshot.lower(): row for row in rows}
+        return {normalize_game_name(row.game_name_snapshot).lower(): row for row in rows}
     schedules, _holiday_override = effective_schedule_for_date(transaction_date)
-    return {schedule.game.name.lower(): schedule for schedule in schedules}
+    return {normalize_game_name(schedule.game.name).lower(): schedule for schedule in schedules}
 
 
 def schedule_snapshot_for_date(transaction_date, existing_sheet):
@@ -292,6 +294,7 @@ def schedule_snapshot_for_date(transaction_date, existing_sheet):
         return [
             {
                 "game_name": row.game_name_snapshot,
+                "category": row.category_snapshot,
                 "is_whole_day": row.is_whole_day_snapshot,
                 "closing_time": row.closing_time_snapshot.isoformat() if row.closing_time_snapshot else None,
                 "draw_time": row.draw_time_snapshot.isoformat() if row.draw_time_snapshot else None,
@@ -303,6 +306,7 @@ def schedule_snapshot_for_date(transaction_date, existing_sheet):
     return [
         {
             "game_name": schedule.game.name,
+            "category": schedule.category,
             "is_whole_day": schedule.is_whole_day,
             "closing_time": schedule.closing_time.isoformat() if schedule.closing_time else None,
             "draw_time": schedule.draw_time.isoformat() if schedule.draw_time else None,
@@ -327,6 +331,7 @@ def build_game_columns(raw_sheet, scheduled_by_name, errors):
         if not scheduled:
             errors.append({"cell": f"{letter}3", "message": f"Game {header} is not scheduled for the selected date."})
             continue
+        header = getattr(scheduled, "game_name_snapshot", None) or scheduled.game.name
         if header.lower() in seen:
             errors.append({"cell": f"{letter}3", "message": f"Duplicate spreadsheet column maps to {header}."})
             continue

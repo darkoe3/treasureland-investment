@@ -1,5 +1,7 @@
 "use client";
 
+import { categoryLabel } from "../lib/game-schedule-operations";
+
 import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, Upload, XCircle } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -176,6 +178,7 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
           <section className="panel">
             <div className="panel-heading"><h2>Game Mapping</h2><span>{previewPayload.game_columns?.length || 0} columns</span></div>
             <div className="chip-wrap">
+              {(previewPayload.schedule_snapshot || []).map((game) => <span className="mini-chip" key={game.game_name}>{game.game_name}: {categoryLabel(game.category)}{game.is_whole_day ? " | Whole Day" : ""}</span>)}
               {(previewPayload.game_columns || []).map((column) => <span className="mini-chip" key={column.letter}>{column.letter}: {column.header} to {column.game_name}</span>)}
             </div>
           </section>

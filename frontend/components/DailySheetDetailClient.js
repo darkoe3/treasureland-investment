@@ -1,5 +1,7 @@
 "use client";
 
+import { categoryLabel } from "../lib/game-schedule-operations";
+
 import SheetSafetyControls from "./SheetSafetyControls";
 import Link from "next/link";
 import { CheckCircle2, RotateCcw, Save, Send, Undo2, XCircle } from "lucide-react";
@@ -184,6 +186,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
         {sheet.holiday_override_applied ? (
           <p className="holiday-override-notice" role="status">
             Holiday override: {sheet.holiday_replacement_game_name_snapshot} from {sheet.holiday_source_date_snapshot} is being sold for {sheet.holiday_name_snapshot}.
+            {sheet.sheet_games.some((game) => game.category_snapshot === "DOUBLE_CHANCE") ? " Double Chance remains available as a separate Whole Day game." : ""}
           </p>
         ) : null}
       </section>
@@ -219,7 +222,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
           {selected ? <p className="empty-state">{selected.person_name} / {selected.code} / {selected.agent_type === "SUBAGENT" ? "Sub-agent" : "Main Agent"}</p> : null}
           <div className="field-grid">
             {sheet.sheet_games.map((game) => (
-              <label className="field-group" key={game.id}>{game.game_name_snapshot}
+              <label className="field-group" key={game.id}>{game.game_name_snapshot}<small>{categoryLabel(game.category_snapshot)}{game.is_whole_day_snapshot ? " | Whole Day" : ""}</small>
                 <input type="number" step="0.01" min="0" value={gameSales[game.id] || ""} onChange={(event) => setSale(game.id, event.target.value)} disabled={!mayCreate} />
               </label>
             ))}
@@ -253,7 +256,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
         <p className="scroll-hint">Scroll the summary table horizontally to view all game columns.</p>
         <div className="table-wrap summary-table-wrap" tabIndex="0" role="region" aria-label="Daily Sheet Summary table with horizontal scrolling">
           <table className="summary-table" style={{ minWidth: `max(980px, ${520 + sheet.sheet_games.length * 132}px)` }}>
-            <thead><tr><th>No</th><th>Name</th><th>Sub-Agent Number</th><th>Terminal Number</th>{sheet.sheet_games.map((game) => <th key={game.id}>{game.game_name_snapshot}</th>)}<th>NET Sales</th><th>To Pay</th><th>Total</th><th></th></tr></thead>
+            <thead><tr><th>No</th><th>Name</th><th>Sub-Agent Number</th><th>Terminal Number</th>{sheet.sheet_games.map((game) => <th key={game.id}>{game.game_name_snapshot}<small className="game-abbreviation">{categoryLabel(game.category_snapshot)}{game.is_whole_day_snapshot ? " | Whole Day" : ""}</small></th>)}<th>NET Sales</th><th>To Pay</th><th>Total</th><th></th></tr></thead>
             <tbody>
               {!transactions.length ? <tr><td colSpan={8 + sheet.sheet_games.length} className="empty-cell">No transactions entered yet.</td></tr> : null}
               {transactions.map((txn, index) => (

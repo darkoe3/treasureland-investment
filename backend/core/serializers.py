@@ -591,6 +591,7 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
             "game_is_active",
             "weekday",
             "weekday_display",
+            "category",
             "is_whole_day",
             "closing_time",
             "draw_time",
@@ -619,6 +620,9 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
         weekday = attrs.get("weekday", getattr(self.instance, "weekday", None))
         is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
 
+        category = attrs.get("category", getattr(self.instance, "category", "TIMED"))
+        if is_whole_day != (category != "TIMED"):
+            raise serializers.ValidationError({"category": "Category and Whole Day status must agree."})
         if is_whole_day:
             if closing_time is not None or draw_time is not None:
                 raise serializers.ValidationError({"is_whole_day": "Whole Day schedules must not include times."})
@@ -686,16 +690,11 @@ class HolidayGameOverrideSerializer(serializers.ModelSerializer):
             instance is None or "holiday_date" in attrs or (is_active and not instance.is_active)
         ):
             raise serializers.ValidationError({"holiday_date": "Holiday date must be in the future."})
-        if normal_game and holiday_date and not WeeklyGameSchedule.objects.filter(
-            weekday=holiday_date.isoweekday(), game=normal_game, is_whole_day=True,
-            is_active=True, game__is_active=True,
-        ).exists():
-            raise serializers.ValidationError({"normal_game": "Select the active Whole Day game scheduled for the holiday date."})
-        if replacement_game and source_date and not WeeklyGameSchedule.objects.filter(
-            weekday=source_date.isoweekday(), game=replacement_game, is_whole_day=True,
-            is_active=True, game__is_active=True,
-        ).exists():
-            raise serializers.ValidationError({"replacement_game": "Select an active Whole Day game scheduled on the source date."})
+        from .game_schedule import is_ghana_game_on_weekday
+        if normal_game and holiday_date and not is_ghana_game_on_weekday(normal_game, holiday_date.isoweekday()):
+            raise serializers.ValidationError({"normal_game": "Select the active Ghana game scheduled for the holiday date."})
+        if replacement_game and source_date and not is_ghana_game_on_weekday(replacement_game, source_date.isoweekday()):
+            raise serializers.ValidationError({"replacement_game": "Select an active Ghana game scheduled on the source date."})
         if holiday_date and replacement_game and replacement_game != normal_game and WeeklyGameSchedule.objects.filter(
             weekday=holiday_date.isoweekday(), game=replacement_game,
             is_active=True, game__is_active=True,
@@ -726,6 +725,7 @@ class DailySheetGameSerializer(serializers.ModelSerializer):
             "daily_sheet",
             "game",
             "game_name_snapshot",
+            "category_snapshot",
             "is_whole_day_snapshot",
             "is_holiday_override_snapshot",
             "closing_time_snapshot",

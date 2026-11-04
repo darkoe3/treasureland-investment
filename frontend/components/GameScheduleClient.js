@@ -4,6 +4,7 @@ import { CalendarDays, Check, Edit2, Plus, Power, PowerOff, Save, X } from "luci
 import { useEffect, useMemo, useState } from "react";
 import { apiPath, clientRequest } from "../lib/client-api";
 import {
+  categoryLabel,
   emptyScheduleForm,
   formFromSchedule,
   groupScheduleByWeekday,
@@ -150,13 +151,11 @@ export default function GameScheduleClient({ user }) {
     try {
       const [year, month, day] = selectedDate.split("-").map(Number);
       const weekday = new Date(year, month - 1, day).getDay() || 7;
-      const path = target === "normal"
-        ? `/weekly-game-schedules/?weekday=${weekday}&active=true`
-        : `/games/for-date/?date=${selectedDate}`;
+      const path = `/weekly-game-schedules/?weekday=${weekday}&active=true`;
       const payload = await clientRequest(apiPath(path));
       setHolidayChoices((current) => ({
         ...current,
-        [target]: listFromSchedulePayload(payload).filter((entry) => entry.is_whole_day),
+        [target]: listFromSchedulePayload(payload).filter((entry) => entry.category === "GHANA"),
       }));
     } catch (error) {
       setState((current) => ({ ...current, error: error.message }));
@@ -269,10 +268,10 @@ export default function GameScheduleClient({ user }) {
             <section className="panel schedule-day" key={group.value}>
               <div className="panel-heading">
                 <h2>{group.label}</h2>
-                <span>{group.entries.filter((entry) => entry.is_active && entry.game_is_active !== false).length}/{group.value === 7 ? 5 : 6} active</span>
+                <span>{group.entries.filter((entry) => entry.is_active && entry.game_is_active !== false).length}/{group.value === 7 ? 6 : 7} active</span>
               </div>
-              {group.entries.filter((entry) => entry.is_active && entry.game_is_active !== false).length !== (group.value === 7 ? 5 : 6) ? (
-                <p className="form-error" role="alert">Expected {group.value === 7 ? 5 : 6} active games for {group.label}.</p>
+              {group.entries.filter((entry) => entry.is_active && entry.game_is_active !== false).length !== (group.value === 7 ? 6 : 7) ? (
+                <p className="form-error" role="alert">Expected {group.value === 7 ? 6 : 7} active games for {group.label}.</p>
               ) : null}
               <div className="table-wrap responsive-table">
                 <table className="schedule-table">
@@ -293,7 +292,7 @@ export default function GameScheduleClient({ user }) {
                     {group.entries.map((entry) => (
                       <tr key={entry.id}>
                         <td data-label="Order">{entry.display_order}</td>
-                        <td data-label="Game"><strong>{entry.game_name}</strong>{entry.game_name === "Monday Special" ? <small className="game-abbreviation">MSP</small> : null}</td>
+                        <td data-label="Game"><strong>{entry.game_name}</strong><small className="game-abbreviation">{categoryLabel(entry.category)}</small></td>
                         <td data-label="Mode">{scheduleMode(entry)}</td>
                         <td data-label="Closing">{entry.is_whole_day ? "Whole Day" : formatTime(entry.closing_time)}</td>
                         <td data-label="Draw">{entry.is_whole_day ? "Whole Day" : formatTime(entry.draw_time)}</td>
@@ -354,6 +353,7 @@ export default function GameScheduleClient({ user }) {
                 <span>Mode</span>
                 <ModeToggle value={form.is_whole_day} onChange={(isWholeDay) => setForm(withScheduleMode(form, isWholeDay))} />
               </div>
+              {form.is_whole_day ? <label className="field-group">Category<select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}><option value="GHANA">Ghana Game</option><option value="DOUBLE_CHANCE">Double Chance</option></select></label> : null}
               {!form.is_whole_day ? (
                 <>
                   <label className="field-group">Closing Time
@@ -380,7 +380,7 @@ export default function GameScheduleClient({ user }) {
         <div className="panel-heading">
           <div>
             <h2>Holiday Overrides</h2>
-            <p className="empty-state">Date-specific Ghana Whole Day replacements; the weekly schedule remains unchanged.</p>
+            <p className="empty-state">Date-specific Ghana Whole Day replacements; Double Chance and timed games remain available.</p>
           </div>
         </div>
         <div className="table-wrap responsive-table">
@@ -414,9 +414,9 @@ export default function GameScheduleClient({ user }) {
             <div className="field-grid">
               <label className="field-group">Holiday date<input type="date" required value={holidayForm.holiday_date} onChange={(event) => changeHolidayField("holiday_date", event.target.value)} /></label>
               <label className="field-group">Holiday name<input required maxLength="160" value={holidayForm.holiday_name} onChange={(event) => changeHolidayField("holiday_name", event.target.value)} /></label>
-              <label className="field-group">Normal scheduled Whole Day game<select required value={holidayForm.normal_game} onChange={(event) => changeHolidayField("normal_game", event.target.value)}><option value="">Select game</option>{holidayChoices.normal.map((game) => <option key={game.game} value={game.game}>{game.game_name}</option>)}</select></label>
+              <label className="field-group">Normal scheduled Ghana game<select required value={holidayForm.normal_game} onChange={(event) => changeHolidayField("normal_game", event.target.value)}><option value="">Select game</option>{holidayChoices.normal.map((game) => <option key={game.game} value={game.game}>{game.game_name}</option>)}</select></label>
               <label className="field-group">Source date<input type="date" required max={localDateString()} value={holidayForm.source_date} onChange={(event) => changeHolidayField("source_date", event.target.value)} /></label>
-              <label className="field-group">Previous Whole Day game<select required value={holidayForm.replacement_game} onChange={(event) => changeHolidayField("replacement_game", event.target.value)}><option value="">Select game from source date</option>{holidayChoices.source.map((game) => <option key={game.game} value={game.game}>{game.game_name}</option>)}</select></label>
+              <label className="field-group">Previous Ghana game<select required value={holidayForm.replacement_game} onChange={(event) => changeHolidayField("replacement_game", event.target.value)}><option value="">Select game from source date</option>{holidayChoices.source.map((game) => <option key={game.game} value={game.game}>{game.game_name}</option>)}</select></label>
               <label className="field-group">Notes<textarea value={holidayForm.notes} onChange={(event) => changeHolidayField("notes", event.target.value)} rows="2" /></label>
               <label className="switch-row strong"><input type="checkbox" checked={holidayForm.is_active} onChange={(event) => changeHolidayField("is_active", event.target.checked)} />Active</label>
             </div>

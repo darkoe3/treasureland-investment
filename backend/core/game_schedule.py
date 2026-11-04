@@ -11,6 +11,7 @@ class ApprovedScheduleEntry:
     weekday: int
     game_name: str
     display_order: int
+    category: str = "TIMED"
     is_whole_day: bool = False
     closing_time: time | None = None
     draw_time: time | None = None
@@ -31,11 +32,12 @@ def timed(weekday, game_name, display_order, closing_time, draw_time):
     )
 
 
-def whole_day(weekday, game_name, display_order):
+def whole_day(weekday, game_name, display_order, category="GHANA"):
     return ApprovedScheduleEntry(
         weekday=weekday,
         game_name=game_name,
         display_order=display_order,
+        category=category,
         is_whole_day=True,
     )
 
@@ -43,13 +45,13 @@ def whole_day(weekday, game_name, display_order):
 APPROVED_WEEKLY_SCHEDULE = [
     timed(Weekday.MONDAY, "Peoples", 1, "12:30", "12:45"),
     timed(Weekday.MONDAY, "Bingo", 2, "15:30", "15:45"),
-    whole_day(Weekday.MONDAY, "Monday Special", 3),
+    whole_day(Weekday.MONDAY, "MSP", 3),
     timed(Weekday.MONDAY, "Metro", 4, "19:30", "19:45"),
     timed(Weekday.MONDAY, "International", 5, "22:30", "22:45"),
     timed(Weekday.MONDAY, "Diamond", 6, "09:00", "21:45"),
     timed(Weekday.TUESDAY, "06", 1, "12:30", "12:45"),
     timed(Weekday.TUESDAY, "Jackpot", 2, "15:30", "15:45"),
-    whole_day(Weekday.TUESDAY, "Lucky G", 3),
+    whole_day(Weekday.TUESDAY, "Lucky Ghana", 3),
     timed(Weekday.TUESDAY, "Club Master", 4, "19:30", "19:45"),
     timed(Weekday.TUESDAY, "Super", 5, "22:30", "22:45"),
     timed(Weekday.TUESDAY, "Gold", 6, "09:00", "09:45"),
@@ -85,6 +87,10 @@ APPROVED_WEEKLY_SCHEDULE = [
 ]
 
 
+for weekday in Weekday.values:
+    APPROVED_WEEKLY_SCHEDULE.append(whole_day(weekday, "Double Chance", 5 if weekday == 7 else 3, "DOUBLE_CHANCE"))
+APPROVED_WEEKLY_SCHEDULE.sort(key=lambda entry: (entry.weekday, entry.display_order))
+
 APPROVED_WEEKLY_GAME_NAMES = {
     weekday: [entry.game_name for entry in APPROVED_WEEKLY_SCHEDULE if entry.weekday == weekday]
     for weekday in Weekday.values
@@ -92,8 +98,10 @@ APPROVED_WEEKLY_GAME_NAMES = {
 
 
 GAME_NAME_ALIASES = {
-    "msp": "Monday Special",
-    "monday special": "Monday Special",
+    "lucky g": "Lucky Ghana",
+    "lucky ghana": "Lucky Ghana",
+    "msp": "MSP",
+    "monday special": "MSP",
     "mk ii": "Mark II",
     "mark ii": "Mark II",
     "c/master": "Club Master",
@@ -118,40 +126,18 @@ def equivalent_game_names(name):
 
 def get_or_create_canonical_game(name):
     canonical = canonical_game_name(name)
-    exact = Game.objects.filter(name=canonical).first()
-    alias = None
-    for alias_name in equivalent_game_names(canonical):
-        if alias_name == canonical:
-            continue
-        alias_query = Game.objects.filter(name__iexact=alias_name)
-        if exact:
-            alias_query = alias_query.exclude(pk=exact.pk)
-        alias = alias_query.first()
-        if alias:
-            break
-
-    if exact:
-        if alias:
-            WeeklyGameSchedule.objects.filter(game=alias).update(game=exact)
-            alias.is_active = False
-            alias.save(update_fields=["is_active", "updated_at"])
-        if not exact.is_active:
-            exact.is_active = True
-            exact.save(update_fields=["is_active", "updated_at"])
-        return exact
-
-    if alias:
-        alias.name = canonical
-        alias.is_active = True
-        alias.save(update_fields=["name", "is_active", "updated_at"])
-        return alias
-
-    return Game.objects.create(name=canonical, is_active=True)
+    # Create canonical games without renaming historical game identities.
+    game, _ = Game.objects.get_or_create(name=canonical, defaults={"is_active": True})
+    if not game.is_active:
+        game.is_active = True
+        game.save(update_fields=["is_active", "updated_at"])
+    return game
 
 
 def entry_defaults(entry):
     return {
         "display_order": entry.display_order,
+        "category": entry.category,
         "is_whole_day": entry.is_whole_day,
         "closing_time": None if entry.is_whole_day else entry.closing_time,
         "draw_time": None if entry.is_whole_day else entry.draw_time,
@@ -194,8 +180,8 @@ def apply_approved_weekly_game_schedule():
 
 def validate_active_weekly_game_schedule():
     expected_whole_day = {
-        Weekday.MONDAY: "Monday Special",
-        Weekday.TUESDAY: "Lucky G",
+        Weekday.MONDAY: "MSP",
+        Weekday.TUESDAY: "Lucky Ghana",
         Weekday.WEDNESDAY: "Midweek",
         Weekday.THURSDAY: "Fortune",
         Weekday.FRIDAY: "Bonanza",
@@ -209,12 +195,14 @@ def validate_active_weekly_game_schedule():
                 weekday=weekday, is_active=True, game__is_active=True,
             ).select_related("game")
         )
-        expected_count = 5 if weekday == Weekday.SUNDAY else 6
-        whole_day_entries = [entry for entry in entries if entry.is_whole_day]
+        expected_count = 6 if weekday == Weekday.SUNDAY else 7
+        whole_day_entries = [entry for entry in entries if entry.category == "GHANA"]
         if len(entries) != expected_count:
             errors.append(f"{Weekday(weekday).label} must have {expected_count} active games; found {len(entries)}.")
         if len(whole_day_entries) != 1 or whole_day_entries[0].game.name != whole_day_name:
-            errors.append(f"{Weekday(weekday).label} must have exactly one Whole Day game: {whole_day_name}.")
+            errors.append(f"{Weekday(weekday).label} must have exactly one Ghana game: {whole_day_name}.")
+        if len([entry for entry in entries if entry.category == "DOUBLE_CHANCE" and entry.game.name == "Double Chance"]) != 1:
+            errors.append(f"{weekday} must have one Double Chance game.")
         for entry in entries:
             if entry.is_whole_day:
                 if entry.closing_time is not None or entry.draw_time is not None:
@@ -223,3 +211,12 @@ def validate_active_weekly_game_schedule():
                 errors.append(f"{Weekday(weekday).label} {entry.game.name} must have valid timed-game times.")
     if errors:
         raise ValueError("Invalid active weekly game schedule: " + " ".join(errors))
+
+
+def is_ghana_game_on_weekday(game, weekday):
+    # Legacy override references keep their original IDs; resolve only against
+    # explicitly classified current Ghana schedules, never Whole Day status.
+    return WeeklyGameSchedule.objects.filter(
+        weekday=weekday, game__name=canonical_game_name(game.name),
+        category="GHANA", is_active=True, game__is_active=True,
+    ).exists()

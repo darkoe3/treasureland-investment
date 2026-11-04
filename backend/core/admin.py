@@ -96,8 +96,8 @@ class GameAdmin(admin.ModelAdmin):
 
 @admin.register(WeeklyGameSchedule)
 class WeeklyGameScheduleAdmin(admin.ModelAdmin):
-    list_display = ("game", "weekday", "is_whole_day", "closing_time", "draw_time", "display_order", "is_active")
-    list_filter = ("weekday", "is_whole_day", "is_active", "game")
+    list_display = ("game", "weekday", "category", "is_whole_day", "closing_time", "draw_time", "display_order", "is_active")
+    list_filter = ("weekday", "category", "is_whole_day", "is_active", "game")
     search_fields = ("game__name",)
     ordering = ("weekday", "display_order", "id")
 
@@ -105,7 +105,7 @@ class WeeklyGameScheduleAdmin(admin.ModelAdmin):
 class DailySheetGameInline(admin.TabularInline):
     model = DailySheetGame
     extra = 0
-    readonly_fields = ("game_name_snapshot", "is_whole_day_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
+    readonly_fields = ("game_name_snapshot", "category_snapshot", "is_whole_day_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
 
 
 @admin.register(DailySheet)
@@ -144,7 +144,7 @@ class DailySheetAdmin(admin.ModelAdmin):
 
 @admin.register(DailySheetGame)
 class DailySheetGameAdmin(admin.ModelAdmin):
-    list_display = ("daily_sheet", "game_name_snapshot", "is_whole_day_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
+    list_display = ("daily_sheet", "game_name_snapshot", "category_snapshot", "is_whole_day_snapshot", "closing_time_snapshot", "draw_time_snapshot", "display_order", "created_at")
     list_filter = ("daily_sheet__agency", "game")
     search_fields = ("game_name_snapshot", "daily_sheet__agency__name")
     date_hierarchy = "created_at"

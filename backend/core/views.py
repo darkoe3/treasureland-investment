@@ -1417,6 +1417,7 @@ class GameViewSet(BaseSearchViewSet):
                 "game_name": schedule.game.name,
                 "weekday": selected_date.isoweekday(),
                 "weekday_display": selected_date.strftime("%A"),
+                "category": schedule.category,
                 "is_whole_day": schedule.is_whole_day,
                 "closing_time": schedule.closing_time,
                 "draw_time": schedule.draw_time,
@@ -1452,6 +1453,7 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
             "game": schedule.game_id,
             "game_name": schedule.game.name,
             "weekday": schedule.weekday,
+            "category": schedule.category,
             "is_whole_day": schedule.is_whole_day,
             "closing_time": schedule.closing_time,
             "draw_time": schedule.draw_time,
@@ -1611,34 +1613,14 @@ class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet
         }
 
     def _current_schedule_snapshot(self, transaction_date):
-        schedules = (
-            WeeklyGameSchedule.objects.select_for_update()
-            .select_related("game")
-            .filter(weekday=transaction_date.isoweekday(), is_active=True, game__is_active=True)
-            .order_by("display_order", "id")
-        )
-        return [
-            {
-                "game_name": schedule.game.name,
-                "is_whole_day": schedule.is_whole_day,
-                "closing_time": schedule.closing_time.isoformat() if schedule.closing_time else None,
-                "draw_time": schedule.draw_time.isoformat() if schedule.draw_time else None,
-                "display_order": schedule.display_order,
-            }
-            for schedule in schedules
-        ]
+        from .importers import schedule_snapshot_for_date
+        list(WeeklyGameSchedule.objects.select_for_update().filter(weekday=transaction_date.isoweekday()))
+        return schedule_snapshot_for_date(transaction_date, None)
 
     def _sheet_schedule_snapshot(self, sheet):
-        return [
-            {
-                "game_name": game.game_name_snapshot,
-                "is_whole_day": game.is_whole_day_snapshot,
-                "closing_time": game.closing_time_snapshot.isoformat() if game.closing_time_snapshot else None,
-                "draw_time": game.draw_time_snapshot.isoformat() if game.draw_time_snapshot else None,
-                "display_order": game.display_order,
-            }
-            for game in sheet.sheet_games.select_for_update().order_by("display_order", "id")
-        ]
+        from .importers import schedule_snapshot_for_date
+        list(sheet.sheet_games.select_for_update())
+        return schedule_snapshot_for_date(sheet.transaction_date, sheet)
 
     def _agency_from_request(self, request):
         request_data = request.query_params if request.method == "GET" else request.data
@@ -1774,7 +1756,12 @@ class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet
             if current_sheet:
                 if not current_sheet.is_accountant_editable:
                     raise ValidationError({"daily_sheet": "Submitted or approved sheets cannot be overwritten."})
-                if self._sheet_schedule_snapshot(current_sheet) != batch.preview_payload.get("schedule_snapshot", []):
+                current_snapshot = self._sheet_schedule_snapshot(current_sheet)
+                accepted_snapshot = batch.preview_payload.get("schedule_snapshot", [])
+                # Pre-category previews of historical sheets remain confirmable.
+                if accepted_snapshot and all("category" not in row for row in accepted_snapshot):
+                    current_snapshot = [{key: value for key, value in row.items() if key != "category"} for row in current_snapshot]
+                if current_snapshot != accepted_snapshot:
                     raise ValidationError({"daily_sheet": "Daily sheet game snapshots changed after preview. Create a fresh preview."})
                 current_count = current_sheet.transactions.select_for_update().count()
                 if current_count != batch.existing_transaction_count:

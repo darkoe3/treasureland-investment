@@ -285,7 +285,7 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(confirmed.status_code, status.HTTP_200_OK, confirmed.data)
         transactions = TPMDailyTransaction.objects.filter(daily_sheet_id=confirmed.data["daily_sheet"])
         self.assertEqual(transactions.count(), 2)
-        self.assertEqual(TransactionGameSale.objects.filter(transaction__in=transactions).count(), 12)
+        self.assertEqual(TransactionGameSale.objects.filter(transaction__in=transactions).count(), 14)
         first = transactions.get(tpm_code=self.tpm)
         self.assertEqual(first.person_id_snapshot, self.person.id)
         self.assertEqual(first.tpm_code_snapshot, self.tpm.code)
@@ -323,7 +323,7 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(confirmed.json()["imported_rows"], 8)
         sheet = DailySheet.objects.get(pk=confirmed.data["daily_sheet"])
         self.assertEqual(sheet.transactions.count(), 8)
-        self.assertEqual(TransactionGameSale.objects.filter(transaction__daily_sheet=sheet).count(), 48)
+        self.assertEqual(TransactionGameSale.objects.filter(transaction__daily_sheet=sheet).count(), 56)
         self.assertEqual(str(sheet.totals()["gross_sales"]), "1948.00")
         self.assertEqual(str(sheet.totals()["total_to_pay"]), "1850.60")
         for txn in sheet.transactions.select_related("tpm_code__person"):
@@ -484,3 +484,40 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(confirmed.status_code, status.HTTP_200_OK)
         audit = AuditLog.objects.filter(action=AuditAction.IMPORT_PREVIEWED).latest("created_at")
         self.assertNotIn("rows", audit.new_values)
+
+    def test_every_weekday_preview_confirmation_keeps_both_whole_day_games(self):
+        from core.game_schedule import APPROVED_WEEKLY_GAME_NAMES
+        from core.importers import schedule_snapshot_for_date
+        self.client.force_authenticate(self.accountant)
+        for weekday, headers in APPROVED_WEEKLY_GAME_NAMES.items():
+            dt = date(2026, 8, 24) + timedelta(days=weekday - 1)
+            with self.subTest(weekday=weekday):
+                preview = self.client.post("/api/daily-sheet-imports/preview/", {
+                    "agency": self.agency.pk, "transaction_date": dt.isoformat(),
+                    "file": workbook_upload(headers=headers, raw_date=dt,
+                        rows=[{"sub": 469001, "amounts": [10] * len(headers)}],
+                        register_rows=[(469001, "513670124", "System Name")]),
+                }, format="multipart")
+                self.assertEqual(preview.status_code, 201, preview.data)
+                self.assertEqual(preview.data["errors"], [])
+                fingerprint = preview.data["preview_payload"]["schedule_snapshot"]
+                self.assertEqual(len(fingerprint), 6 if weekday == 7 else 7)
+                self.assertEqual({r["category"] for r in fingerprint if r["is_whole_day"]}, {"GHANA", "DOUBLE_CHANCE"})
+                confirm = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format="json")
+                self.assertEqual(confirm.status_code, 200, confirm.data)
+                sheet = DailySheet.objects.get(pk=confirm.data["daily_sheet"])
+                self.assertEqual(schedule_snapshot_for_date(dt, sheet), fingerprint)
+                self.assertEqual(sheet.transactions.get().net_sales, len(headers) * 10)
+
+    def test_legacy_accepted_preview_of_existing_sheet_still_confirms(self):
+        sheet = DailySheet.objects.create(agency=self.agency, transaction_date=date(2026, 8, 27), created_by=self.admin)
+        sheet.copy_weekday_games()
+        sheet.sheet_games.update(category_snapshot=None)
+        preview = self.preview()
+        batch = DailySheetImportBatch.objects.get(pk=preview.data["id"])
+        for row in batch.preview_payload["schedule_snapshot"]:
+            row.pop("category")
+        batch.save(update_fields=["preview_payload"])
+        confirm = self.client.post(f"/api/daily-sheet-imports/{batch.pk}/confirm/", {}, format="json")
+        self.assertEqual(confirm.status_code, 200, confirm.data)
+        self.assertFalse(sheet.sheet_games.exclude(category_snapshot=None).exists())

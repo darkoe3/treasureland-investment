@@ -69,7 +69,7 @@ class ModelTests(TestCase):
 
         self.assertEqual(first_counts, second_counts)
         self.assertEqual(first_counts[0], 5)
-        self.assertEqual(first_counts[2], 41)
+        self.assertEqual(first_counts[2], 48)
 
 
 class APIPermissionTests(APITestCase):

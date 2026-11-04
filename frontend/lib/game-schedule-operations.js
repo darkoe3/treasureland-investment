@@ -8,6 +8,10 @@ export const WEEKDAYS = [
   { value: 7, label: "Sunday" },
 ];
 
+export function categoryLabel(category) {
+  return { TIMED: "Timed", GHANA: "Ghana Game", DOUBLE_CHANCE: "Double Chance" }[category] || "";
+}
+
 export function scheduleMode(entry) {
   return entry?.is_whole_day ? "Whole Day" : "Timed";
 }
@@ -36,6 +40,7 @@ export function emptyScheduleForm() {
     game: "",
     weekday: "1",
     display_order: "1",
+    category: "TIMED",
     is_whole_day: false,
     closing_time: "",
     draw_time: "",
@@ -49,6 +54,7 @@ export function formFromSchedule(entry) {
     game: String(entry.game),
     weekday: String(entry.weekday),
     display_order: String(entry.display_order),
+    category: entry.category,
     is_whole_day: Boolean(entry.is_whole_day),
     closing_time: entry.closing_time || "",
     draw_time: entry.draw_time || "",
@@ -59,6 +65,7 @@ export function formFromSchedule(entry) {
 export function withScheduleMode(form, isWholeDay) {
   return {
     ...form,
+    category: isWholeDay ? (form.category === "DOUBLE_CHANCE" ? "DOUBLE_CHANCE" : "GHANA") : "TIMED",
     is_whole_day: isWholeDay,
     closing_time: isWholeDay ? "" : form.closing_time,
     draw_time: isWholeDay ? "" : form.draw_time,
@@ -93,6 +100,7 @@ export function schedulePayload(form) {
     game: Number(form.game),
     weekday: Number(form.weekday),
     display_order: Number(form.display_order),
+    category: isWholeDay ? (form.category === "DOUBLE_CHANCE" ? "DOUBLE_CHANCE" : "GHANA") : "TIMED",
     is_whole_day: isWholeDay,
     closing_time: isWholeDay ? null : form.closing_time,
     draw_time: isWholeDay ? null : form.draw_time,

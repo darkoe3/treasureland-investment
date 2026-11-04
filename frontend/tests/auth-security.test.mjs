@@ -585,6 +585,7 @@ test("weekly schedule Timed and Whole Day form validation is deterministic", () 
     game: 4,
     weekday: 1,
     display_order: 1,
+    category: "TIMED",
     is_whole_day: false,
     closing_time: "12:30",
     draw_time: "12:45",
@@ -623,12 +624,12 @@ test("holiday overrides use controlled date-specific whole-day choices and role-
   const dailySheet = await file("components/DailySheetDetailClient.js");
 
   assert.match(component, /holiday-game-overrides/);
-  assert.match(component, /games\/for-date/);
-  assert.match(component, /filter\(\(entry\) => entry\.is_whole_day\)/);
+  assert.match(component, /weekly-game-schedules/);
+  assert.match(component, /filter\(\(entry\) => entry\.category === "GHANA"\)/);
   assert.match(component, /canMutate = user\.role === "SUPER_ADMIN"/);
   assert.match(component, /Holiday Overrides/);
   assert.match(component, /Expected .* active games/);
-  assert.match(component, /entry\.game_name === "Monday Special"/);
+  assert.match(component, /categoryLabel\(entry\.category\)/);
   assert.match(dailySheet, /Holiday override: \{sheet\.holiday_replacement_game_name_snapshot\} from \{sheet\.holiday_source_date_snapshot\} is being sold for \{sheet\.holiday_name_snapshot\}/);
 });
 

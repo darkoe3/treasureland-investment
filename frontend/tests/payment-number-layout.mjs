@@ -1,8 +1,7 @@
+import { executeChromium } from "./chromium-viewport.mjs";
 // Optional real Chromium layout and keyboard-focus checks with synthetic data only.
 // Build first, then set CHROME_HEADLESS_PATH to a local Chromium executable.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdtemp, readFile, readdir, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +21,7 @@ const chunks = new URL("../.next/static/chunks/", import.meta.url);
 const css = (await Promise.all((await readdir(chunks)).filter((name) => name.endsWith(".css")).map((name) => readFile(new URL(name, chunks), "utf8")))).join("\n");
 const row = { id: 1, payer: 1, payer_name: "Long payer name for keyboard and mobile layout verification", sub_agent_number: "S".repeat(80), terminal_number: "T".repeat(80), agency: 1, agency_name: "Agency", is_active: true, selectable: true, outstanding_balance: "123456789.00", open_obligation_count: 100 };
 const folder = await mkdtemp(join(tmpdir(), "payment-number-layout-"));
-const execute = promisify(execFile);
+const execute = executeChromium;
 for (const mode of ["search", "quick", "success"]) {
   let index = 0;
   const search = mode === "search" ? "SEARCH" : "NONE";

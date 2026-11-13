@@ -77,7 +77,7 @@ function Navigation({ items, pathname, onNavigate }) {
 export default function DashboardShell({ user, children }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  const items = useMemo(() => (user.role === "SUPER_ADMIN" ? superAdminItems : accountantItems(user)), [user]);
+  const items = useMemo(() => [...(user.role === "SUPER_ADMIN" ? superAdminItems : accountantItems(user)), { label: "My Profile", href: "/dashboard/profile", icon: Users }], [user]);
   const pageTitle = titleFromPath(pathname);
 
   return (
@@ -111,10 +111,10 @@ export default function DashboardShell({ user, children }) {
             <h1>{pageTitle}</h1>
           </div>
           <div className="user-cluster">
-            <div className="user-chip">
+            <Link className="user-chip" href="/dashboard/profile" aria-label="My Profile">
               <span>{user.full_name}</span>
               <small>{user.role === "SUPER_ADMIN" ? "Super Admin" : "Accountant"}</small>
-            </div>
+            </Link>
             <LogoutButton />
           </div>
         </header>

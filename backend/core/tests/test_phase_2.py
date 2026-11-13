@@ -374,11 +374,10 @@ class Phase2APITests(Phase2Mixin, APITestCase):
         self.assertEqual(log.old_values["incoming_funds"], "142500.00")
         self.assertEqual(log.new_values["incoming_funds"], "1.00")
         visible = self.client.get("/api/audit-logs/")
-        self.assertEqual(visible.status_code, status.HTTP_200_OK)
+        self.assertEqual(visible.status_code, status.HTTP_403_FORBIDDEN)
         self.client.force_authenticate(self.other_accountant)
         hidden = self.client.get("/api/audit-logs/")
-        data = hidden.data["results"] if "results" in hidden.data else hidden.data
-        self.assertEqual(len(data), 0)
+        self.assertEqual(hidden.status_code, status.HTTP_403_FORBIDDEN)
         self.client.force_authenticate(self.super_admin)
         all_logs = self.client.get("/api/audit-logs/")
         data = all_logs.data["results"] if "results" in all_logs.data else all_logs.data

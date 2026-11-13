@@ -67,7 +67,6 @@ from .serializers import (
     AccountantSerializer,
     AccountantSetAgenciesSerializer,
     AccountantUpdateSerializer,
-    AuditLogSerializer,
     CurrentUserSerializer,
     DailySheetGameSerializer,
     DailySheetImportBatchSerializer,
@@ -135,9 +134,14 @@ def logout_view(request):
     if not refresh_token:
         return Response({"detail": "Refresh token is required."}, status=status.HTTP_400_BAD_REQUEST)
     try:
-        RefreshToken(refresh_token).blacklist()
+        token = RefreshToken(refresh_token)
+        if str(token["user_id"]) != str(request.user.pk):
+            return Response({"detail": "Invalid refresh token."}, status=400)
+        token.blacklist()
     except TokenError:
         return Response({"detail": "Invalid or expired refresh token."}, status=status.HTTP_400_BAD_REQUEST)
+    from .audit_profile import record_event
+    record_event(request.user, "LOGOUT")
     return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -269,6 +273,14 @@ def accessible_agency_ids(user, flag=None):
 def log_audit(user, agency, action, model_name, object_id, old_values=None, new_values=None, description="", daily_sheet=None):
     def clean(values):
         return {key: json_safe_value(value) for key, value in (values or {}).items()}
+
+    if model_name == "User":
+        from .audit_profile import safe_metadata
+        changed = sorted(set(old_values or {}) | set(new_values or {}))
+        old_values = safe_metadata(old_values)
+        new_values = safe_metadata(new_values)
+        new_values["changed_fields"] = changed
+        description = action.replace("_", " ").capitalize()
 
     AuditLog.objects.create(
         user=user,
@@ -406,8 +418,20 @@ class UserAgencyAssignmentViewSet(BaseSearchViewSet):
             return queryset
         return queryset.filter(user=self.request.user)
 
+    @transaction.atomic
     def perform_create(self, serializer):
-        serializer.save(assigned_by=self.request.user)
+        assignment = serializer.save(assigned_by=self.request.user)
+        log_audit(self.request.user, assignment.agency, "AGENCY_ASSIGNMENT_CREATED", "UserAgencyAssignment", assignment.pk, new_values={"actor_id": assignment.user_id, "agency_id": assignment.agency_id})
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        assignment = serializer.save()
+        log_audit(self.request.user, assignment.agency, "AGENCY_ASSIGNMENT_UPDATED", "UserAgencyAssignment", assignment.pk, new_values={"actor_id": assignment.user_id, "agency_id": assignment.agency_id})
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        log_audit(self.request.user, instance.agency, "AGENCY_ASSIGNMENT_REMOVED", "UserAgencyAssignment", instance.pk, new_values={"actor_id": instance.user_id, "agency_id": instance.agency_id})
+        instance.delete()
 
 
 class AccountantViewSet(BaseSearchViewSet):
@@ -1880,6 +1904,16 @@ class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet
 
 
 class DailySheetViewSet(BaseSearchViewSet):
+    @action(detail=True, methods=["get"])
+    def history(self, request, pk=None):
+        from .audit_profile import SafeAuditSerializer, AuditPagination
+        sheet = self.get_object()
+        if not request.user.is_super_admin and not request.user.agency_assignments.filter(agency=sheet.agency, can_view_history=True).exists():
+            raise PermissionDenied("History permission is required.")
+        events = AuditLog.objects.filter(daily_sheet=sheet).select_related("user", "agency").exclude(model_name__in=["TerminalNumber", "TerminalImportBatch"])
+        paginator = AuditPagination()
+        return paginator.get_paginated_response(SafeAuditSerializer(paginator.paginate_queryset(events, request), many=True).data)
+
     serializer_class = DailySheetSerializer
     permission_classes = [IsAuthenticated]
     @action(detail=False, methods=["get"], url_path="commission-policy")
@@ -2225,21 +2259,3 @@ class OmittedTerminalViewSet(SheetChildWriteLockMixin, BaseSearchViewSet):
         instance.is_active = False
         instance.save(update_fields=["is_active", "updated_at"])
         log_audit(self.request.user, sheet.agency, AuditAction.OMITTED_TERMINAL_REMOVED, "OmittedTerminal", object_id, old_values=old_values, daily_sheet=sheet)
-
-
-class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = AuditLogSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        queryset = AuditLog.objects.select_related("user", "agency", "daily_sheet")
-        user = self.request.user
-        if user.role != UserRole.SUPER_ADMIN:
-            queryset = queryset.filter(agency__user_assignments__user=user, agency__user_assignments__can_view_history=True).exclude(model_name__in=["TerminalNumber", "TerminalImportBatch"]).distinct()
-        agency = self.request.query_params.get("agency")
-        daily_sheet = self.request.query_params.get("daily_sheet")
-        if agency:
-            queryset = queryset.filter(agency_id=agency)
-        if daily_sheet:
-            queryset = queryset.filter(daily_sheet_id=daily_sheet)
-        return queryset

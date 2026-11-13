@@ -1,11 +1,10 @@
+import { executeChromium } from "./chromium-viewport.mjs";
 // Run after npm run build, with CHROME_HEADLESS_PATH pointing to local Chromium.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { mkdtemp, readFile, readdir, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { harness } from "./agency-management.test.mjs";
 
 const chrome = process.env.CHROME_HEADLESS_PATH;
@@ -13,7 +12,7 @@ if (!chrome) throw new Error("Set CHROME_HEADLESS_PATH to an installed Chromium 
 const chunks = new URL("../.next/static/chunks/", import.meta.url);
 const css = (await Promise.all((await readdir(chunks)).filter((name) => name.endsWith(".css")).map((name) => readFile(new URL(name, chunks), "utf8")))).join("\n");
 const folder = await mkdtemp(join(tmpdir(), "agency-layout-"));
-const execute = promisify(execFile);
+const execute = executeChromium;
 for (const mode of ["list", "create", "edit", "deactivate", "reactivate"]) {
   const row = { id: 1, name: "A".repeat(120), code: "B".repeat(40), is_active: true, counts: { editable_daily_sheets: 2 } };
   const ui = harness({ editor: mode === "list" ? null : { mode, row, impact: row.counts } });

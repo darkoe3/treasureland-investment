@@ -44,7 +44,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
       clientRequest(apiPath(`/tpm-daily-transactions/?daily_sheet=${sheet.id}`)),
       clientRequest(apiPath(`/omitted-terminals/?daily_sheet=${sheet.id}`)),
       clientRequest(apiPath(`/people/?agency=${sheet.agency}`)).catch(() => people),
-      clientRequest(apiPath(`/audit-logs/?daily_sheet=${sheet.id}`)).catch(() => []),
+      clientRequest(apiPath(`/daily-sheets/${sheet.id}/history/`)).catch(() => []),
     ]);
     setSheet(sheetPayload);
     setTransactions(listFromPayload(txnPayload));
@@ -344,7 +344,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
           <div className="list-stack">
             {audits.slice(0, 8).map((item) => (
               <div className="list-row" key={item.id}>
-                <span><strong>{item.action}</strong><br />{item.user_email} / {new Date(item.created_at).toLocaleString()}</span>
+                <span><strong>{item.action}</strong><br />{item.actor} / {new Date(item.created_at).toLocaleString()}</span>
               </div>
             ))}
             {!audits.length ? <p className="empty-state">No permitted audit entries are available for this sheet.</p> : null}

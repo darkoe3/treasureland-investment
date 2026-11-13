@@ -85,6 +85,10 @@ function isDailySheetImportPathAllowed(path, method) {
 export function isAllowedBackendProxyPath(path, method = "GET") {
   const normalizedMethod = String(method || "GET").toUpperCase();
   const cleanPath = cleanProxyPath(path);
+  if (cleanPath === "profile") return ["GET", "PATCH"].includes(normalizedMethod);
+  if (cleanPath === "profile/change-password") return normalizedMethod === "POST";
+  if (/^audit-logs\/(export|\d+)$/.test(cleanPath)) return normalizedMethod === "GET";
+  if (/^daily-sheets\/\d+\/history$/.test(cleanPath)) return normalizedMethod === "GET";
   if (/^agencies\/\d+\/payment-effective-games$/.test(cleanPath)) return normalizedMethod === "GET";
   if (cleanPath === "daily-sheets/commission-policy") return normalizedMethod === "GET";
   if (isReportPathAllowed(cleanPath, normalizedMethod)) {
@@ -144,5 +148,5 @@ export function backendPathFromProxySegments(segments = [], search = "") {
 export function isBinaryBackendProxyPath(path, method = "GET") {
   const cleanPath = cleanProxyPath(path);
   const normalizedMethod = String(method || "GET").toUpperCase();
-  return (cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template" || (cleanPath === "terminal-number-imports/template" || /^terminal-number-imports\/\d+\/exclusions$/.test(cleanPath)) || /^payer-payments\/\d+\/receipt$/.test(cleanPath)) && normalizedMethod === "GET";
+  return (cleanPath === "audit-logs/export" || cleanPath === "reports/agency-summary/export" || cleanPath === "daily-sheet-imports/template" || (cleanPath === "terminal-number-imports/template" || /^terminal-number-imports\/\d+\/exclusions$/.test(cleanPath)) || /^payer-payments\/\d+\/receipt$/.test(cleanPath)) && normalizedMethod === "GET";
 }

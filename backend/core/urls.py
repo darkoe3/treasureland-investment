@@ -1,10 +1,11 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .audit_profile import AuditLogViewSet, ProfileView, ChangePasswordView
+
 from .views import (
     AgencyViewSet,
     AccountantViewSet,
-    AuditLogViewSet,
     DailySheetViewSet,
     DailySheetImportBatchViewSet,
     GameViewSet,
@@ -54,6 +55,8 @@ router.register("payment-obligations", PaymentObligationViewSet, basename="payme
 router.register("payer-payments", PayerPaymentViewSet, basename="payer-payment")
 
 urlpatterns = [
+    path("profile/", ProfileView.as_view()),
+    path("profile/change-password/", ChangePasswordView.as_view()),
     path("agencies/<int:agency_id>/payment-effective-games/", PaymentEffectiveGamesView.as_view()),
     path("agencies/<int:agency_id>/payment-numbers/", PaymentNumbersView.as_view()),
     path("payment-payers/<int:payer_id>/numbers/", PayerNumbersView.as_view()),

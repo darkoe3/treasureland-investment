@@ -1,8 +1,7 @@
+import { executeChromium } from "./chromium-viewport.mjs";
 // Optional real Chromium layout check: build first, then set CHROME_HEADLESS_PATH.
 // Uses the actual React component and compiled application CSS with synthetic data.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdtemp, readFile, readdir, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +24,7 @@ const css = (await Promise.all((await readdir(chunks)).filter((name) => name.end
 const terminal = { id: 1, terminal_number: "000" + "A".repeat(77), sub_agent_number_value: "000" + "B".repeat(77), person_name: "Person with a long name for responsive layout verification", agency_name: "Musa", agency: 1, is_active: true, updated_at: "2026-09-16" };
 const batch = { id: 1, agency: 1, status: "PREVIEWED", original_filename: "terminal-register.xlsx", expires_at: "2099-01-01", warnings: [{ message: "Row 2: Numeric identifier may have lost leading zeroes." }], errors: [], preview_payload: { rows: [{ row: 2, ...terminal, name: terminal.person_name, classification: "New" }] } };
 const folder = await mkdtemp(join(tmpdir(), "terminal-layout-"));
-const execute = promisify(execFile);
+const execute = executeChromium;
 for (const mode of ["list", "add", "reassign", "upload"]) {
   let index = 0;
   const states = [[terminal], [], { agency: "", active: "", search: "" }, ["add", "reassign"].includes(mode) ? { mode, item: mode === "reassign" ? terminal : null } : null, { agency: "", person: "", sub_agent_number: "", terminal_number: "", reason: "", confirmed: false, is_active: true }, null, "1", null, mode === "upload" ? batch : null, false, false, "", ""];

@@ -95,7 +95,11 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not user.is_active:
             raise serializers.ValidationError("This account is inactive.")
 
+        from .audit_profile import record_event
+        from django.contrib.auth.models import update_last_login
         refresh = self.get_token(user)
+        update_last_login(None, user)
+        record_event(user, "LOGIN_SUCCESS")
         return {
             "refresh": str(refresh),
             "access": str(refresh.access_token),

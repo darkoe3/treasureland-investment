@@ -1,8 +1,7 @@
+import { executeChromium } from "./chromium-viewport.mjs";
 // Optional real Chromium layout and keyboard-focus checks with synthetic data only.
 // Build first, then set CHROME_HEADLESS_PATH to a local Chromium executable.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdtemp, readFile, readdir, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +21,7 @@ const chunks = new URL("../.next/static/chunks/", import.meta.url);
 const css = (await Promise.all((await readdir(chunks)).filter((name) => name.endsWith(".css")).map((name) => readFile(new URL(name, chunks), "utf8")))).join("\n");
 const game = { game_id: 1, name: "Long game name for mobile verification", category: "GHANA", business_date: "2026-11-09", is_whole_day: true, holiday_override_applied: true, holiday_name: "Holiday ".repeat(20) };
 const folder = await mkdtemp(join(tmpdir(), "payment-game-layout-"));
-const execute = promisify(execFile);
+const execute = executeChromium;
 for (const mode of ["loading", "empty", "selected", "error"]) {
   let index = 0;
   const states = [{ games: mode === "selected" ? [game] : [], loading: mode === "loading", error: mode === "error" ? "Could not load effective games." : "" }, 0];

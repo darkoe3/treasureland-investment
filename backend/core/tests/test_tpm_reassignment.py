@@ -76,7 +76,7 @@ class TPMReassignmentTests(Phase4Mixin, APITestCase):
         self.assertEqual(old, (txn.person_name_snapshot, txn.agent_type_snapshot, txn.person_id_snapshot, txn.tpm_code_snapshot))
         self.assertEqual(self.client.get(url).data["person_totals"], before)
         self.assertEqual(TPMDailyTransactionSerializer(txn).data["tpm_code_value"], "TPM-A")
-        self.assertEqual(TPMDailyTransactionSerializer(txn).data["person_total"], Decimal("285.00"))
+        self.assertEqual(TPMDailyTransactionSerializer(txn).data["person_total"], Decimal("294.00"))
 
     def test_both_agencies_require_edit_permission(self):
         self.assertEqual(self.reassign(self.other_person).status_code, 403)

@@ -371,6 +371,7 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
         warnings.append({"cell": "B2", "code": "DATE_MISMATCH", "message": f"Workbook date {workbook_date.isoformat()} differs from selected date {transaction_date.isoformat()}."})
 
     existing_sheet = DailySheet.objects.filter(agency=agency, transaction_date=transaction_date).first()
+    calculator = existing_sheet or DailySheet()
     scheduled_by_name = scheduled_games_for_date(transaction_date, existing_sheet)
     schedule_snapshot = schedule_snapshot_for_date(transaction_date, existing_sheet)
     game_columns = build_game_columns(raw_sheet, scheduled_by_name, errors)
@@ -494,11 +495,13 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
             "agent_type": tpm.person.agent_type,
             "amounts": amounts,
             "net_sales": str(row_total),
-            "to_pay": str(money(row_total * Decimal("0.95"))),
+            "commission": str(calculator.commission_for(row_total)),
+            "to_pay": str(calculator.to_pay_for(row_total)),
         })
 
     existing_transaction_count = existing_sheet.transactions.count() if existing_sheet else 0
     payload = {
+        "commission_rate_snapshot": str(calculator.commission_rate_snapshot),
         "file_name": safe_filename(uploaded_file.name),
         "file_hash": hashlib.sha256(data).hexdigest(),
         "agency": agency.id,
@@ -513,7 +516,8 @@ def parse_daily_sheet_workbook(uploaded_file, agency, transaction_date):
         "rows": rows,
         "sheet_totals": {
             "net_sales": str(money(sum(Decimal(row["net_sales"]) for row in rows))),
-            "to_pay": str(money(sum(Decimal(row["to_pay"]) for row in rows))),
+            "commission": str(calculator.commission_for(sum(Decimal(row["net_sales"]) for row in rows))),
+            "to_pay": str(calculator.to_pay_for(sum(Decimal(row["net_sales"]) for row in rows))),
         },
         "existing_sheet": existing_sheet.id if existing_sheet else None,
         "existing_sheet_status": existing_sheet.status if existing_sheet else None,

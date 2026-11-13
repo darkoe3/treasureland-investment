@@ -47,7 +47,7 @@ class CategoryScheduleTests(Phase2Mixin, TestCase):
     def test_migration_idempotent_preserves_history_timed_rows_and_five_percent(self):
         legacy = Game.objects.create(name="Monday Special")
         WeeklyGameSchedule.objects.create(game=legacy, weekday=1, category="GHANA", is_whole_day=True, display_order=3)
-        sheet = self.create_sheet()
+        sheet = self.create_sheet(commission_rate="0.05")
         # Represent a pre-category snapshot: do not backfill it from current games.
         sheet.sheet_games.update(category_snapshot=None)
         txn = self.create_transaction(sheet, self.tpm_one, "100", "200")
@@ -67,7 +67,7 @@ class CategoryScheduleTests(Phase2Mixin, TestCase):
         self.assertEqual(sheet.totals(), totals)
         self.assertEqual(PaymentObligation.objects.values().get(pk=obligation.pk), obligation_before)
         self.assertEqual(obligation.total_expected, Decimal("285"))
-        self.assertEqual(COMMISSION_RATE, Decimal("0.05"))
+        self.assertEqual(COMMISSION_RATE, Decimal("0.02"))
         self.assertEqual(txn.net_sales, Decimal("300"))
         self.assertEqual(txn.commission, Decimal("15"))
         self.assertEqual(txn.to_pay, Decimal("285"))

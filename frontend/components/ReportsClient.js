@@ -30,7 +30,7 @@ const summaryLabels = {
   distinct_people_count: "People",
   distinct_tpm_code_count: "Sub-Agent Numbers",
   total_net_sales: "NET Sales",
-  total_commission: "Commission 5%",
+  total_commission: "Commission",
   total_to_pay: "To Pay",
   total_subagent_share: "Sub-agent share",
   total_organisation_share: "Organisation share",
@@ -230,7 +230,7 @@ export default function ReportsClient({ agencies = [] }) {
                       <td data-label="Date">{row.date}</td>
                       <td data-label="Status">{row.status}</td>
                       <td data-label="NET Sales">{moneyText(row.net_sales)}</td>
-                      <td data-label="Commission">{moneyText(row.commission)}</td>
+                      <td data-label="Commission">{moneyText(row.commission)} ({Number(row.commission_rate_snapshot) * 100}%)</td>
                       <td data-label="To Pay">{moneyText(row.to_pay)}</td>
                       <td data-label="Tax">{moneyText(row.tax)}</td>
                       <td data-label="Actual received">{moneyText(row.actual_amount_received)}</td>

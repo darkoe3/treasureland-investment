@@ -79,7 +79,7 @@ class SheetSafetyTests(APITestCase):
         self.assertEqual(event.old_values["previous_transaction_count"], 1)
         self.assertEqual(event.old_values["previous_omission_count"], 1)
         self.assertEqual(event.old_values["previous_net_sales"], "100.00")
-        self.assertEqual(event.old_values["previous_to_pay"], "95.00")
+        self.assertEqual(event.old_values["previous_to_pay"], "98.00")
         self.assertEqual(self.reset().status_code, 200)
         self.assertEqual(AuditLog.objects.filter(action=AuditAction.DAILY_SHEET_RESET).count(), 2)
         self.assertFalse(self.delete().status_code == 204)

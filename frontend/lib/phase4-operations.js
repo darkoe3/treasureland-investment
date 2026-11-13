@@ -58,15 +58,31 @@ export function activeTpmOptions(people) {
   );
 }
 
-export function calculateTransactionPreview(gameSales, isSubagent = false) {
-  const netSales = Object.values(gameSales || {}).reduce((total, value) => total + moneyNumber(value), 0);
-  const commission = netSales * 0.05;
+// Integer minor-unit arithmetic avoids binary floating-point money calculations.
+export function calculateTransactionPreview(gameSales, isSubagent = false, rate) {
+  if (rate == null) return { netSales: "0.00", commission: "0.00", toPay: "0.00", subagentShare: "0.00", organisationShare: "0.00" };
+  const scaled = (value, places) => {
+    const match = String(value || "0").trim().match(/^\+?(\d*\.?\d+)(?:e([+-]?\d+))?$/i);
+    if (!match) return 0n;
+    const exponent = Number(match[2] || 0);
+    if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 100) return 0n;
+    const [whole, fraction = ""] = match[1].split(".");
+    const digits = BigInt((whole || "0") + fraction);
+    const shift = places + exponent - fraction.length;
+    if (shift >= 0) return digits * (10n ** BigInt(shift));
+    const divisor = 10n ** BigInt(-shift);
+    return (digits + divisor / 2n) / divisor;
+  };
+  const net = Object.values(gameSales || {}).reduce((total, value) => total + scaled(value, 2), 0n);
+  const basisPoints = scaled(rate, 4);
+  const portion = (points) => (net * points + 5000n) / 10000n;
+  const commission = portion(basisPoints);
+  const format = (cents) => `${cents / 100n}.${String(cents % 100n).padStart(2, "0")}`;
   return {
-    netSales,
-    commission,
-    toPay: netSales * 0.95,
-    subagentShare: isSubagent ? netSales * 0.02 : 0,
-    organisationShare: isSubagent ? netSales * 0.03 : 0,
+    netSales: format(net), commission: format(commission),
+    toPay: format(basisPoints === 500n ? portion(10000n - basisPoints) : net - commission),
+    subagentShare: format(isSubagent ? portion(200n) : 0n),
+    organisationShare: format(isSubagent ? portion(300n) : 0n),
   };
 }
 

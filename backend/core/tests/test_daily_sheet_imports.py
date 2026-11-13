@@ -81,7 +81,7 @@ class DailySheetImportParserTests(TestCase):
         self.assertEqual(parsed.payload["rows"][0]["tpm_code"], "513670124")
         self.assertEqual([column["game_name"] for column in parsed.payload["game_columns"]], ["Fairchance", "Diamond", "International", "Bingo", "Peoples"])
         self.assertEqual(parsed.payload["rows"][0]["net_sales"], "150.00")
-        self.assertEqual(parsed.payload["rows"][0]["to_pay"], "142.50")
+        self.assertEqual(parsed.payload["rows"][0]["to_pay"], "147.00")
 
     def test_h_i_dynamic_headers_and_blank_optional_column(self):
         parsed = self.parse(workbook_upload(
@@ -174,6 +174,32 @@ class DailySheetImportWorkflowTests(APITestCase):
             format="multipart",
         )
 
+    def test_pre_policy_preview_requires_refresh_for_new_sheet(self):
+        preview = self.preview()
+        batch = DailySheetImportBatch.objects.get(pk=preview.data['id'])
+        batch.preview_payload.pop('commission_rate_snapshot')
+        batch.save(update_fields=['preview_payload'])
+        response = self.client.post(f'/api/daily-sheet-imports/{batch.pk}/confirm/', {}, format='json')
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('commission_rate_snapshot', response.data)
+        self.assertFalse(DailySheet.objects.filter(agency=self.agency).exists())
+
+    def test_import_preserves_historical_draft_commission(self):
+        from decimal import Decimal
+        sheet = DailySheet.objects.create(
+            agency=self.agency, transaction_date=date(2026, 8, 27),
+            created_by=self.accountant, commission_rate_snapshot=Decimal('.05'),
+        )
+        sheet.copy_weekday_games()
+        preview = self.preview()
+        self.assertEqual(preview.status_code, 201, preview.data)
+        self.assertEqual(Decimal(preview.data['preview_payload']['commission_rate_snapshot']), Decimal('.05'))
+        response = self.client.post(f"/api/daily-sheet-imports/{preview.data['id']}/confirm/", {}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        sheet.refresh_from_db()
+        self.assertEqual(sheet.commission_rate_snapshot, Decimal('.05'))
+        self.assertEqual(sheet.transactions.get().to_pay, Decimal('95'))
+
     def test_new_import_after_reset_preserves_previous_confirmed_batch(self):
         preview = self.preview(self.admin)
         first_id = preview.data["id"]
@@ -264,7 +290,7 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(sheet.transactions.count(), 1)
         txn = sheet.transactions.get()
         self.assertEqual(txn.net_sales, 100)
-        self.assertEqual(txn.to_pay, 95)
+        self.assertEqual(txn.to_pay, 98)
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.IMPORT_PREVIEWED).exists())
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.IMPORT_CONFIRMED).exists())
 
@@ -325,7 +351,7 @@ class DailySheetImportWorkflowTests(APITestCase):
         self.assertEqual(sheet.transactions.count(), 8)
         self.assertEqual(TransactionGameSale.objects.filter(transaction__daily_sheet=sheet).count(), 56)
         self.assertEqual(str(sheet.totals()["gross_sales"]), "1948.00")
-        self.assertEqual(str(sheet.totals()["total_to_pay"]), "1850.60")
+        self.assertEqual(str(sheet.totals()["total_to_pay"]), "1909.04")
         for txn in sheet.transactions.select_related("tpm_code__person"):
             self.assertEqual(txn.person_id_snapshot, txn.tpm_code.person_id)
             self.assertEqual(txn.tpm_code_snapshot, txn.tpm_code.code)

@@ -28,6 +28,7 @@ from .views import (
     logout_view,
 )
 
+from .payment_games import PaymentEffectiveGamesView
 from .payment_numbers import PaymentNumbersView, PayerNumbersView
 
 from .terminal_register import TerminalNumberViewSet, TerminalImportViewSet
@@ -53,6 +54,7 @@ router.register("payment-obligations", PaymentObligationViewSet, basename="payme
 router.register("payer-payments", PayerPaymentViewSet, basename="payer-payment")
 
 urlpatterns = [
+    path("agencies/<int:agency_id>/payment-effective-games/", PaymentEffectiveGamesView.as_view()),
     path("agencies/<int:agency_id>/payment-numbers/", PaymentNumbersView.as_view()),
     path("payment-payers/<int:payer_id>/numbers/", PayerNumbersView.as_view()),
     path("health/", health_view, name="health"),

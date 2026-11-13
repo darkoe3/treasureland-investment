@@ -391,8 +391,8 @@ class HolidayGameOverride(TimeStampedModel):
 
 
 MONEY_PLACES = Decimal("0.01")
-COMMISSION_RATE = Decimal("0.05")
-TO_PAY_RATE = Decimal("0.95")
+COMMISSION_RATE = Decimal("0.02")
+TO_PAY_RATE = Decimal("1") - COMMISSION_RATE
 SUBAGENT_RATE = Decimal("0.02")
 ORGANISATION_SUBAGENT_RATE = Decimal("0.03")
 
@@ -586,12 +586,39 @@ def next_payment_number(sequence_type, year, prefix):
         return f"{prefix}-{year}-{sequence.last_value:06d}"
 
 
+class PaymentGameSnapshotQuerySet(models.QuerySet):
+    immutable_fields = {"game", "game_id", "business_date", "game_id_snapshot", "game_snapshot", "creation_key"}
+
+    def update(self, **kwargs):
+        if self.immutable_fields.intersection(kwargs):
+            raise ValidationError("Payment game identity and snapshots are immutable.")
+        return super().update(**kwargs)
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        if self.immutable_fields.intersection(fields):
+            raise ValidationError("Payment game identity and snapshots are immutable.")
+        return super().bulk_update(objs, fields, batch_size=batch_size)
+
+    def bulk_create(self, objs, **kwargs):
+        if self.immutable_fields.intersection(kwargs.get("update_fields") or []):
+            raise ValidationError("Payment game identity and snapshots are immutable.")
+        return super().bulk_create(objs, **kwargs)
+
+
 class PaymentObligation(TimeStampedModel):
+    objects = PaymentGameSnapshotQuerySet.as_manager()
+
     class ObligationStatus(models.TextChoices):
         OPEN = "OPEN", "Open"
         PARTIALLY_PAID = "PARTIALLY_PAID", "Partially Paid"
         PAID = "PAID", "Paid"
         CANCELLED = "CANCELLED", "Cancelled"
+
+    game = models.ForeignKey("Game", on_delete=models.PROTECT, null=True, blank=True, related_name="payment_obligations")
+    business_date = models.DateField(null=True, blank=True)
+    game_id_snapshot = models.PositiveBigIntegerField(null=True, blank=True, editable=False)
+    game_snapshot = models.JSONField(null=True, blank=True, editable=False)
+    creation_key = models.CharField(max_length=100, null=True, blank=True, unique=True)
 
     agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="payment_obligations")
     payer = models.ForeignKey(PaymentPayer, on_delete=models.PROTECT, related_name="obligations")
@@ -616,9 +643,11 @@ class PaymentObligation(TimeStampedModel):
 
     class Meta:
         ordering = ["-obligation_date", "-id"]
-        indexes = [models.Index(fields=["agency", "status", "obligation_date"]), models.Index(fields=["payer", "obligation_date"])]
+        indexes = [models.Index(fields=["agency", "business_date", "game_id_snapshot"], name="payment_game_date_idx"), models.Index(fields=["agency", "status", "obligation_date"]), models.Index(fields=["payer", "obligation_date"])]
         constraints = [
             models.CheckConstraint(condition=Q(total_expected__gt=0), name="payment_obligation_total_expected_positive"),
+            models.UniqueConstraint(fields=["agency", "sub_agent_number", "business_date", "game_id_snapshot"], name="unique_payment_number_game_date"),
+            models.CheckConstraint(condition=(Q(game__isnull=True, business_date__isnull=True, game_id_snapshot__isnull=True, game_snapshot__isnull=True) | Q(game__isnull=False, business_date__isnull=False, game_id_snapshot__isnull=False, game_snapshot__isnull=False, sub_agent_number__isnull=False)), name="payment_game_identity_complete"),
         ]
 
     def clean(self):
@@ -635,7 +664,7 @@ class PaymentObligation(TimeStampedModel):
         if self.pk:
             original = PaymentObligation.objects.filter(pk=self.pk).first()
             if original:
-                fields = ("sub_agent_number_id", "sub_agent_number_snapshot", "terminal_number_snapshot", "payer_name_snapshot", "payer_id_snapshot", "agency_name_snapshot", "agency_id_snapshot")
+                fields = ("game_id", "business_date", "game_id_snapshot", "game_snapshot", "creation_key", "sub_agent_number_id", "sub_agent_number_snapshot", "terminal_number_snapshot", "payer_name_snapshot", "payer_id_snapshot", "agency_name_snapshot", "agency_id_snapshot")
                 if any(getattr(self, field) != getattr(original, field) for field in fields):
                     raise ValidationError("Obligation number assignment and snapshots are immutable.")
                 if original.sub_agent_number_id and (original.payer_id != self.payer_id or original.agency_id != self.agency_id):
@@ -675,6 +704,10 @@ class PaymentObligation(TimeStampedModel):
 
     def save(self, *args, **kwargs):
         self.total_expected = money(self.total_expected)
+        if self._state.adding and self.game_id:
+            from .payment_games import resolve_game_snapshot
+            self.game_snapshot = resolve_game_snapshot(self.game_id, self.business_date)
+            self.game_id_snapshot = self.game_id
         if self._state.adding and self.sub_agent_number_id:
             from .payment_numbers import validate_number
             terminal = validate_number(self.sub_agent_number, self.payer, self.agency)
@@ -700,6 +733,8 @@ class PaymentObligation(TimeStampedModel):
 
 
 class PayerPayment(TimeStampedModel):
+    objects = PaymentGameSnapshotQuerySet.as_manager()
+
     class PaymentMethod(models.TextChoices):
         CASH = "CASH", "Cash"
         MOBILE_MONEY = "MOBILE_MONEY", "Mobile Money"
@@ -710,6 +745,8 @@ class PayerPayment(TimeStampedModel):
     class PaymentStatus(models.TextChoices):
         POSTED = "POSTED", "Posted"
         REVERSED = "REVERSED", "Reversed"
+
+    game_snapshot = models.JSONField(null=True, blank=True, editable=False)
 
     obligation = models.ForeignKey(PaymentObligation, on_delete=models.PROTECT, related_name="payments")
     receipt_number = models.CharField(max_length=40, unique=True)
@@ -774,7 +811,7 @@ class PayerPayment(TimeStampedModel):
 
         if self.pk:
             original = PayerPayment.objects.filter(pk=self.pk).first()
-            snapshot_fields = ("sub_agent_number_snapshot", "terminal_number_snapshot", "payer_id_snapshot", "agency_id_snapshot", "agency_snapshot", "payer_name_snapshot")
+            snapshot_fields = ("game_snapshot", "sub_agent_number_snapshot", "terminal_number_snapshot", "payer_id_snapshot", "agency_id_snapshot", "agency_snapshot", "payer_name_snapshot")
             if original and any(getattr(original, field) != getattr(self, field) for field in snapshot_fields):
                 raise ValidationError({"detail": "Payment identity snapshots are immutable."})
             if original and original.status == self.PaymentStatus.POSTED:
@@ -794,6 +831,9 @@ class PayerPayment(TimeStampedModel):
                 raise ValidationError({"detail": "REVERSED payment records are immutable."})
 
     def save(self, *args, **kwargs):
+        if self._state.adding:
+            from copy import deepcopy
+            self.game_snapshot = deepcopy(self.obligation.game_snapshot)
         self.amount_received = money(self.amount_received)
         self.amount_previously_paid = money(self.amount_previously_paid)
         self.cumulative_amount_paid = money(self.cumulative_amount_paid)
@@ -811,7 +851,36 @@ class PayerPayment(TimeStampedModel):
         return f"{self.receipt_number} - {self.payer_name_snapshot}"
 
 
+class DailySheetQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        if "commission_rate_snapshot" in kwargs:
+            raise ValidationError("Commission snapshot is immutable.")
+        return super().update(**kwargs)
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        if "commission_rate_snapshot" in fields:
+            raise ValidationError("Commission snapshot is immutable.")
+        return super().bulk_update(objs, fields, batch_size=batch_size)
+
+    def bulk_create(self, objs, **kwargs):
+        if "commission_rate_snapshot" in (kwargs.get("update_fields") or []):
+            raise ValidationError("Commission snapshot is immutable.")
+        return super().bulk_create(objs, **kwargs)
+
+
 class DailySheet(TimeStampedModel):
+    objects = DailySheetQuerySet.as_manager()
+    commission_rate_snapshot = models.DecimalField(max_digits=5, decimal_places=4, default=COMMISSION_RATE, editable=False)
+
+    def commission_for(self, net):
+        return money(money(net) * self.commission_rate_snapshot)
+
+    def to_pay_for(self, net):
+        # Preserve historical independent HALF_UP rounding, including half-cent ties.
+        if self.commission_rate_snapshot == Decimal("0.05"):
+            return money(money(net) * (Decimal("1") - self.commission_rate_snapshot))
+        return money(money(net) - self.commission_for(net))
+
     agency = models.ForeignKey(Agency, on_delete=models.PROTECT, related_name="daily_sheets")
     transaction_date = models.DateField(db_index=True)
     status = models.CharField(max_length=20, choices=DailySheetStatus.choices, default=DailySheetStatus.DRAFT)
@@ -851,6 +920,10 @@ class DailySheet(TimeStampedModel):
         ]
 
     def clean(self):
+        if self.pk:
+            original = DailySheet.objects.filter(pk=self.pk).values_list("commission_rate_snapshot", flat=True).first()
+            if original is not None and original != self.commission_rate_snapshot:
+                raise ValidationError({"commission_rate_snapshot": "Commission snapshot is immutable."})
         if self.agency_id and not self.agency.is_active:
             raise ValidationError({"agency": "Daily sheet must belong to an active agency."})
         if self.incoming_funds is not None and self.incoming_funds < 0:
@@ -935,8 +1008,8 @@ class DailySheet(TimeStampedModel):
             .annotate(net=Sum("amount"))
         )
         gross_sales = money(sum((row["net"] or Decimal("0")) for row in sales))
-        total_to_pay = money(gross_sales * TO_PAY_RATE)
-        commission = money(gross_sales * COMMISSION_RATE)
+        total_to_pay = self.to_pay_for(gross_sales)
+        commission = self.commission_for(gross_sales)
         subagent_sales = money(
             sum((row["net"] or Decimal("0")) for row in sales if row["transaction__agent_type_snapshot"] == AgentType.SUBAGENT)
         )
@@ -1084,11 +1157,11 @@ class TPMDailyTransaction(TimeStampedModel):
 
     @property
     def commission(self):
-        return money(self.net_sales * COMMISSION_RATE)
+        return self.daily_sheet.commission_for(self.net_sales)
 
     @property
     def to_pay(self):
-        return money(self.net_sales * TO_PAY_RATE)
+        return self.daily_sheet.to_pay_for(self.net_sales)
 
     def __str__(self):
         return f"{self.tpm_code.code} - {self.daily_sheet}"

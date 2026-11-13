@@ -85,6 +85,8 @@ function isDailySheetImportPathAllowed(path, method) {
 export function isAllowedBackendProxyPath(path, method = "GET") {
   const normalizedMethod = String(method || "GET").toUpperCase();
   const cleanPath = cleanProxyPath(path);
+  if (/^agencies\/\d+\/payment-effective-games$/.test(cleanPath)) return normalizedMethod === "GET";
+  if (cleanPath === "daily-sheets/commission-policy") return normalizedMethod === "GET";
   if (isReportPathAllowed(cleanPath, normalizedMethod)) {
     return true;
   }

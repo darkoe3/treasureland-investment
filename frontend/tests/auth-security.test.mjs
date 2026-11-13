@@ -661,11 +661,19 @@ test("phase 4 transaction payload and previews are deterministic", () => {
       { daily_sheet_game: 11, amount: "50.00" },
     ],
   });
-  const preview = calculateTransactionPreview({ 10: "100", 11: "50" }, true);
-  assert.equal(preview.netSales, 150);
-  assert.equal(preview.toPay, 142.5);
-  assert.equal(preview.subagentShare, 3);
-  assert.equal(preview.organisationShare, 4.5);
+  const preview = calculateTransactionPreview({ 10: "100", 11: "50" }, true, "0.02");
+  assert.equal(preview.netSales, "150.00");
+  assert.equal(preview.toPay, "147.00");
+  assert.equal(preview.subagentShare, "3.00");
+  assert.equal(preview.organisationShare, "4.50");
+});
+
+test("commission previews preserve historical rounding and handle number input", () => {
+  assert.equal(calculateTransactionPreview({ a: "0.25" }, false, "0.0200").commission, "0.01");
+  assert.equal(calculateTransactionPreview({ a: "0.25" }, false, "0.0200").toPay, "0.24");
+  assert.equal(calculateTransactionPreview({ a: "0.10" }, false, "0.0500").toPay, "0.10");
+  assert.equal(calculateTransactionPreview({ a: "1e2" }, false, "0.0200").toPay, "98.00");
+  assert.equal(calculateTransactionPreview({ a: "-", b: "-0.5", c: "1e" }, false, "0.0200").netSales, "0.00");
 });
 
 test("phase 4 multiple tpm codes for one person become separate selectable terminals", () => {
@@ -677,8 +685,8 @@ test("phase 4 manual tax and difference display stay separate from to pay", () =
   assert.equal(differenceLabel(5), "Positive difference");
   assert.equal(differenceLabel(0), "Zero difference");
   assert.equal(differenceLabel(-5), "Negative difference");
-  const preview = calculateTransactionPreview({ a: "200" }, false);
-  assert.equal(preview.toPay, 190);
+  const preview = calculateTransactionPreview({ a: "200" }, false, "0.02");
+  assert.equal(preview.toPay, "196.00");
 });
 
 test("phase 4 screens include loading empty error workflow and unsaved-change states", async () => {

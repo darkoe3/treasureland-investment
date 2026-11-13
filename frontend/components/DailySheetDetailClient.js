@@ -79,7 +79,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
   const mayDelete = editable && canForAgency(user, sheet.agency, "can_delete");
   const options = useMemo(() => activeTpmOptions(searchPeople(people, query)).filter((item) => Number(item.agency) === Number(sheet.agency)), [people, query, sheet.agency]);
   const selected = options.find((item) => Number(item.id) === Number(selectedTpm));
-  const preview = calculateTransactionPreview(gameSales, selected?.agent_type === "SUBAGENT");
+  const preview = calculateTransactionPreview(gameSales, selected?.agent_type === "SUBAGENT", sheet?.commission_rate_snapshot);
   const actions = actionAvailability(user, sheet);
   const activeOmissions = omissions.filter((item) => item.is_active !== false);
   const missingExpected = sheet.omitted_terminals?.items?.filter((item) => !item.reason) || [];
@@ -229,6 +229,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
           </div>
           <div className="summary-strip">
             <span>NET {moneyText(preview.netSales)}</span>
+            <span>Commission: {Number(sheet.commission_rate_snapshot) * 100}% ({moneyText(preview.commission)})</span>
             <span>To Pay {moneyText(preview.toPay)}</span>
             <span>Sub-agent {moneyText(preview.subagentShare)}</span>
             <span>Organisation {moneyText(preview.organisationShare)}</span>
@@ -300,7 +301,7 @@ export default function DailySheetDetailClient({ user, initialSheet, initialPeop
         <div className="panel">
           <div className="panel-heading"><h2>Review Workflow</h2></div>
           <div className="summary-list">
-            <span>Commission: <strong>{moneyText(sheet.commission)}</strong></span>
+            <span>Commission: {Number(sheet.commission_rate_snapshot) * 100}% <strong>{moneyText(sheet.commission)}</strong></span>
             <span>Sub-agent share: <strong>{moneyText(sheet.subagent_share)}</strong></span>
             <span>Organisation share: <strong>{moneyText(sheet.organisation_share_on_subagent_sales)}</strong></span>
             <span>Manual tax: <strong>{moneyText(sheet.manual_tax)}</strong></span>

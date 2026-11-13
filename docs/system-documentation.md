@@ -48,12 +48,19 @@ Excel import is an alternate way to populate an editable daily sheet. It never o
 ## Calculations
 
 - NET Sales = sum of all game sales for the Sub-Agent Number.
-- Commission = NET Sales x 5%.
-- To Pay = NET Sales x 95%.
+- New Daily Sheets use a 2% commission. The 2% applies to Ghana Games, Double Chance and Timed games.
+- To Pay is 98% of NET Sales for new Daily Sheets.
+- Existing historical Daily Sheets, including existing drafts, retain their stored 5% commission and 95% To Pay calculations. Historical records must not be recalculated.
 - Sub-agent share = sub-agent NET Sales x 2%.
 - Organisation share on sub-agent sales = sub-agent NET Sales x 3%.
 - Manual tax is recorded at agency-sheet level and does not reduce To Pay in Phase 4.
 - Difference = actual amount received - calculated agency To Pay.
+
+Example for a new Daily Sheet:
+
+- NET Sales: NGN 10,000.00
+- Commission at 2%: NGN 200.00
+- To Pay: NGN 9,800.00
 
 All backend calculations use `Decimal` with `ROUND_HALF_UP`.
 

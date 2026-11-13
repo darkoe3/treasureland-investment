@@ -1,3 +1,4 @@
+import * as games from "../lib/payment-games.js";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -67,6 +68,8 @@ function harness({ user = admin, obligation = partialObligation, payments = [], 
     if (name === "../lib/client-api") return { ...clientApi, clientRequest: request, clientDownload: async () => ({ blob: {}, contentType: "application/pdf", contentDisposition: "" }) };
     if (name === "../lib/payment-operations") return operations;
     if (name === "./PaymentNumberPicker" || name === "./PaymentNumberLedger") return {}; // Unused on the obligation-detail route under test.
+    if (name.includes("PaymentGamePicker")) return () => null;
+    if (name.includes("payment-games")) return games;
     throw new Error(`Unexpected test import ${name}`);
   } });
   const render = () => { stateIndex = 0; refIndex = 0; return compiledModule.exports.default({ user, view: "obligation", recordId: obligation.id }); };

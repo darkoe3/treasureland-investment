@@ -70,10 +70,11 @@ class Phase2Mixin:
             display_order=2,
         )
 
-    def create_sheet(self, incoming="142500.00", tax="0.00"):
+    def create_sheet(self, incoming="142500.00", tax="0.00", commission_rate="0.02"):
         sheet = DailySheet.objects.create(
             agency=self.agency,
             transaction_date=date(2026, 8, 24),
+            commission_rate_snapshot=Decimal(commission_rate),
             incoming_funds=Decimal(incoming),
             tax=Decimal(tax),
             created_by=self.accountant,
@@ -174,15 +175,15 @@ class Phase2ModelTests(Phase2Mixin, TestCase):
         sheet = self.create_sheet()
         txn = self.create_transaction(sheet, self.tpm_one, "60000.00", "40000.00")
         self.assertEqual(txn.net_sales, Decimal("100000.00"))
-        self.assertEqual(txn.commission, Decimal("5000.00"))
-        self.assertEqual(txn.to_pay, Decimal("95000.00"))
+        self.assertEqual(txn.commission, Decimal("2000.00"))
+        self.assertEqual(txn.to_pay, Decimal("98000.00"))
 
     def test_person_total_combines_multiple_tpm_codes(self):
         sheet = self.create_sheet()
         txn = self.create_transaction(sheet, self.tpm_one, "100000.00", "0.00")
         self.create_transaction(sheet, self.tpm_two, "50000.00", "0.00")
         data = TPMDailyTransactionSerializer(txn).data
-        self.assertEqual(Decimal(data["person_total"]), Decimal("142500.00"))
+        self.assertEqual(Decimal(data["person_total"]), Decimal("147000.00"))
 
     def test_daily_summary_calculations(self):
         sheet = self.create_sheet(incoming="142000.00", tax="100.00")
@@ -190,13 +191,13 @@ class Phase2ModelTests(Phase2Mixin, TestCase):
         self.create_transaction(sheet, self.sub_tpm, "50000.00", "0.00")
         totals = sheet.totals()
         self.assertEqual(totals["gross_sales"], Decimal("150000.00"))
-        self.assertEqual(totals["total_to_pay"], Decimal("142500.00"))
-        self.assertEqual(totals["commission"], Decimal("7500.00"))
+        self.assertEqual(totals["total_to_pay"], Decimal("147000.00"))
+        self.assertEqual(totals["commission"], Decimal("3000.00"))
         self.assertEqual(totals["subagent_sales"], Decimal("50000.00"))
         self.assertEqual(totals["subagent_share"], Decimal("1000.00"))
         self.assertEqual(totals["organisation_share_on_subagent_sales"], Decimal("1500.00"))
         self.assertEqual(totals["tax"], Decimal("100.00"))
-        self.assertEqual(totals["variance"], Decimal("-500.00"))
+        self.assertEqual(totals["variance"], Decimal("-5000.00"))
         self.assertEqual(totals["variance_status"], "SHORTFALL")
 
     def test_variance_statuses(self):

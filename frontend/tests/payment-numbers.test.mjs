@@ -37,7 +37,7 @@ test("picker debounces bounded scoped searches and discards stale responses", ()
 });
 
 test("new obligation requires explicit selection and labels legacy and receipt snapshots", () => {
-  assert.match(payments, /disabled=\{pending \|\| !form.sub_agent_number\}/);
+  assert.match(payments, /disabled=\{pending \|\| !form.sub_agent_number \|\| !form.game \|\| !form.business_date\}/);
   assert.match(payments, /sub_agent_number: number\?\.id/);
   assert.match(payments, /Legacy — Sub-Agent Number not assigned/);
   assert.match(payments, /Sub-Agent Number: Not assigned — legacy obligation\./);

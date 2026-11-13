@@ -14,6 +14,11 @@ function Status({ value }) {
 
 export default function DailySheetsClient({ user, initialAgencies = [] }) {
   const router = useRouter();
+  const [commissionRate, setCommissionRate] = useState(null);
+  const [commissionError, setCommissionError] = useState("");
+  useEffect(() => {
+    clientRequest(apiPath("/daily-sheets/commission-policy/")).then((policy) => setCommissionRate(policy.commission_rate)).catch(() => setCommissionError("Upstream service error."));
+  }, []);
   const [sheets, setSheets] = useState([]);
   const [filters, setFilters] = useState({ agency: "", date: "", status: "" });
   const [form, setForm] = useState({ agency: "", transaction_date: new Date().toISOString().slice(0, 10) });
@@ -83,6 +88,8 @@ export default function DailySheetsClient({ user, initialAgencies = [] }) {
 
       <section className="form-grid">
         <form className="panel form-panel" onSubmit={createSheet}>
+          {commissionError ? <p role="alert">{commissionError}</p> : null}
+          {commissionRate !== null && <p>Commission: {Number(commissionRate) * 100}% of NET Sales</p>}
           <div className="panel-heading"><h2>Create Daily Sheet</h2></div>
           <div className="field-grid">
             <label className="field-group">Agency

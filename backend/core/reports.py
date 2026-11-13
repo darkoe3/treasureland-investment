@@ -20,14 +20,12 @@ from .models import (
     Agency,
     AuditAction,
     AuditLog,
-    COMMISSION_RATE,
     DailySheet,
     DailySheetStatus,
     OmittedTerminal,
     ORGANISATION_SUBAGENT_RATE,
     SUBAGENT_RATE,
     TPMDailyTransaction,
-    TO_PAY_RATE,
     json_safe_value,
     money,
 )
@@ -189,8 +187,8 @@ def build_report(params, user, audit_action=AuditAction.REPORT_PREVIEWED):
             sheet_net = money(sheet_net + txn_net)
             if txn.agent_type_snapshot == AgentType.SUBAGENT:
                 sheet_subagent_net = money(sheet_subagent_net + txn_net)
-        sheet_to_pay = money(sheet_net * TO_PAY_RATE)
-        sheet_commission = money(sheet_net * COMMISSION_RATE)
+        sheet_to_pay = sheet.to_pay_for(sheet_net)
+        sheet_commission = sheet.commission_for(sheet_net)
         sheet_tax = money(sheet.tax)
         sheet_received = money(sheet.incoming_funds)
         sheet_difference = money(sheet_received - sheet_to_pay)
@@ -209,6 +207,7 @@ def build_report(params, user, audit_action=AuditAction.REPORT_PREVIEWED):
             "status": sheet.status,
             "net_sales": sheet_net,
             "commission": sheet_commission,
+            "commission_rate_snapshot": sheet.commission_rate_snapshot,
             "to_pay": sheet_to_pay,
             "tax": sheet_tax,
             "actual_amount_received": sheet_received,
@@ -237,7 +236,7 @@ def build_report(params, user, audit_action=AuditAction.REPORT_PREVIEWED):
                 key = game_key(sale.daily_sheet_game)
                 row["games"][key] = money(row["games"].get(key, money("0")) + sale.amount)
                 row_net = money(row_net + sale.amount)
-            row_to_pay = money(row_net * Decimal("0.95"))
+            row_to_pay = sheet.to_pay_for(row_net)
             row["net_sales"] = money(row["net_sales"] + row_net)
             row["to_pay"] = money(row["to_pay"] + row_to_pay)
             person_totals[person_id] = money(person_totals[person_id] + row_to_pay)
@@ -364,13 +363,13 @@ def build_workbook(report):
     ws.append([])
     ws.append(["Daily reconciliation"])
     daily_header_row = ws.max_row + 1
-    daily_headers = ["Date", "Sheet status", "NET Sales", "Commission", "To Pay", "Tax", "Actual amount received", "Difference", "Transaction count", "Omitted-terminal count"]
+    daily_headers = ["Date", "Sheet status", "NET Sales", "Commission", "To Pay", "Tax", "Actual amount received", "Difference", "Transaction count", "Omitted-terminal count", "Commission rate"]
     ws.append(daily_headers)
     for cell in ws[daily_header_row]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = header_fill
     for row in report["daily_reconciliation"]:
-        ws.append([row["date"], row["status"], float(row["net_sales"]), float(row["commission"]), float(row["to_pay"]), float(row["tax"]), float(row["actual_amount_received"]), float(row["difference"]), row["transaction_count"], row["omitted_terminal_count"]])
+        ws.append([row["date"], row["status"], float(row["net_sales"]), float(row["commission"]), float(row["to_pay"]), float(row["tax"]), float(row["actual_amount_received"]), float(row["difference"]), row["transaction_count"], row["omitted_terminal_count"], f"{row['commission_rate_snapshot'] * 100:g}%"])
 
     ws.append([])
     detail_header_row = ws.max_row + 1

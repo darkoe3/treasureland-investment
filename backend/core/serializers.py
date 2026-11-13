@@ -290,7 +290,10 @@ class PaymentObligationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PaymentObligation
+        validators = []  # Duplicate checks run under the number/register lock.
+        extra_kwargs = {"creation_key": {"validators": []}}
         fields = (
+            "game", "business_date", "game_id_snapshot", "game_snapshot", "creation_key",
             "id",
             "sub_agent_number", "sub_agent_number_snapshot", "terminal_number_snapshot",
             "payer_name_snapshot", "payer_id_snapshot", "agency_name_snapshot", "agency_id_snapshot",
@@ -315,7 +318,7 @@ class PaymentObligationSerializer(serializers.ModelSerializer):
             "reversed_total",
             "balance",
         )
-        read_only_fields = ("sub_agent_number_snapshot", "terminal_number_snapshot", "payer_name_snapshot", "payer_id_snapshot", "agency_name_snapshot", "agency_id_snapshot", "id", "obligation_number", "created_by", "created_at", "updated_at", "total_paid", "reversed_total", "balance", "status", "cancelled_by", "cancelled_at")
+        read_only_fields = ("game_id_snapshot", "game_snapshot", "sub_agent_number_snapshot", "terminal_number_snapshot", "payer_name_snapshot", "payer_id_snapshot", "agency_name_snapshot", "agency_id_snapshot", "id", "obligation_number", "created_by", "created_at", "updated_at", "total_paid", "reversed_total", "balance", "status", "cancelled_by", "cancelled_at")
 
     def to_representation(self, instance):
         result = super().to_representation(instance)
@@ -336,6 +339,11 @@ class PaymentObligationSerializer(serializers.ModelSerializer):
         return money(obligation.total_expected - self.get_total_paid(obligation))
 
     def validate(self, attrs):
+        if not self.instance:
+            if not attrs.get("game") or not attrs.get("business_date"):
+                raise serializers.ValidationError({"game": "Explicitly select an effective game and business date."})
+        elif any(key in attrs and attrs[key] != getattr(self.instance, key) for key in ("game", "business_date", "creation_key")):
+            raise serializers.ValidationError({"game": "Game identity and business date are immutable."})
         number = attrs.get("sub_agent_number")
         if not self.instance and not number:
             raise serializers.ValidationError({"sub_agent_number": "Explicitly select a Sub-Agent Number."})
@@ -360,6 +368,11 @@ class PaymentObligationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"total_expected": "Expected amount cannot be changed after the first posted payment."})
         return attrs
 
+    def validate_business_date(self, value):
+        from .payment_games import strict_date
+        strict_date(self.initial_data.get("business_date"))
+        return value
+
     def validate_total_expected(self, value):
         if value is None or value <= 0:
             raise serializers.ValidationError("Total expected must be greater than zero.")
@@ -367,6 +380,7 @@ class PaymentObligationSerializer(serializers.ModelSerializer):
 
 
 class PayerPaymentSerializer(serializers.ModelSerializer):
+    game_snapshot = serializers.JSONField(read_only=True)
     obligation_number = serializers.CharField(source="obligation.obligation_number", read_only=True)
     payer_name = serializers.CharField(source="payer_name_snapshot", read_only=True)
     agency_name = serializers.CharField(source="agency_snapshot", read_only=True)
@@ -374,6 +388,7 @@ class PayerPaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = PayerPayment
         fields = (
+            "game_snapshot",
             "id",
             "sub_agent_number_snapshot", "terminal_number_snapshot", "payer_id_snapshot", "agency_id_snapshot",
             "obligation",
@@ -414,6 +429,8 @@ class PayerPaymentSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        if any(key in self.initial_data for key in ("game", "game_id", "business_date", "game_snapshot")):
+            raise serializers.ValidationError({"game": "Payments inherit the obligation game; do not submit game fields."})
         obligation = attrs.get("obligation") or getattr(self.instance, "obligation", None)
         payment_method = attrs.get("payment_method")
         if payment_method and payment_method != PayerPayment.PaymentMethod.CASH and not attrs.get("payment_reference", "").strip():
@@ -829,7 +846,7 @@ class TPMDailyTransactionSerializer(serializers.ModelSerializer):
             transaction__daily_sheet=obj.daily_sheet,
             transaction__person_id_snapshot=obj.person_id_snapshot,
         ).aggregate(total=Sum("amount"))["total"]
-        return money(money(total) * Decimal("0.95"))
+        return obj.daily_sheet.to_pay_for(total)
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -950,7 +967,7 @@ class DailySheetSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailySheet
         fields = (
-            "id", "is_archived", "can_reset", "can_delete", "transaction_count",
+            "commission_rate_snapshot", "id", "is_archived", "can_reset", "can_delete", "transaction_count",
             "agency",
             "agency_name",
             "transaction_date",
@@ -1111,7 +1128,7 @@ class DailySheetSerializer(serializers.ModelSerializer):
                 "person": row["transaction__person_id_snapshot"],
                 "person_name": row["transaction__person_name_snapshot"],
                 "net_sales": money(row["net"]),
-                "to_pay": money(money(row["net"] or 0) * Decimal("0.95")),
+                "to_pay": obj.to_pay_for(row["net"] or 0),
             }
             for row in rows
         ]

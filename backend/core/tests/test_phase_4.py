@@ -85,9 +85,9 @@ class Phase4ModelTests(Phase4Mixin, TestCase):
             TPMCode.objects.create(person=self.person, code="tpm-a")
 
     def test_manual_tax_does_not_change_calculated_to_pay(self):
-        sheet = self.sheet(incoming="142.50", tax="99.99")
+        sheet = self.sheet(incoming="147.00", tax="99.99")
         self.txn(sheet, self.tpm_a)
-        self.assertEqual(sheet.totals()["total_to_pay"], Decimal("142.50"))
+        self.assertEqual(sheet.totals()["total_to_pay"], Decimal("147.00"))
         self.assertEqual(sheet.totals()["tax"], Decimal("99.99"))
         self.assertEqual(sheet.totals()["variance"], Decimal("0.00"))
 
@@ -149,7 +149,7 @@ class Phase4APITests(Phase4Mixin, APITestCase):
         self.txn(sheet, self.tpm_sub, "100.00", "0.00")
         summary = self.client.force_authenticate(self.admin) or self.client.get(f"/api/daily-sheets/{sheet.id}/summary/")
         ayo = next(item for item in summary.data["person_totals"] if item["person_name"] == "Ayo")
-        self.assertEqual(Decimal(ayo["to_pay"]), Decimal("142.50"))
+        self.assertEqual(Decimal(ayo["to_pay"]), Decimal("147.00"))
         self.assertEqual(Decimal(summary.data["subagent_share"]), Decimal("2.00"))
         self.assertEqual(Decimal(summary.data["organisation_share_on_subagent_sales"]), Decimal("3.00"))
 

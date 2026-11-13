@@ -15,8 +15,8 @@ All monetary values use `Decimal`, two decimal places and `ROUND_HALF_UP`.
 
 ```text
 NET Sales = sum of game sales for a Sub-Agent Number
-Commission = NET Sales x 5%
-To Pay = NET Sales x 95%
+Commission = NET Sales x stored sheet commission rate (2% for new sheets)
+To Pay = NET Sales - rounded commission (98% for new sheets)
 
 Subagent Share = Subagent NET Sales x 2%
 Organisation Share = Subagent NET Sales x 3%
@@ -88,7 +88,7 @@ Accountants with `can_create` for an assigned agency and Super Admin users can p
 - `REGISTER SUB-AGENT`: comparison data for the system register. `SUB AGT NOS` is the existing `TPMCode.code`; `TERMINAL NOS` is a separate registered terminal.
 - `MUSA RESULTS`, `Premier Games` and `Sheet2`: recognized but not imported as authoritative transaction data.
 
-The import reads only raw game-sales amounts. Django recalculates NET Sales, 5% commission, 95% To Pay, sub-agent share, organisation share, tax and difference using the existing model properties. Workbook formulas and cached legacy totals are advisory only.
+The import reads only raw game-sales amounts. Django recalculates NET Sales, snapshotted commission and To Pay, sub-agent share, organisation share, tax and difference using the existing model properties. Workbook formulas and cached legacy totals are advisory only.
 
 Preview creates a server-side `DailySheetImportBatch` containing safe metadata, normalized rows, warnings and blocking errors. The raw workbook is not stored. Confirmation uses the stored batch, not browser-submitted transaction rows, and writes atomically. If no sheet exists, confirmation creates a Draft sheet and snapshots the current active games for that date, including Whole Day games. If an editable Draft already has transactions, confirmation requires `replace_existing=true` and replaces all rows instead of merging. Submitted and Approved sheets are protected, and any changed target sheet or changed row count after preview requires a fresh preview.
 
@@ -279,3 +279,14 @@ python manage.py test core.tests.test_payment_management core.tests.test_payment
 ```
 
 The PostgreSQL payment settings require loopback host access and let libpq read credentials outside the repository from the local `pgpass.conf`. PostgreSQL concurrency coverage verifies locked balances, idempotency, reversals and yearly numbering. Known limitations are that receipt-view audit events are not enabled by the established audit policy, and local SQLite cannot prove PostgreSQL locking behavior; the isolated PostgreSQL suite must be run for that assurance.
+
+
+Daily Sheet commission policy (migration 0024): new sheets snapshot 0.0200 for
+all game categories. Existing sheets receive 0.0500 without rewriting any monetary
+fields, transactions, game snapshots, imports, payments or receipts. Historical
+half-cent rounding is preserved. Editing or replacing a sheet retains its rate.
+Pre-change previews for a new sheet must be refreshed; confirmation rejects any
+rate mismatch. The current policy endpoint supplies the new-sheet UI; financial
+calculations and reports use the sheet snapshot, never the current policy.
+The existing audit log requires a real user and has no configuration audit
+mechanism; no fake actor or financial audit record is created by this migration.

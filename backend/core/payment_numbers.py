@@ -113,7 +113,11 @@ class PaymentNumbersView(APIView):
     def agency(self, request, agency_id):
         from .views import require_assignment_flag
         agency = get_object_or_404(Agency, pk=agency_id)
-        require_assignment_flag(request.user, agency, "can_edit")
+        if request.method == "GET":
+            from .views import ensure_agency_filter_access
+            ensure_agency_filter_access(request.user, [agency.pk])
+        else:
+            require_assignment_flag(request.user, agency, "can_edit")
         return agency
 
     def get(self, request, agency_id):

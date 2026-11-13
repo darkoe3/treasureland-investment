@@ -944,7 +944,7 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
     pagination_class = PaymentPagination
     serializer_class = PaymentObligationSerializer
     permission_classes = [IsAuthenticated]
-    search_fields = ["obligation_number", "description", "payer__payer_name", "sub_agent_number_snapshot", "terminal_number_snapshot"]
+    search_fields = ["game_snapshot__name", "obligation_number", "description", "payer__payer_name", "sub_agent_number_snapshot", "terminal_number_snapshot"]
     ordering_fields = ["obligation_date", "total_expected", "created_at", "status", "obligation_number"]
 
     def get_queryset(self):
@@ -988,7 +988,21 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
         if outstanding == "true":
             queryset = queryset.filter(status__in=[PaymentObligation.ObligationStatus.OPEN, PaymentObligation.ObligationStatus.PARTIALLY_PAID])
         from .payment_numbers import filter_numbers
-        return filter_numbers(queryset, self.request.query_params)
+        payment_start, payment_end = validate_date_range(self.request.query_params, "payment_start", "payment_end")
+        payment_status = self.request.query_params.get("payment_status")
+        if payment_status and payment_status not in PayerPayment.PaymentStatus.values:
+            raise ValidationError({"payment_status": "Unsupported payment status."})
+        if payment_start or payment_end or payment_status:
+            matching = PayerPayment.objects.all()
+            if payment_start:
+                matching = matching.filter(payment_date__date__gte=payment_start)
+            if payment_end:
+                matching = matching.filter(payment_date__date__lte=payment_end)
+            if payment_status:
+                matching = matching.filter(status=payment_status)
+            queryset = queryset.filter(pk__in=matching.values("obligation_id"))
+        from .payment_games import filter_games
+        return filter_games(filter_numbers(queryset, self.request.query_params), self.request.query_params)
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -1002,8 +1016,21 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
         payer = PaymentPayer.objects.select_for_update().get(pk=payer.pk)
         from .payment_numbers import validate_number
         validate_number(number, payer, agency)
+        key = serializer.validated_data.get("creation_key")
+        if key:
+            existing = PaymentObligation.objects.filter(creation_key=key).first()
+            if existing:
+                matches = existing.created_by_id == self.request.user.pk and all(
+                    getattr(existing, field) == value for field, value in serializer.validated_data.items()
+                )
+                if not matches:
+                    raise ValidationError({"creation_key": "This request key was already used for different obligation data."})
+                serializer.instance = existing
+                return
+        from .payment_games import duplicate_guard
+        duplicate_guard(agency, number, serializer.validated_data["game"], serializer.validated_data["business_date"])
         obligation = serializer.save(agency=agency, payer=payer, sub_agent_number=number, created_by=self.request.user)
-        log_audit(self.request.user, agency, AuditAction.PAYMENT_OBLIGATION_CREATED, "PaymentObligation", obligation.id, new_values={"agency_id": agency.id, "payer_id": payer.id, "obligation_id": obligation.pk, "sub_agent_number_id": number.pk, "source": "PAYMENT_OBLIGATION", "actor_id": self.request.user.id})
+        log_audit(self.request.user, agency, AuditAction.PAYMENT_OBLIGATION_CREATED, "PaymentObligation", obligation.id, new_values={"agency_id": agency.id, "payer_id": payer.id, "obligation_id": obligation.pk, "sub_agent_number_id": number.pk, "game_id": obligation.game_id_snapshot, "business_date": obligation.business_date.isoformat(), "holiday_override_id": obligation.game_snapshot["holiday_override_id"], "timestamp": obligation.created_at.isoformat(), "source": "PAYMENT_OBLIGATION", "actor_id": self.request.user.id})
 
     def perform_update(self, serializer):
         obligation = self.get_object()
@@ -1043,7 +1070,7 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
     pagination_class = PaymentPagination
     serializer_class = PayerPaymentSerializer
     permission_classes = [IsAuthenticated]
-    search_fields = ["receipt_number", "payer_name_snapshot", "obligation__obligation_number", "obligation__description"]
+    search_fields = ["game_snapshot__name", "receipt_number", "payer_name_snapshot", "obligation__obligation_number", "obligation__description"]
     ordering_fields = ["payment_date", "amount_received", "receipt_number", "status", "payment_method"]
 
     def get_queryset(self):
@@ -1055,7 +1082,12 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
             queryset = queryset.filter(obligation__agency_id__in=agency_ids)
         payer = parse_single_id(self.request.query_params, "payer")
         obligation = parse_single_id(self.request.query_params, "obligation")
-        status = self.request.query_params.get("status")
+        obligation_status = self.request.query_params.get("obligation_status")
+        if obligation_status:
+            if obligation_status not in PaymentObligation.ObligationStatus.values:
+                raise ValidationError({"obligation_status": "Unsupported obligation status."})
+            queryset = queryset.filter(obligation__status=obligation_status)
+        status = self.request.query_params.get("status") or self.request.query_params.get("payment_status")
         if payer:
             queryset = queryset.filter(obligation__payer_id=payer)
         if obligation:
@@ -1083,7 +1115,8 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
                 raise PermissionDenied("Only Super Admin can filter by recorder.")
             queryset = queryset.filter(recorded_by_id=recorder)
         from .payment_numbers import filter_numbers
-        return filter_numbers(queryset, self.request.query_params, prefix="obligation__")
+        from .payment_games import filter_games
+        return filter_games(filter_numbers(queryset, self.request.query_params, prefix="obligation__"), self.request.query_params, prefix="obligation__")
 
     def perform_create(self, serializer):
         with transaction.atomic():
@@ -1205,6 +1238,8 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
             ("Payment reference", payment.payment_reference or "None"), ("Recorded by", payment.recorded_by_display_snapshot),
             ("Notes", payment.notes or "None"),
         ]
+        from .payment_games import receipt_game_rows
+        rows[0:0] = receipt_game_rows(payment.game_snapshot)
         table = Table(rows, colWidths=[48 * mm, 125 * mm])
         table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTNAME", (0, 0), (-1, -1), PDF_CURRENCY_FONT_NAME)]))
         story.append(table)
@@ -1241,7 +1276,8 @@ class PaymentAnalyticsView(APIView):
             obligations = obligations.filter(obligation_date__lte=obligation_end)
 
         from .payment_numbers import filter_numbers
-        obligations = filter_numbers(obligations, request.query_params)
+        from .payment_games import filter_games, game_breakdown
+        obligations = filter_games(filter_numbers(obligations, request.query_params), request.query_params)
         payments = PayerPayment.objects.filter(obligation__in=obligations)
         payment_start, payment_end = validate_date_range(request.query_params, "payment_start", "payment_end")
         if payment_start:
@@ -1259,6 +1295,11 @@ class PaymentAnalyticsView(APIView):
                 raise PermissionDenied("Only Super Admin can filter by recorder.")
             payments = payments.filter(recorded_by_id=recorder)
 
+        payment_status = request.query_params.get("payment_status")
+        if payment_status:
+            if payment_status not in PayerPayment.PaymentStatus.values:
+                raise ValidationError({"payment_status": "Unsupported payment status."})
+            payments = payments.filter(status=payment_status)
         posted_payments = payments.filter(status=PayerPayment.PaymentStatus.POSTED)
         reversed_payments = payments.filter(status=PayerPayment.PaymentStatus.REVERSED)
         zero = Decimal("0.00")
@@ -1338,6 +1379,7 @@ class PaymentAnalyticsView(APIView):
 
         from .payment_numbers import number_breakdown
         response = {
+            "game_breakdown": game_breakdown(obligations, payments, request),
             "number_breakdown": number_breakdown(obligations, payments, request),
             "obligation_portfolio": {
                 "total_expected": str(money(total_expected)),
@@ -1750,6 +1792,10 @@ class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet
                 raise ValidationError({"acknowledge_date_mismatch": "Confirm the workbook date mismatch before importing."})
 
             current_sheet = DailySheet.objects.select_for_update().filter(agency=batch.agency, transaction_date=batch.transaction_date).first()
+            calculator = current_sheet or DailySheet()
+            preview_rate = batch.preview_payload.get("commission_rate_snapshot", "0.05")
+            if Decimal(preview_rate) != calculator.commission_rate_snapshot:
+                raise ValidationError({"commission_rate_snapshot": "Commission rate changed after preview. Create a fresh preview."})
             preview_sheet_id = batch.preview_payload.get("existing_sheet")
             if (current_sheet.id if current_sheet else None) != preview_sheet_id:
                 raise ValidationError({"daily_sheet": "Target daily sheet changed after preview. Create a fresh preview."})
@@ -1836,6 +1882,10 @@ class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet
 class DailySheetViewSet(BaseSearchViewSet):
     serializer_class = DailySheetSerializer
     permission_classes = [IsAuthenticated]
+    @action(detail=False, methods=["get"], url_path="commission-policy")
+    def commission_policy(self, request):
+        return Response({"commission_rate": str(DailySheet().commission_rate_snapshot)})
+
     search_fields = ["agency__name", "created_by__email"]
     ordering_fields = ["transaction_date", "created_at", "status"]
 

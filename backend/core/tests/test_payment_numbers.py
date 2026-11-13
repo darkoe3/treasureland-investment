@@ -25,7 +25,11 @@ class PaymentNumberTests(TestCase):
         return self.client.post(self.url, {"payer": self.payer.pk, "sub_agent_number": code, "terminal_number": terminal, "confirmed": True, **extra}, format="json")
 
     def obligation(self, number):
-        response = self.client.post("/api/payment-obligations/", {"agency": self.agency.pk, "payer": self.payer.pk, "sub_agent_number": number, "description": "Collection", "obligation_date": "2026-11-03", "total_expected": "100.00"}, format="json")
+        from core.game_schedule import apply_approved_weekly_game_schedule
+        from core.payment_games import effective_games
+        apply_approved_weekly_game_schedule()
+        game = effective_games("2026-11-03")[0]["game_id"]
+        response = self.client.post("/api/payment-obligations/", {"agency": self.agency.pk, "payer": self.payer.pk, "sub_agent_number": number, "game": game, "business_date": "2026-11-03", "description": "Collection", "obligation_date": "2026-11-03", "total_expected": "100.00"}, format="json")
         self.assertEqual(response.status_code, 201, response.data)
         return PaymentObligation.objects.get(pk=response.data["id"])
 
@@ -62,7 +66,7 @@ class PaymentNumberTests(TestCase):
         self.permission.can_edit = False
         self.permission.save()
         self.assertEqual(self.quick("SUB-003", "TERM-003").status_code, 403)
-        self.assertEqual(self.client.get(self.url, {"search": "SUB"}).status_code, 403)
+        self.assertEqual(self.client.get(self.url, {"search": "SUB"}).status_code, 200)
 
     def test_case_insensitive_duplicates_and_inactive_duplicates(self):
         self.quick()
@@ -175,7 +179,7 @@ class PaymentNumberTests(TestCase):
         events = AuditLog.objects.filter(action__in=["PAYMENT_NUMBER_CREATED", "PAYMENT_TERMINAL_CREATED", "PAYMENT_OBLIGATION_CREATED"])
         self.assertEqual(events.count(), 3)
         for event in events:
-            self.assertTrue(all(key.endswith("_id") or key == "source" for key in event.new_values))
+            self.assertTrue(all(key.endswith("_id") or key in {"source", "business_date", "timestamp"} for key in event.new_values))
             self.assertNotIn("Saved Payer", str(event.new_values))
             self.assertNotIn("SUB-001", str(event.new_values))
             self.assertEqual(event.new_values["actor_id"], self.admin.pk)

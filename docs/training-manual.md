@@ -53,7 +53,13 @@ Enter manual tax and actual amount received in the agency daily total section. T
 
 ## Understanding Totals
 
-NET Sales is the sum of game sales. Commission is 5%. To Pay is 95%. For sub-agents, the 5% commission is split into 2% sub-agent share and 3% organisation share. Difference is actual amount received minus To Pay.
+NET Sales is the sum of game sales. New Daily Sheets use a 2% commission, and To Pay is 98% of NET Sales. The 2% applies to Ghana Games, Double Chance and Timed games. Existing historical Daily Sheets, including existing drafts, retain their stored 5% commission and 95% To Pay calculations. Historical records must not be recalculated. Sub-agent share remains 2% of sub-agent NET Sales, and organisation share on sub-agent sales remains 3%. Difference is actual amount received minus To Pay.
+
+Example for a new Daily Sheet:
+
+- NET Sales: NGN 10,000.00
+- Commission at 2%: NGN 200.00
+- To Pay: NGN 9,800.00
 
 ## Submit, Return, Approve And Reopen
 

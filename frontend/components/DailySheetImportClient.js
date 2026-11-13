@@ -169,6 +169,7 @@ export default function DailySheetImportClient({ user, agencies = [] }) {
             <div className="metric-card"><FileSpreadsheet size={20} /><p>File</p><strong>{previewPayload.file_name}</strong></div>
             <div className="metric-card"><p>Valid rows</p><strong>{previewPayload.valid_row_count}</strong><p>{previewPayload.ignored_blank_rows} blank, {previewPayload.ignored_zero_rows} zero ignored</p></div>
             <div className="metric-card"><p>NET Sales</p><strong>{moneyText(previewPayload.sheet_totals?.net_sales)}</strong></div>
+            <div className="metric-card"><p>Commission: {Number(previewPayload.commission_rate_snapshot) * 100}%</p><strong>{moneyText(previewPayload.sheet_totals?.commission)}</strong></div>
             <div className="metric-card"><p>To Pay</p><strong>{moneyText(previewPayload.sheet_totals?.to_pay)}</strong></div>
           </section>
 

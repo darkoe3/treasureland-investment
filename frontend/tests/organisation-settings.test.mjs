@@ -18,7 +18,7 @@ async function component(name) {
   const source = await readFile(new URL(`../components/${name}.js`, import.meta.url), 'utf8');
   const compiled = require('next/dist/build/swc').transformSync(source, { filename: `${name}.js`, jsc: { parser: { syntax: 'ecmascript', jsx: true }, transform: { react: { runtime: 'automatic' } }, target: 'es2020' }, module: { type: 'commonjs' } }).code;
   const mod = { exports: {} };
-  vm.runInNewContext(compiled, { exports: mod.exports, module: mod, URLSearchParams, URL, document, require(name) {
+  vm.runInNewContext(compiled, { exports: mod.exports, module: mod, URLSearchParams, URL, document, window, require(name) {
     if (name === 'next/link') return { __esModule: true, default: ({ children, ...props }) => React.createElement('a', props, children) };
     if (name === './AccessDenied') return { __esModule: true, default: () => React.createElement('p', null, 'Access denied') };
     if (name === './BrandLogo') return { __esModule: true, default: () => React.createElement('div', null, 'Treasureland') };
@@ -37,6 +37,7 @@ function button(text) { return [...container.querySelectorAll('button')].find((n
 async function click(text) { await React.act(async () => button(text).click()); }
 async function type(value) { const node = container.querySelector('#setting-display_name'); await React.act(async () => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(node, value); node.dispatchEvent(new window.Event('input', { bubbles: true })); }); }
 async function submit() { await React.act(async () => container.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
+function mutations() { return requests.filter((request) => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.options?.method)); }
 
 test('settings edit, validation, network failure, duplicate prevention, success and cancel', async () => {
   let mode = 'validation', resolve;
@@ -56,36 +57,73 @@ test('settings edit, validation, network failure, duplicate prevention, success 
   assert.ok(button('Save settings'));
   assert.ok(button('Cancel'));
   assert.equal(container.querySelector('#setting-display_name').disabled, false);
+  assert.equal(mutations().length, 0);
   await type('Edited'); await submit();
   assert.ok(container.textContent.includes('Invalid organisation.'));
   assert.equal(container.querySelector('input').getAttribute('aria-invalid'), 'true');
+  assert.equal(container.querySelector('[role=status].form-success'), null);
+  await type('Corrected');
+  assert.equal(container.querySelector('[role=alert]'), null);
+  assert.equal(container.querySelector('[role=status].form-success'), null);
+  await type('Edited');
   mode = 'network'; await submit();
+  assert.ok(container.textContent.includes('Network unavailable'));
   assert.ok(container.textContent.includes('Your changes are preserved'));
   assert.equal(container.querySelector('input').value, 'Edited');
+  assert.equal(container.querySelector('[role=status].form-success'), null);
   mode = 'success'; await submit(); await submit();
   assert.equal(requests.filter((r) => r.options?.method === 'PATCH').length, 3);
   assert.equal(button('Saving').disabled, true);
   assert.deepEqual(JSON.parse(requests.at(-1).options.body), { display_name: 'Edited' });
+  assert.equal(container.querySelector('[role=status].form-success'), null);
   await React.act(async () => resolve({ ...settings, display_name: 'Edited' }));
   assert.ok(container.textContent.includes('Settings saved successfully.'));
   await click('Edit settings');
   assert.equal(container.querySelector('[role="status"].form-success'), null);
-  await type('Discard'); await click('Cancel');
+  await type('Discard');
+  mode = 'validation'; await submit();
+  assert.ok(container.querySelector('[role=alert]'));
+  await click('Cancel');
   assert.equal(container.querySelector('input').value, 'Edited');
   assert.ok(button('Edit settings'));
   assert.equal(button('Save settings'), undefined);
   assert.equal(container.querySelector('#setting-display_name').disabled, true);
   assert.equal(container.querySelector('[role="status"].form-success'), null);
+  assert.equal(container.querySelector('[role=alert]'), null);
   await cleanup();
   await mount();
   assert.equal(container.querySelector('[role="status"].form-success'), null);
   await cleanup();
 });
 
+test('successful save feedback automatically dismisses after five seconds', async () => {
+  handler = async (_path, options) => options ? { ...settings, display_name: 'Timed save' } : settings;
+  await mount();
+  await click('Edit settings');
+  await type('Timed save');
+  await submit();
+  assert.ok(container.textContent.includes('Settings saved successfully.'));
+  await React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 5100)); });
+  assert.equal(container.querySelector('[role=status].form-success'), null);
+  await cleanup();
+});
+
 test('load failure can retry and permission loss shows access denied', async () => {
-  let fail = true;
-  handler = async () => { if (fail) throw new Error('Offline'); return settings; };
-  await mount(); assert.ok(button('Retry')); fail = false; await click('Retry'); assert.ok(button('Edit settings'));
+  let fail = true, resolveReload;
+  handler = async (_path, options) => {
+    if (options) throw { status: 403 };
+    if (fail) throw new Error('Offline');
+    return new Promise((resolve) => { resolveReload = resolve; });
+  };
+  await mount();
+  assert.ok(button('Retry'));
+  assert.ok(container.querySelector('[role=alert]'));
+  fail = false;
+  await click('Retry');
+  assert.equal(container.querySelector('[role=alert]'), null);
+  assert.ok(container.textContent.includes('Loading settings…'));
+  await React.act(async () => resolveReload(settings));
+  assert.ok(button('Edit settings'));
   handler = async () => { throw { status: 403 }; };
   await click('Edit settings'); await type('Denied'); await submit();
   assert.ok(container.textContent.includes('Access denied')); assert.equal(container.querySelectorAll('input').length, 0);

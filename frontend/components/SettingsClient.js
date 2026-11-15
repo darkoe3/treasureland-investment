@@ -28,6 +28,16 @@ export default function SettingsClient() {
     }).catch((error) => { if (active) { setMessage(""); setDenied(error.status === 403); setErrors({ detail: "Could not load settings. Please retry." }); } });
     return () => { active = false; };
   }, [reload]);
+  useEffect(() => {
+    if (!message) return undefined;
+    const timeout = window.setTimeout(() => setMessage(""), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [message]);
+  function reloadSettings() {
+    setErrors({});
+    setMessage("");
+    setReload((current) => current + 1);
+  }
   async function save(event) {
     event.preventDefault();
     if (submitting.current || !editing) return;
@@ -38,7 +48,8 @@ export default function SettingsClient() {
       setSaved(data); setValues(editable(data)); setEditing(false); setMessage("Settings saved successfully.");
     } catch (error) {
       if (error.status === 403) setDenied(true);
-      setErrors(error.status === 400 && error.payload ? error.payload : { detail: "Could not save settings. Your changes are preserved. Please retry." });
+      const message = typeof error.message === "string" && !/https?:\/\/|password|token|cookie|secret/i.test(error.message) ? error.message : "Could not save settings.";
+      setErrors(error.status === 400 && error.payload ? error.payload : { detail: `${message} Your changes are preserved. Please retry.` });
     } finally { submitting.current = false; setBusy(false); }
   }
   function feedback(key) { return errors[key] ? <p role="alert" id={`settings-error-${key}`}>{[].concat(errors[key]).join(" ")}</p> : null; }
@@ -47,12 +58,12 @@ export default function SettingsClient() {
     <h2>{saved?.display_name || "Organisation"} settings</h2>
     <p>Manage organisation and receipt presentation. For your account, visit <Link href="/dashboard/profile">My Profile</Link>.</p>
     {message && <p role="status" className="form-success">{message}</p>}{feedback("detail")}{feedback("non_field_errors")}
-    {!saved ? <>{errors.detail ? <button onClick={() => setReload(reload + 1)}>Retry</button> : <p role="status">Loading settings…</p>}</> : <>
+    {!saved ? <>{errors.detail ? <button onClick={reloadSettings}>Retry</button> : <p role="status">Loading settings…</p>}</> : <>
       <form onSubmit={save} aria-busy={busy}>
-        <div className="settings-actions">{editing ? <><button className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save settings"}</button><button type="button" disabled={busy} onClick={() => { setValues(editable(saved)); setEditing(false); setErrors({}); setMessage(""); }}>Cancel</button></> : <button type="button" className="primary-button" onClick={() => { setEditing(true); setMessage(""); }}>Edit settings</button>}</div>
+        <div className="settings-actions">{editing ? <><button className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save settings"}</button><button type="button" disabled={busy} onClick={() => { setValues(editable(saved)); setEditing(false); setErrors({}); setMessage(""); }}>Cancel</button></> : <button type="button" className="primary-button" onClick={() => { setEditing(true); setErrors({}); setMessage(""); }}>Edit settings</button>}</div>
         <div className="settings-cards">{groups.map(([title, fields]) => <section className="settings-card" key={title}><h3>{title}</h3>
           {fields.map(([key, label, maxLength]) => {
-            const props = { id: `setting-${key}`, value: values[key] || "", disabled: !editing || busy, maxLength, required: ["display_name", "receipt_heading", "timezone", "date_format"].includes(key), onChange: (event) => setValues({ ...values, [key]: event.target.value }), "aria-invalid": !!errors[key], "aria-describedby": errors[key] ? `settings-error-${key}` : undefined };
+            const props = { id: `setting-${key}`, value: values[key] || "", disabled: !editing || busy, maxLength, required: ["display_name", "receipt_heading", "timezone", "date_format"].includes(key), onChange: (event) => { setValues((current) => ({ ...current, [key]: event.target.value })); setErrors({}); setMessage(""); }, "aria-invalid": !!errors[key], "aria-describedby": errors[key] ? `settings-error-${key}` : undefined };
             return <div key={key}><label htmlFor={props.id}>{label}{key === "date_format" ? <select {...props}>{["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY"].map((value) => <option key={value}>{value}</option>)}</select> : ["address", "receipt_footer"].includes(key) ? <textarea {...props} /> : <input {...props} type={key === "contact_email" ? "email" : "text"} />}</label>{feedback(key)}</div>;
           })}
           {title === "Regional display" && <p>Use an IANA timezone such as Africa/Lagos. These preferences format the receipt generation timestamp in its header; transaction dates and schedules remain unchanged.</p>}

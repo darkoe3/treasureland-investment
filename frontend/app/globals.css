@@ -1387,3 +1387,22 @@ th {
 .profile-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; }
 .profile-form { max-width: 640px; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; }
 .audit-profile-page :focus-visible { outline: 3px solid #166534; outline-offset: 3px; }
+
+/* Viewport-bounded navigation: branding and logout do not consume scroll space. */
+.dashboard-sidebar { height: 100dvh; min-height: 0; align-self: start; overflow: hidden; }
+.dashboard-sidebar > .brand-block, .drawer-top { flex-shrink: 0; }
+.dashboard-nav { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; align-content: start; scrollbar-gutter: stable; }
+.dashboard-nav .nav-link { flex-shrink: 0; }
+.nav-link:focus-visible { outline: 2px solid var(--gold-500); outline-offset: -2px; }
+.mobile-overlay { margin: 0; padding: 0; border: 0; max-width: none; max-height: none; width: 100vw; height: 100dvh; color: inherit; }
+.mobile-overlay::backdrop { background: rgba(0, 0, 0, .35); }
+.mobile-drawer { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.settings-page { min-width: 0; overflow-wrap: anywhere; }
+.settings-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.settings-card { min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 20px; background: white; }
+.settings-card label { display: grid; gap: 6px; margin: 14px 0; }
+.settings-card input, .settings-card textarea, .settings-card select { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.settings-card textarea { min-height: 90px; resize: vertical; }
+.settings-card :disabled { color: var(--ink-700); opacity: 1; }
+.settings-actions { display: flex; gap: 12px; margin: 18px 0; }
+@media (max-width: 980px) { .settings-cards { grid-template-columns: minmax(0, 1fr); } }

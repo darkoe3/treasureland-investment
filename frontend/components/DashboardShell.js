@@ -18,7 +18,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import BrandIdentity from "./BrandLogo";
 import LogoutButton from "./LogoutButton";
 
@@ -64,7 +64,7 @@ function Navigation({ items, pathname, onNavigate }) {
         const Icon = item.icon;
         const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(item.href));
         return (
-          <Link key={item.href} href={item.href} className={active ? "nav-link active" : "nav-link"} onClick={onNavigate}>
+          <Link key={item.href} href={item.href} aria-current={active ? "page" : undefined} className={active ? "nav-link active" : "nav-link"} onClick={onNavigate}>
             <Icon size={18} aria-hidden="true" />
             <span>{item.label}</span>
           </Link>
@@ -76,19 +76,30 @@ function Navigation({ items, pathname, onNavigate }) {
 
 export default function DashboardShell({ user, children }) {
   const pathname = usePathname();
+  const drawer = useRef(null);
+  const menuButton = useRef(null);
   const [open, setOpen] = useState(false);
   const items = useMemo(() => [...(user.role === "SUPER_ADMIN" ? superAdminItems : accountantItems(user)), { label: "My Profile", href: "/dashboard/profile", icon: Users }], [user]);
   const pageTitle = titleFromPath(pathname);
+  useEffect(() => {
+    if (!open) return;
+    drawer.current?.showModal();
+    const trigger = menuButton.current;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previous; trigger?.focus(); };
+  }, [open]);
 
   return (
     <div className="dashboard-frame">
       <aside className="dashboard-sidebar">
         <BrandIdentity subtitle="Investment operations" />
         <Navigation items={items} pathname={pathname} />
+        <LogoutButton />
       </aside>
 
       {open ? (
-        <div className="mobile-overlay" role="presentation" onClick={() => setOpen(false)}>
+        <dialog ref={drawer} className="mobile-overlay" aria-label="Dashboard navigation" onCancel={() => setOpen(false)} onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
           <aside className="mobile-drawer" onClick={(event) => event.stopPropagation()}>
             <div className="drawer-top">
               <BrandIdentity variant="mobile" subtitle="Secure operations" />
@@ -97,13 +108,14 @@ export default function DashboardShell({ user, children }) {
               </button>
             </div>
             <Navigation items={items} pathname={pathname} onNavigate={() => setOpen(false)} />
+            <LogoutButton />
           </aside>
-        </div>
+        </dialog>
       ) : null}
 
       <div className="dashboard-main">
         <header className="dashboard-header">
-          <button className="icon-button mobile-menu-button" type="button" onClick={() => setOpen(true)} aria-label="Open navigation">
+          <button ref={menuButton} aria-expanded={open} className="icon-button mobile-menu-button" type="button" onClick={() => setOpen(true)} aria-label="Open navigation">
             <Menu size={21} aria-hidden="true" />
           </button>
           <div className="page-heading">

@@ -428,6 +428,7 @@ class VarianceStatus(models.TextChoices):
 
 
 class AuditAction(models.TextChoices):
+    ORGANISATION_SETTINGS_UPDATED = "ORGANISATION_SETTINGS_UPDATED", "Organisation settings updated"
     PAYMENT_NUMBER_CREATED = "PAYMENT_NUMBER_CREATED", "Payment Sub-Agent Number created"
     PAYMENT_TERMINAL_CREATED = "PAYMENT_TERMINAL_CREATED", "Payment Terminal Number created"
     AGENCY_CREATED = "AGENCY_CREATED", "Agency created"
@@ -1288,3 +1289,19 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"{self.action} by {self.user} at {self.created_at}"
+
+
+class OrganisationSettings(models.Model):
+    """One explicitly typed presentation record, enforced by the database."""
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    display_name = models.CharField(max_length=160, default="Treasureland Investment Limited")
+    address = models.CharField(max_length=500, blank=True, default="")
+    telephone = models.CharField(max_length=40, blank=True, default="")
+    contact_email = models.EmailField(max_length=254, blank=True, default="")
+    receipt_heading = models.CharField(max_length=120, default="Payment Receipt")
+    receipt_footer = models.CharField(max_length=500, blank=True, default="Thank you for your payment.")
+    timezone = models.CharField(max_length=64, default="Africa/Lagos")
+    date_format = models.CharField(max_length=10, default="YYYY-MM-DD", choices=[(value, value) for value in ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"]])
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(id=1), name="organisation_settings_singleton")]

@@ -1,7 +1,9 @@
-import PlaceholderPage from "../../../components/PlaceholderPage";
+import SettingsClient from "../../../components/SettingsClient";
+import AccessDenied from "../../../components/AccessDenied";
 import { requireDashboardUser } from "../../../lib/require-user";
 
 export default async function SettingsPage() {
-  await requireDashboardUser("/dashboard/settings");
-  return <PlaceholderPage title="Settings" description="Application settings will be expanded later. This protected route is present for the Phase 3 Super Admin layout." />;
+  const user = await requireDashboardUser("/dashboard/settings");
+  if (user.role !== "SUPER_ADMIN") return <AccessDenied />;
+  return <SettingsClient />;
 }

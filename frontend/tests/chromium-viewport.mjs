@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep, basename } from 'node:path';
 export async function executeChromium(chrome, args) {
   const width = Number(args.find((arg) => arg.startsWith('--window-size='))?.split('=')[1].split(',')[0] || 1440);
+  const height = Number(args.find((arg) => arg.startsWith("--window-size="))?.split("=")[1].split(",")[1] || 900);
   const target = args.at(-1);
   const folder = await mkdtemp(join(tmpdir(), 'tl-chromium-viewport-'));
   const child = spawn(chrome, ['--headless', '--disable-gpu', '--no-sandbox', '--remote-debugging-port=0', '--no-first-run', `--user-data-dir=${folder}`, 'about:blank'], { windowsHide: true });
@@ -23,7 +24,7 @@ export async function executeChromium(chrome, args) {
     const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => { const callId = ++id; const timer = setTimeout(() => reject(new Error(`CDP timeout: ${method}`)), 15000); pending.set(callId, { resolve, reject, timer }); socket.send(JSON.stringify({ id: callId, method, params, ...(sessionId ? { sessionId } : {}) })); });
     const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
-    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId);
+    await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sessionId);
     await send('Page.navigate', { url: target }, sessionId);
     const { result } = await send('Runtime.evaluate', { expression: "new Promise(resolve => { const read = () => { if (document.querySelector('#layout-result')) resolve(document.documentElement.outerHTML); else setTimeout(read, 20); }; read(); })", awaitPromise: true, returnByValue: true }, sessionId);
     return { stdout: result.value };

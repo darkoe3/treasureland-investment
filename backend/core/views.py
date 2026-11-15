@@ -1245,7 +1245,14 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
         document = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm, pageCompression=0)
         register_pdf_currency_font()
         styles = getSampleStyleSheet()
-        story = [Paragraph("Treasureland Investment Limited", styles["Title"]), Paragraph(f"Receipt: {payment.receipt_number}", styles["Heading2"]), Spacer(1, 6)]
+        from .organisation_settings import current_settings, receipt_presentation
+        presentation = receipt_presentation(current_settings(), timezone.now())
+        story = [Paragraph(presentation["name"], styles["Title"])]
+        for key in ("address", "contact"):
+            if presentation[key]:
+                story.append(Paragraph(presentation[key], styles["BodyText"]))
+        story.append(Paragraph(f"Generated: {presentation['generated_at']}", styles["BodyText"]))
+        story.extend([Paragraph(presentation["heading"], styles["Heading2"]), Paragraph(f"Receipt: {payment.receipt_number}", styles["Heading2"]), Spacer(1, 6)])
         story.append(Paragraph(f"Currency: {CURRENCY_NAME} ({CURRENCY_CODE})", styles["BodyText"]))
         if payment.status == PayerPayment.PaymentStatus.REVERSED:
             story.append(Paragraph("REVERSED", styles["Heading1"]))
@@ -1267,6 +1274,8 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
         table = Table(rows, colWidths=[48 * mm, 125 * mm])
         table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("FONTNAME", (0, 0), (-1, -1), PDF_CURRENCY_FONT_NAME)]))
         story.append(table)
+        if presentation["footer"]:
+            story.extend([Spacer(1, 12), Paragraph(presentation["footer"], styles["BodyText"])])
         document.build(story)
         response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{get_valid_filename(payment.receipt_number)}.pdf"'

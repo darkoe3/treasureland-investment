@@ -85,6 +85,7 @@ function isDailySheetImportPathAllowed(path, method) {
 export function isAllowedBackendProxyPath(path, method = "GET") {
   const normalizedMethod = String(method || "GET").toUpperCase();
   const cleanPath = cleanProxyPath(path);
+  if (cleanPath === "organisation-settings") return ["GET", "PATCH"].includes(normalizedMethod);
   if (cleanPath === "profile") return ["GET", "PATCH"].includes(normalizedMethod);
   if (cleanPath === "profile/change-password") return normalizedMethod === "POST";
   if (/^audit-logs\/(export|\d+)$/.test(cleanPath)) return normalizedMethod === "GET";

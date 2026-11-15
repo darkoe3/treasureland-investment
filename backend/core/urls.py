@@ -1,6 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .organisation_settings import OrganisationSettingsView
 from .audit_profile import AuditLogViewSet, ProfileView, ChangePasswordView
 
 from .views import (
@@ -55,6 +56,7 @@ router.register("payment-obligations", PaymentObligationViewSet, basename="payme
 router.register("payer-payments", PayerPaymentViewSet, basename="payer-payment")
 
 urlpatterns = [
+    path("organisation-settings/", OrganisationSettingsView.as_view()),
     path("profile/", ProfileView.as_view()),
     path("profile/change-password/", ChangePasswordView.as_view()),
     path("agencies/<int:agency_id>/payment-effective-games/", PaymentEffectiveGamesView.as_view()),

@@ -29,7 +29,7 @@ def safe_metadata(value):
         elif key in {'is_active', 'can_create', 'can_edit', 'can_delete', 'can_export', 'can_view_history'} and type(item) is bool:
             result[key] = item
         elif key == 'changed_fields' and isinstance(item, list):
-            result[key] = [field for field in item if field in {'full_name', 'password', 'role', 'is_active', 'agency_assignments'}]
+            result[key] = [field for field in item if field in {'full_name', 'password', 'role', 'is_active', 'agency_assignments', 'display_name', 'address', 'telephone', 'contact_email', 'receipt_heading', 'receipt_footer', 'timezone', 'date_format'}]
     return result
 
 

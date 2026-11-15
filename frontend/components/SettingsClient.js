@@ -24,8 +24,8 @@ export default function SettingsClient() {
   useEffect(() => {
     let active = true;
     clientRequest(apiPath("organisation-settings/")).then((data) => {
-      if (active) { setSaved(data); setValues(editable(data)); setErrors({}); }
-    }).catch((error) => { if (active) { setDenied(error.status === 403); setErrors({ detail: "Could not load settings. Please retry." }); } });
+      if (active) { setSaved(data); setValues(editable(data)); setErrors({}); setMessage(""); }
+    }).catch((error) => { if (active) { setMessage(""); setDenied(error.status === 403); setErrors({ detail: "Could not load settings. Please retry." }); } });
     return () => { active = false; };
   }, [reload]);
   async function save(event) {
@@ -49,7 +49,7 @@ export default function SettingsClient() {
     {message && <p role="status" className="form-success">{message}</p>}{feedback("detail")}{feedback("non_field_errors")}
     {!saved ? <>{errors.detail ? <button onClick={() => setReload(reload + 1)}>Retry</button> : <p role="status">Loading settings…</p>}</> : <>
       <form onSubmit={save} aria-busy={busy}>
-        <div className="settings-actions">{editing ? <><button className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save settings"}</button><button type="button" disabled={busy} onClick={() => { setValues(editable(saved)); setEditing(false); setErrors({}); }}>Cancel</button></> : <button type="button" className="primary-button" onClick={() => { setEditing(true); setMessage(""); }}>Edit settings</button>}</div>
+        <div className="settings-actions">{editing ? <><button className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save settings"}</button><button type="button" disabled={busy} onClick={() => { setValues(editable(saved)); setEditing(false); setErrors({}); setMessage(""); }}>Cancel</button></> : <button type="button" className="primary-button" onClick={() => { setEditing(true); setMessage(""); }}>Edit settings</button>}</div>
         <div className="settings-cards">{groups.map(([title, fields]) => <section className="settings-card" key={title}><h3>{title}</h3>
           {fields.map(([key, label, maxLength]) => {
             const props = { id: `setting-${key}`, value: values[key] || "", disabled: !editing || busy, maxLength, required: ["display_name", "receipt_heading", "timezone", "date_format"].includes(key), onChange: (event) => setValues({ ...values, [key]: event.target.value }), "aria-invalid": !!errors[key], "aria-describedby": errors[key] ? `settings-error-${key}` : undefined };

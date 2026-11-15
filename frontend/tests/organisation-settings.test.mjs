@@ -47,11 +47,16 @@ test('settings edit, validation, network failure, duplicate prevention, success 
     return new Promise((done) => { resolve = done; });
   };
   await mount();
+  assert.equal(container.querySelector('[role="status"].form-success'), null);
   assert.equal(container.querySelector('input').disabled, true);
   assert.ok(container.textContent.includes('2%'));
   assert.ok(container.textContent.includes('Historical Daily Sheets retain'));
   assert.equal(container.querySelector('a').getAttribute('href'), '/dashboard/profile');
-  await click('Edit settings'); await type('Edited'); await submit();
+  await click('Edit settings');
+  assert.ok(button('Save settings'));
+  assert.ok(button('Cancel'));
+  assert.equal(container.querySelector('#setting-display_name').disabled, false);
+  await type('Edited'); await submit();
   assert.ok(container.textContent.includes('Invalid organisation.'));
   assert.equal(container.querySelector('input').getAttribute('aria-invalid'), 'true');
   mode = 'network'; await submit();
@@ -63,8 +68,17 @@ test('settings edit, validation, network failure, duplicate prevention, success 
   assert.deepEqual(JSON.parse(requests.at(-1).options.body), { display_name: 'Edited' });
   await React.act(async () => resolve({ ...settings, display_name: 'Edited' }));
   assert.ok(container.textContent.includes('Settings saved successfully.'));
-  await click('Edit settings'); await type('Discard'); await click('Cancel');
+  await click('Edit settings');
+  assert.equal(container.querySelector('[role="status"].form-success'), null);
+  await type('Discard'); await click('Cancel');
   assert.equal(container.querySelector('input').value, 'Edited');
+  assert.ok(button('Edit settings'));
+  assert.equal(button('Save settings'), undefined);
+  assert.equal(container.querySelector('#setting-display_name').disabled, true);
+  assert.equal(container.querySelector('[role="status"].form-success'), null);
+  await cleanup();
+  await mount();
+  assert.equal(container.querySelector('[role="status"].form-success'), null);
   await cleanup();
 });
 

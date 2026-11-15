@@ -39,6 +39,40 @@ async function type(value) { const node = container.querySelector('#setting-disp
 async function submit() { await React.act(async () => container.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
 function mutations() { return requests.filter((request) => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.options?.method)); }
 
+test('Edit and Cancel are explicit non-submit actions with no mutation requests', async () => {
+  handler = async () => settings;
+  await mount();
+  const form = container.querySelector('form');
+  const original = container.querySelector('#setting-display_name').value;
+  let submitEvents = 0, submitEvent;
+  form.addEventListener('submit', (event) => { submitEvents += 1; submitEvent = event; });
+
+  assert.equal(button('Edit settings').getAttribute('type'), 'button');
+  await submit();
+  assert.equal(submitEvents, 1);
+  assert.equal(submitEvent.defaultPrevented, true);
+  assert.equal(mutations().length, 0);
+  assert.equal(container.querySelector('[role=status].form-success'), null);
+  await click('Edit settings');
+  assert.equal(submitEvents, 1);
+  assert.equal(mutations().length, 0);
+  assert.ok(button('Save settings'));
+  assert.equal(button('Save settings').getAttribute('type'), 'submit');
+  assert.equal(button('Cancel').getAttribute('type'), 'button');
+  assert.equal(container.querySelector('#setting-display_name').disabled, false);
+  assert.equal(button('Saving'), undefined);
+  assert.equal(container.querySelector('[role=status].form-success'), null);
+
+  await type(`${original} temporary`);
+  assert.equal(container.querySelector('[role=status].form-success'), null);
+  await click('Cancel');
+  assert.equal(submitEvents, 1);
+  assert.equal(mutations().length, 0);
+  assert.equal(container.querySelector('#setting-display_name').value, original);
+  assert.equal(container.querySelector('#setting-display_name').disabled, true);
+  await cleanup();
+});
+
 test('settings edit, validation, network failure, duplicate prevention, success and cancel', async () => {
   let mode = 'validation', resolve;
   handler = async (path, options) => {

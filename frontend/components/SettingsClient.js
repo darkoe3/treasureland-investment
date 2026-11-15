@@ -40,7 +40,8 @@ export default function SettingsClient() {
   }
   async function save(event) {
     event.preventDefault();
-    if (submitting.current || !editing) return;
+    if (!editing) return;
+    if (submitting.current) return;
     submitting.current = true; setBusy(true); setErrors({}); setMessage("");
     try {
       const changes = Object.fromEntries(Object.entries(values).filter(([key, value]) => saved[key] !== value));
@@ -60,7 +61,7 @@ export default function SettingsClient() {
     {message && <p role="status" className="form-success">{message}</p>}{feedback("detail")}{feedback("non_field_errors")}
     {!saved ? <>{errors.detail ? <button onClick={reloadSettings}>Retry</button> : <p role="status">Loading settings…</p>}</> : <>
       <form onSubmit={save} aria-busy={busy}>
-        <div className="settings-actions">{editing ? <><button className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save settings"}</button><button type="button" disabled={busy} onClick={() => { setValues(editable(saved)); setEditing(false); setErrors({}); setMessage(""); }}>Cancel</button></> : <button type="button" className="primary-button" onClick={() => { setEditing(true); setErrors({}); setMessage(""); }}>Edit settings</button>}</div>
+        <div className="settings-actions">{editing ? <><button type="submit" className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save settings"}</button><button type="button" disabled={busy} onClick={() => { setValues(editable(saved)); setEditing(false); setErrors({}); setMessage(""); }}>Cancel</button></> : <button type="button" className="primary-button" onClick={() => { setEditing(true); setErrors({}); setMessage(""); }}>Edit settings</button>}</div>
         <div className="settings-cards">{groups.map(([title, fields]) => <section className="settings-card" key={title}><h3>{title}</h3>
           {fields.map(([key, label, maxLength]) => {
             const props = { id: `setting-${key}`, value: values[key] || "", disabled: !editing || busy, maxLength, required: ["display_name", "receipt_heading", "timezone", "date_format"].includes(key), onChange: (event) => { setValues((current) => ({ ...current, [key]: event.target.value })); setErrors({}); setMessage(""); }, "aria-invalid": !!errors[key], "aria-describedby": errors[key] ? `settings-error-${key}` : undefined };

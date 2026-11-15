@@ -221,7 +221,8 @@ class TerminalRegisterTests(Phase4Mixin, APITestCase):
     def test_daily_import_system_mapping_and_conflict(self):
         self.create()
         def parse(register):
-            return parse_daily_sheet_workbook(workbook_upload(rows=[{"sub": self.tpm_a.code, "amounts": [10, 20]}], headers=["Premier", "Lucky"], register_rows=register, raw_date=date(2026, 8, 24)), self.musa, date(2026, 8, 24))
+            with patch("core.game_schedule.validate_weekday_schedule", return_value=[]):
+                return parse_daily_sheet_workbook(workbook_upload(rows=[{"sub": self.tpm_a.code, "amounts": [10, 20]}], headers=["Premier", "Lucky"], register_rows=register, raw_date=date(2026, 8, 24)), self.musa, date(2026, 8, 24))
         result = parse([(self.tpm_a.code, "00123", "Ayo")])
         self.assertEqual(result.errors, [])
         self.assertEqual(result.payload["rows"][0]["terminal_number"], "00123")

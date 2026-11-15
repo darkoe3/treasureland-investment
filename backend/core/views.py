@@ -53,6 +53,7 @@ from .models import (
     User,
     UserAgencyAssignment,
     UserRole,
+    Weekday,
     WeeklyGameSchedule,
     json_safe_value,
     money,
@@ -1472,6 +1473,80 @@ class GameViewSet(BaseSearchViewSet):
     queryset = Game.objects.all()
     search_fields = ["name"]
     ordering_fields = ["name", "created_at"]
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
+    @staticmethod
+    def _explicit_boolean(value, expected):
+        if value is expected:
+            return True
+        if isinstance(value, int) and not isinstance(value, bool):
+            return (value == 1) if expected else (value == 0)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized in ({"true", "t", "on", "1"} if expected else {"false", "f", "off", "0"})
+        return False
+
+    @transaction.atomic
+    def partial_update(self, request, *args, **kwargs):
+        game = self.get_object()
+        game = Game.objects.select_for_update().get(pk=game.pk)
+        if game.is_active and self._explicit_boolean(request.data.get("is_active"), False):
+            weekday_values = list(
+                WeeklyGameSchedule.objects.filter(game=game, is_active=True)
+                .order_by("weekday")
+                .values_list("weekday", flat=True)
+                .distinct()
+            )
+            if weekday_values and not self._explicit_boolean(request.data.get("confirm_deactivation"), True):
+                return Response(
+                    {
+                        "detail": "Confirm deactivation of this game and its active schedule assignments.",
+                        "confirmation_required": True,
+                        "affected_weekdays": [Weekday(value).label for value in weekday_values],
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+        return super().partial_update(request, *args, **kwargs)
+
+    @staticmethod
+    def _audit_values(game, changed_fields):
+        return {
+            "game_id": game.pk,
+            "category": game.category,
+            "is_active": game.is_active,
+            "changed_fields": sorted(changed_fields),
+        }
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        game = serializer.save()
+        log_audit(
+            self.request.user, None, AuditAction.GAME_CREATED, "Game", game.pk,
+            new_values=self._audit_values(game, {"name", "category", "is_active"}),
+            description="Game created.",
+        )
+
+    def perform_update(self, serializer):
+        game = self.get_object()
+        old_active = game.is_active
+        changed_fields = {
+            field for field, value in serializer.validated_data.items()
+            if field != "confirm_deactivation" and getattr(game, field) != value
+        }
+        old_values = self._audit_values(game, changed_fields)
+        updated = serializer.save()
+        if old_active and not updated.is_active:
+            action_value = AuditAction.GAME_DEACTIVATED
+        elif not old_active and updated.is_active:
+            action_value = AuditAction.GAME_REACTIVATED
+        else:
+            action_value = AuditAction.GAME_UPDATED
+        log_audit(
+            self.request.user, None, action_value, "Game", updated.pk,
+            old_values=old_values,
+            new_values=self._audit_values(updated, changed_fields),
+            description="Game updated.",
+        )
 
     @action(detail=False, methods=["get"], url_path="for-date")
     def for_date(self, request):
@@ -1484,7 +1559,11 @@ class GameViewSet(BaseSearchViewSet):
             raise ValidationError({"date": "Use YYYY-MM-DD."}) from exc
         from .holiday_overrides import effective_schedule_for_date
 
-        schedules, _override = effective_schedule_for_date(selected_date)
+        try:
+            schedules, _override = effective_schedule_for_date(selected_date)
+        except DjangoValidationError as exc:
+            detail = exc.message_dict if hasattr(exc, "message_dict") else {"schedule": exc.messages}
+            raise ValidationError(detail) from exc
         return Response([
             {
                 "id": schedule.id,
@@ -1522,6 +1601,29 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
                 raise ValidationError({"weekday": "Use a valid weekday value from 1 to 7."})
             queryset = queryset.filter(weekday=int(weekday))
         return queryset
+
+    @action(detail=False, methods=["get"], url_path="validation")
+    def validation_summary(self, request):
+        from .game_schedule import validate_weekday_schedule
+
+        weekdays = []
+        for weekday in Weekday.values:
+            entries = list(
+                WeeklyGameSchedule.objects.filter(
+                    weekday=weekday, is_active=True, game__is_active=True,
+                ).select_related("game").order_by("display_order", "id")
+            )
+            expected = 6 if weekday == Weekday.SUNDAY else 7
+            errors = validate_weekday_schedule(weekday, entries)
+            weekdays.append({
+                "weekday": int(weekday),
+                "weekday_display": Weekday(weekday).label,
+                "expected_game_count": expected,
+                "active_game_count": len(entries),
+                "ready": not errors,
+                "errors": errors,
+            })
+        return Response({"ready": all(item["ready"] for item in weekdays), "weekdays": weekdays})
 
     def _values_for_audit(self, schedule):
         return {
@@ -1690,7 +1792,11 @@ class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet
     def _current_schedule_snapshot(self, transaction_date):
         from .importers import schedule_snapshot_for_date
         list(WeeklyGameSchedule.objects.select_for_update().filter(weekday=transaction_date.isoweekday()))
-        return schedule_snapshot_for_date(transaction_date, None)
+        try:
+            return schedule_snapshot_for_date(transaction_date, None)
+        except DjangoValidationError as exc:
+            detail = exc.message_dict if hasattr(exc, "message_dict") else {"schedule": exc.messages}
+            raise ValidationError(detail) from exc
 
     def _sheet_schedule_snapshot(self, sheet):
         from .importers import schedule_snapshot_for_date
@@ -1717,7 +1823,11 @@ class DailySheetImportBatchViewSet(AgencyWriteLockMixin, viewsets.GenericViewSet
             selected_date = timezone.datetime.fromisoformat(str(date_text)).date()
         except (TypeError, ValueError) as exc:
             raise ValidationError({"transaction_date": "Use YYYY-MM-DD."}) from exc
-        workbook = build_daily_sheet_template(agency, selected_date)
+        try:
+            workbook = build_daily_sheet_template(agency, selected_date)
+        except DjangoValidationError as exc:
+            detail = exc.message_dict if hasattr(exc, "message_dict") else {"schedule": exc.messages}
+            raise ValidationError(detail) from exc
         buffer = BytesIO()
         workbook.save(buffer)
         response = HttpResponse(

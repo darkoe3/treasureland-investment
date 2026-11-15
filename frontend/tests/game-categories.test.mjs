@@ -21,6 +21,7 @@ async function renderComponent(name, props, stateOverrides = {}) {
     if (name === "../lib/game-schedule-operations") return operations;
     if (name === "../lib/phase4-operations") return phase4;
     if (name === "../lib/resource-shapes") return shapes;
+    if (name === "./GameCatalogue") return () => null;
     if (name === "../lib/client-api") return {};
     if (name === "./SheetSafetyControls") return () => null;
     if (name === "next/link") return function Link({ children, ...props }) { return React.createElement("a", props, children); };

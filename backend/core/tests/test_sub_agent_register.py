@@ -110,9 +110,10 @@ class SubAgentRegisterTests(Phase4Mixin, APITestCase):
         txn = self.txn(sheet, self.tpm_a)
         before = (txn.person_name_snapshot, txn.tpm_code_snapshot, txn.terminal_number_snapshot)
         def parse():
-            return parse_daily_sheet_workbook(workbook_upload(rows=[{"sub": self.tpm_a.code, "amounts": [10, 20]}],
-                headers=["Premier", "Lucky"], register_rows=[(self.tpm_a.code, "", self.person.full_name)],
-                raw_date=date(2026, 8, 24)), self.musa, date(2026, 8, 24))
+            with patch("core.game_schedule.validate_weekday_schedule", return_value=[]):
+                return parse_daily_sheet_workbook(workbook_upload(rows=[{"sub": self.tpm_a.code, "amounts": [10, 20]}],
+                    headers=["Premier", "Lucky"], register_rows=[(self.tpm_a.code, "", self.person.full_name)],
+                    raw_date=date(2026, 8, 24)), self.musa, date(2026, 8, 24))
         self.assertEqual(parse().errors, [])
         self.assertEqual(parse().payload["rows"][0]["terminal_number"], "")
         self.create()
@@ -125,12 +126,13 @@ class SubAgentRegisterTests(Phase4Mixin, APITestCase):
 
     def test_daily_import_confirmation_does_not_infer_terminal(self):
         self.create()
-        response = self.client.post("/api/daily-sheet-imports/preview/", {
-            "agency": self.musa.pk, "transaction_date": "2026-08-24",
-            "file": workbook_upload(rows=[{"sub": self.tpm_a.code, "amounts": [10, 20]}],
-                headers=["Premier", "Lucky"], raw_date=date(2026, 8, 24))}, format="multipart")
-        self.assertEqual(response.status_code, 201, response.data)
-        result = self.client.post(f"/api/daily-sheet-imports/{response.data['id']}/confirm/", {}, format="json")
+        with patch("core.game_schedule.validate_weekday_schedule", return_value=[]):
+            response = self.client.post("/api/daily-sheet-imports/preview/", {
+                "agency": self.musa.pk, "transaction_date": "2026-08-24",
+                "file": workbook_upload(rows=[{"sub": self.tpm_a.code, "amounts": [10, 20]}],
+                    headers=["Premier", "Lucky"], raw_date=date(2026, 8, 24))}, format="multipart")
+            self.assertEqual(response.status_code, 201, response.data)
+            result = self.client.post(f"/api/daily-sheet-imports/{response.data['id']}/confirm/", {}, format="json")
         self.assertEqual(result.status_code, 200, result.data)
         from core.models import TPMDailyTransaction
         self.assertEqual(TPMDailyTransaction.objects.get().terminal_number_snapshot, "")

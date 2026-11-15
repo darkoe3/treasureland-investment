@@ -2,6 +2,7 @@ from datetime import date, time
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from rest_framework import status
@@ -12,6 +13,7 @@ from core.models import (
     AgentType,
     AuditLog,
     DailySheet,
+    DailySheetGame,
     DailySheetStatus,
     Game,
     OmittedTerminal,
@@ -79,8 +81,29 @@ class Phase2Mixin:
             tax=Decimal(tax),
             created_by=self.accountant,
         )
-        sheet.copy_weekday_games()
+        self.snapshot_fixture_games(sheet)
         return sheet
+
+    @staticmethod
+    def snapshot_fixture_games(sheet):
+        schedules = WeeklyGameSchedule.objects.filter(
+            weekday=sheet.transaction_date.isoweekday(),
+            is_active=True,
+            game__is_active=True,
+        ).select_related("game").order_by("display_order", "id")
+        DailySheetGame.objects.bulk_create([
+            DailySheetGame(
+                daily_sheet=sheet,
+                game=schedule.game,
+                game_name_snapshot=schedule.game.name,
+                category_snapshot=schedule.category,
+                is_whole_day_snapshot=schedule.is_whole_day,
+                closing_time_snapshot=schedule.closing_time,
+                draw_time_snapshot=schedule.draw_time,
+                display_order=schedule.display_order,
+            )
+            for schedule in schedules
+        ])
 
     def sales_payload(self, sheet, first="0.00", second="0.00"):
         games = list(sheet.sheet_games.order_by("display_order"))
@@ -107,8 +130,14 @@ class Phase2ModelTests(Phase2Mixin, TestCase):
         self.build_base()
 
     def test_daily_sheet_copies_correct_weekday_game_schedule(self):
-        sheet = self.create_sheet()
-        self.assertEqual(list(sheet.sheet_games.values_list("game_name_snapshot", flat=True)), ["Premier", "Lucky"])
+        sheet = DailySheet.objects.create(
+            agency=self.agency,
+            transaction_date=date(2026, 8, 24),
+            created_by=self.accountant,
+        )
+        with self.assertRaises(DjangoValidationError):
+            sheet.copy_weekday_games()
+        self.assertFalse(sheet.sheet_games.exists())
 
     def test_historical_daily_sheet_game_snapshots_remain_unchanged(self):
         sheet = self.create_sheet()
@@ -390,7 +419,7 @@ class Phase2APITests(Phase2Mixin, APITestCase):
     def test_filtering_by_agency_status_and_date_range(self):
         sheet = self.create_sheet()
         other = DailySheet.objects.create(agency=self.other_agency, transaction_date=date(2026, 8, 25), created_by=self.super_admin)
-        other.copy_weekday_games()
+        self.snapshot_fixture_games(other)
         self.client.force_authenticate(self.super_admin)
         response = self.client.get(
             f"/api/daily-sheets/?agency={self.agency.id}&status={sheet.status}&date_from=2026-08-24&date_to=2026-08-24"
@@ -402,5 +431,5 @@ class Phase2APITests(Phase2Mixin, APITestCase):
     def test_games_for_date_endpoint(self):
         self.client.force_authenticate(self.accountant)
         response = self.client.get("/api/games/for-date/?date=2026-08-24")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual([item["game_name"] for item in response.data], ["Premier", "Lucky"])
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("schedule", response.data)

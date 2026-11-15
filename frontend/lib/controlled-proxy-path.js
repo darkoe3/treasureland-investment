@@ -1,7 +1,7 @@
 const COLLECTION_METHODS = {
   "terminal-numbers": new Set(["GET", "POST"]),
   agencies: new Set(["GET", "POST"]),
-  games: new Set(["GET"]),
+  games: new Set(["GET", "POST"]),
   people: new Set(["GET", "POST"]),
   "tpm-codes": new Set(["GET", "POST"]),
   "daily-sheets": new Set(["GET", "POST"]),
@@ -16,6 +16,7 @@ const COLLECTION_METHODS = {
 };
 
 const DETAIL_METHODS = {
+  games: new Set(["GET", "PATCH"]),
   agencies: new Set(["GET", "PATCH"]),
   "terminal-numbers": new Set(["GET", "PATCH"]),
   people: new Set(["GET", "PATCH", "DELETE"]),

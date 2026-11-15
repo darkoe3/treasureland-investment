@@ -90,10 +90,10 @@ class ApprovedGameScheduleTests(TestCase):
 
     def test_no_duplicate_active_game_day_schedule(self):
         game = Game.objects.create(name="Duplicate Game")
-        WeeklyGameSchedule.objects.create(game=game, weekday=Weekday.MONDAY, closing_time=time(10), draw_time=time(11), display_order=1)
+        WeeklyGameSchedule.objects.create(game=game, weekday=Weekday.MONDAY, closing_time=time(10), draw_time=time(11), display_order=9)
 
         with self.assertRaises((IntegrityError, ValidationError)), transaction.atomic():
-            WeeklyGameSchedule.objects.create(game=game, weekday=Weekday.MONDAY, closing_time=time(12), draw_time=time(13), display_order=2)
+            WeeklyGameSchedule.objects.create(game=game, weekday=Weekday.MONDAY, closing_time=time(12), draw_time=time(13), display_order=10)
 
     def test_new_sheet_snapshots_whole_day_status(self):
         agency = Agency.objects.create(name="Musa 1", code="musa-1")
@@ -117,10 +117,8 @@ class ApprovedGameScheduleTests(TestCase):
         snapshot = sheet.sheet_games.get(game_name_snapshot="Peoples")
 
         schedule = WeeklyGameSchedule.objects.get(weekday=Weekday.MONDAY, game__name="Peoples", is_active=True)
-        schedule.category = "GHANA"
-        schedule.is_whole_day = True
-        schedule.closing_time = None
-        schedule.draw_time = None
+        schedule.closing_time = time(13, 30)
+        schedule.draw_time = time(13, 45)
         schedule.save()
         snapshot.refresh_from_db()
 
@@ -155,7 +153,7 @@ class WeeklyGameScheduleAPITests(APITestCase):
 
     def test_super_admin_create_edit_activate_deactivate_and_audit(self):
         self.client.force_authenticate(self.admin)
-        game = Game.objects.create(name="API Game")
+        game = Game.objects.create(name="API Game", category="GHANA")
 
         created = self.client.post(
             "/api/weekly-game-schedules/",
@@ -167,11 +165,11 @@ class WeeklyGameScheduleAPITests(APITestCase):
 
         updated = self.client.patch(
             f"/api/weekly-game-schedules/{schedule_id}/",
-            {"category": "TIMED", "is_whole_day": False, "closing_time": "08:00", "draw_time": "08:30", "is_active": True},
+            {"display_order": 10, "is_active": True},
             format="json",
         )
         self.assertEqual(updated.status_code, status.HTTP_200_OK)
-        self.assertFalse(updated.data["is_whole_day"])
+        self.assertTrue(updated.data["is_whole_day"])
 
         deactivated = self.client.delete(f"/api/weekly-game-schedules/{schedule_id}/")
         self.assertEqual(deactivated.status_code, status.HTTP_204_NO_CONTENT)

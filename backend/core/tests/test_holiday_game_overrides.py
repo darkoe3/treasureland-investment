@@ -5,7 +5,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APITransactionTestCase
 
 from core.game_schedule import validate_active_weekly_game_schedule
 from core.models import (
@@ -51,7 +51,7 @@ class CorrectedWednesdayScheduleTests(TestCase):
         self.assertEqual(lucky.draw_time.isoformat(), "22:45:00")
 
 
-class HolidayGameOverrideAPITests(APITestCase):
+class HolidayGameOverrideAPITests(APITransactionTestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser("holiday-admin@example.com", "pass-12345", full_name="Holiday Admin")
         self.accountant = User.objects.create_user("holiday-accountant@example.com", "pass-12345", full_name="Holiday Accountant")
@@ -269,6 +269,34 @@ class HolidayGameOverrideAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(HolidayGameOverride.objects.get(pk=override_data["id"]).holiday_name, "Founders Day")
+
+    def test_active_override_blocks_game_rename_and_ghana_category_change(self):
+        self.client.force_authenticate(self.admin)
+        override = self.create_override()
+        rename = self.client.patch(
+            f"/api/games/{self.normal_game.pk}/",
+            {"name": "Renamed Ghana game"},
+            format="json",
+        )
+        schedule = WeeklyGameSchedule.objects.get(
+            game=self.normal_game, weekday=self.holiday_date.isoweekday(), is_active=True,
+        )
+        category_change = self.client.patch(
+            f"/api/weekly-game-schedules/{schedule.pk}/",
+            {
+                "category": "TIMED",
+                "is_whole_day": False,
+                "closing_time": "08:00",
+                "draw_time": "08:30",
+            },
+            format="json",
+        )
+        self.assertEqual(rename.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("name", rename.data)
+        self.assertEqual(category_change.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("category", category_change.data)
+        self.assertTrue(HolidayGameOverride.objects.filter(pk=override["id"], is_active=True).exists())
+        self.assertEqual(Game.objects.get(pk=self.normal_game.pk).name, "MSP")
     def test_double_chance_cannot_be_holiday_normal_or_replacement(self):
         self.client.force_authenticate(self.admin)
         double = Game.objects.get(name="Double Chance")

@@ -247,13 +247,23 @@ class TerminalImportBatch(TimeStampedModel):
         indexes = [models.Index(fields=["uploader", "status"]), models.Index(fields=["agency", "created_at"])]
 
 
+class GameCategory(models.TextChoices):
+    TIMED = "TIMED", "Timed"
+    GHANA = "GHANA", "Ghana Game"
+    DOUBLE_CHANCE = "DOUBLE_CHANCE", "Double Chance"
+
+
 class Game(TimeStampedModel):
     name = models.CharField(max_length=120, unique=True)
+    category = models.CharField(max_length=20, choices=GameCategory.choices, default=GameCategory.TIMED)
     is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["name"]
         indexes = [models.Index(fields=["is_active", "name"])]
+        constraints = [
+            models.UniqueConstraint(Lower("name"), name="unique_game_name_ci"),
+        ]
 
     def __str__(self):
         return self.name
@@ -267,12 +277,6 @@ class Weekday(models.IntegerChoices):
     FRIDAY = 5, "Friday"
     SATURDAY = 6, "Saturday"
     SUNDAY = 7, "Sunday"
-
-
-class GameCategory(models.TextChoices):
-    TIMED = "TIMED", "Timed"
-    GHANA = "GHANA", "Ghana Game"
-    DOUBLE_CHANCE = "DOUBLE_CHANCE", "Double Chance"
 
 
 class WeeklyGameSchedule(TimeStampedModel):
@@ -292,7 +296,12 @@ class WeeklyGameSchedule(TimeStampedModel):
                 fields=["game", "weekday"],
                 condition=Q(is_active=True),
                 name="unique_active_game_weekday_schedule",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["weekday", "display_order"],
+                condition=Q(is_active=True),
+                name="unique_active_weekday_display_order",
+            ),
         ]
         indexes = [
             models.Index(fields=["weekday", "is_active"]),
@@ -300,6 +309,8 @@ class WeeklyGameSchedule(TimeStampedModel):
         ]
 
     def clean(self):
+        if self.game_id and self.category != self.game.category:
+            raise ValidationError({"category": "Schedule category must match the selected game's category."})
         if self.is_whole_day != (self.category != GameCategory.TIMED):
             raise ValidationError({"category": "Category and Whole Day status must agree."})
         if self.is_whole_day:
@@ -428,6 +439,10 @@ class VarianceStatus(models.TextChoices):
 
 
 class AuditAction(models.TextChoices):
+    GAME_CREATED = "GAME_CREATED", "Game created"
+    GAME_UPDATED = "GAME_UPDATED", "Game updated"
+    GAME_DEACTIVATED = "GAME_DEACTIVATED", "Game deactivated"
+    GAME_REACTIVATED = "GAME_REACTIVATED", "Game reactivated"
     ORGANISATION_SETTINGS_UPDATED = "ORGANISATION_SETTINGS_UPDATED", "Organisation settings updated"
     PAYMENT_NUMBER_CREATED = "PAYMENT_NUMBER_CREATED", "Payment Sub-Agent Number created"
     PAYMENT_TERMINAL_CREATED = "PAYMENT_TERMINAL_CREATED", "Payment Terminal Number created"

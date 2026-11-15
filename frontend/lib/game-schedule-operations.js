@@ -34,6 +34,44 @@ export function groupScheduleByWeekday(entries = []) {
   }));
 }
 
+export function validateWeeklySchedule(entries = [], games = []) {
+  const gameById = new Map(games.map((game) => [String(game.id), game]));
+  return WEEKDAYS.map((weekday) => {
+    const activeEntries = entries.filter((entry) => {
+      const game = gameById.get(String(entry.game));
+      return Number(entry.weekday) === weekday.value && entry.is_active !== false && Boolean(game) && game.is_active !== false;
+    });
+    const expectedCount = weekday.value === 7 ? 6 : 7;
+    const categories = activeEntries.map((entry) => {
+      const game = gameById.get(String(entry.game));
+      const category = game?.category || entry.category;
+      return category === "GHANA_GAME" ? "GHANA" : category;
+    });
+    const issues = [];
+
+    if (activeEntries.length !== expectedCount) {
+      issues.push(`Expected ${expectedCount} active games; found ${activeEntries.length}.`);
+    }
+    if (categories.filter((category) => category === "GHANA").length !== 1) {
+      issues.push("Expected exactly one Ghana Game.");
+    }
+    if (categories.filter((category) => category === "DOUBLE_CHANCE").length !== 1) {
+      issues.push("Expected exactly one Double Chance game.");
+    }
+    if (categories.filter((category) => category === "TIMED").length !== expectedCount - 2) {
+      issues.push(`Expected ${expectedCount - 2} Timed games.`);
+    }
+    if (new Set(activeEntries.map((entry) => String(entry.game))).size !== activeEntries.length) {
+      issues.push("Active game assignments must be unique for this weekday.");
+    }
+    if (new Set(activeEntries.map((entry) => String(entry.display_order))).size !== activeEntries.length) {
+      issues.push("Active display order values must be unique for this weekday.");
+    }
+
+    return { ...weekday, expectedCount, activeCount: activeEntries.length, issues, ready: issues.length === 0 };
+  });
+}
+
 export function emptyScheduleForm() {
   return {
     id: "",

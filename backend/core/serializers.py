@@ -4,7 +4,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -17,6 +17,7 @@ from .models import (
     DailySheetGame,
     DailySheetStatus,
     Game,
+    GameCategory,
     HolidayGameOverride,
     OmittedTerminal,
     PaymentObligation,
@@ -591,20 +592,102 @@ class TPMCodeSerializer(serializers.ModelSerializer):
         return code.strip()
 
 
+class GameCategoryField(serializers.ChoiceField):
+    def __init__(self, **kwargs):
+        choices = [(value, label) for value, label in GameCategory.choices]
+        choices.append(("GHANA_GAME", "Ghana Game"))
+        super().__init__(choices=choices, **kwargs)
+
+    def to_internal_value(self, data):
+        if data == "GHANA_GAME":
+            data = GameCategory.GHANA
+        return super().to_internal_value(data)
+
+
 class GameSerializer(serializers.ModelSerializer):
+    category = GameCategoryField(required=False)
+    confirm_deactivation = serializers.BooleanField(write_only=True, required=False)
+
     class Meta:
         model = Game
-        fields = ("id", "name", "is_active", "created_at", "updated_at")
+        fields = ("id", "name", "category", "is_active", "confirm_deactivation", "created_at", "updated_at")
         read_only_fields = ("created_at", "updated_at")
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Game name cannot be blank.")
+        matches = Game.objects.filter(name__iexact=value)
+        if self.instance:
+            matches = matches.exclude(pk=self.instance.pk)
+        if matches.exists():
+            raise serializers.ValidationError("A game with this name already exists.")
+        return value
+
+    def validate(self, attrs):
+        instance = self.instance
+        if "confirm_deactivation" in attrs and (
+            instance is None or attrs.get("is_active") is not False
+        ):
+            raise serializers.ValidationError({
+                "confirm_deactivation": "Use this confirmation only with is_active=false."
+            })
+        if instance and "name" in attrs and attrs["name"] != instance.name:
+            overrides = HolidayGameOverride.objects.filter(
+                is_active=True,
+            ).filter(Q(normal_game_id=instance.pk) | Q(replacement_game_id=instance.pk))
+            if overrides.exists():
+                raise serializers.ValidationError({
+                    "name": "This game is referenced by active holiday overrides and cannot be renamed."
+                })
+        if instance and "category" in attrs and attrs["category"] != instance.category:
+            if WeeklyGameSchedule.objects.filter(game=instance, is_active=True).exists():
+                raise serializers.ValidationError({
+                    "category": "Deactivate and update this game's schedule assignments before changing its category."
+                })
+            overrides = HolidayGameOverride.objects.filter(
+                is_active=True,
+            ).filter(Q(normal_game_id=instance.pk) | Q(replacement_game_id=instance.pk))
+            if overrides.exists():
+                raise serializers.ValidationError({
+                    "category": "This game is referenced by active holiday overrides and cannot change category."
+                })
+        if instance and "is_active" in attrs and attrs["is_active"] != instance.is_active:
+            if not attrs["is_active"]:
+                overrides = HolidayGameOverride.objects.filter(
+                    is_active=True,
+                ).filter(Q(normal_game_id=instance.pk) | Q(replacement_game_id=instance.pk))
+                if overrides.exists():
+                    raise serializers.ValidationError({
+                        "is_active": "Deactivate active holiday overrides before deactivating this game."
+                    })
+            else:
+                category = attrs.get("category", instance.category)
+                mismatched_schedules = WeeklyGameSchedule.objects.filter(game=instance).exclude(category=category)
+                if mismatched_schedules.exists():
+                    raise serializers.ValidationError({
+                        "is_active": "Update this game's schedule assignments to its current category before reactivating it."
+                    })
+        return attrs
+
+    def update(self, instance, validated_data):
+        validated_data.pop("confirm_deactivation", None)
+        return super().update(instance, validated_data)
+
+
+class WeeklyGameCategoryField(GameCategoryField):
+    pass
 
 
 class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
+    category = WeeklyGameCategoryField(required=False)
     game_name = serializers.CharField(source="game.name", read_only=True)
     game_is_active = serializers.BooleanField(source="game.is_active", read_only=True)
     weekday_display = serializers.CharField(source="get_weekday_display", read_only=True)
 
     class Meta:
         model = WeeklyGameSchedule
+        validators = []
         fields = (
             "id",
             "game",
@@ -641,7 +724,16 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
         weekday = attrs.get("weekday", getattr(self.instance, "weekday", None))
         is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
 
-        category = attrs.get("category", getattr(self.instance, "category", "TIMED"))
+        category = attrs.get("category", getattr(self.instance, "category", None))
+        if category is None and game is not None:
+            category = game.category
+            attrs["category"] = category
+        if game is not None and category != game.category:
+            raise serializers.ValidationError({
+                "category": "Schedule category must match the selected game's category."
+            })
+        if game is not None and is_active and not game.is_active:
+            raise serializers.ValidationError({"game": "Only active catalogue games can have active schedule assignments."})
         if is_whole_day != (category != "TIMED"):
             raise serializers.ValidationError({"category": "Category and Whole Day status must agree."})
         if is_whole_day:
@@ -661,6 +753,41 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
                 duplicate = duplicate.exclude(pk=self.instance.pk)
             if duplicate.exists():
                 raise serializers.ValidationError({"game": "This game already has an active schedule for that weekday."})
+            duplicate_order = WeeklyGameSchedule.objects.filter(
+                weekday=weekday, display_order=attrs.get("display_order", getattr(self.instance, "display_order", None)),
+                is_active=True,
+            )
+            if self.instance:
+                duplicate_order = duplicate_order.exclude(pk=self.instance.pk)
+            if duplicate_order.exists():
+                raise serializers.ValidationError({"display_order": "This display order is already used on that weekday."})
+
+        if self.instance and self.instance.category == GameCategory.GHANA:
+            keeps_ghana_assignment = (
+                game
+                and game.pk == self.instance.game_id
+                and weekday == self.instance.weekday
+                and category == GameCategory.GHANA
+                and is_active
+            )
+            if not keeps_ghana_assignment:
+                affected_overrides = [
+                    override for override in HolidayGameOverride.objects.filter(
+                        is_active=True,
+                    ).filter(Q(normal_game_id=self.instance.game_id) | Q(replacement_game_id=self.instance.game_id))
+                    if (
+                        (override.normal_game_id == self.instance.game_id and override.holiday_date.isoweekday() == self.instance.weekday)
+                        or (override.replacement_game_id == self.instance.game_id and override.source_date.isoweekday() == self.instance.weekday)
+                    )
+                ]
+                if affected_overrides:
+                    field = next(
+                        (candidate for candidate in ("category", "game", "weekday", "is_active") if candidate in attrs),
+                        "category",
+                    )
+                    raise serializers.ValidationError({
+                        field: "This Ghana schedule assignment is referenced by active holiday overrides."
+                    })
         return attrs
 
 
@@ -1154,7 +1281,11 @@ class DailySheetSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context["request"]
         sheet = DailySheet.objects.create(**validated_data, created_by=request.user)
-        sheet.copy_weekday_games()
+        try:
+            sheet.copy_weekday_games()
+        except DjangoValidationError as exc:
+            detail = exc.message_dict if hasattr(exc, "message_dict") else {"schedule": exc.messages}
+            raise serializers.ValidationError(detail) from exc
         return sheet
 
 

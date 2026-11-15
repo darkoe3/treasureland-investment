@@ -45,6 +45,12 @@ Accountants may edit only assigned-agency sheets in `DRAFT`, `RETURNED` or `REOP
 
 Excel import is an alternate way to populate an editable daily sheet. It never overwrites Submitted or Approved sheets. If an editable Draft already contains transaction rows, confirmation must explicitly replace the existing rows; imports do not silently merge. Creating a sheet by import snapshots the current active weekday games, including Whole Day entries. Later schedule edits do not rewrite historical `DailySheetGame` snapshots.
 
+## Game Catalogue and Weekly Schedule
+
+`Game` names are trimmed, nonblank and unique without regard to case. Each game has one catalogue category: `TIMED`, `GHANA` (UI label “GHANA_GAME”) or `DOUBLE_CHANCE`. Accountants may read the catalogue; only Super Admin may create or patch games. `GET /api/games/` returns `id`, `name`, `category`, `is_active`, `created_at` and `updated_at`. Create with `POST /api/games/` using `{ "name": "...", "category": "TIMED", "is_active": true }`; update with `PATCH /api/games/{id}/`. Category changes are rejected while active schedules or holiday overrides depend on the current category. Historical Daily Sheet category snapshots remain unchanged when catalogue data changes. Game deletion is not supported. Deactivating a game that has active weekly assignments requires `confirm_deactivation: true`. Without it, the API returns HTTP 409 with `confirmation_required: true` and the affected `weekday` names. Game lifecycle audit events store only the game ID, category, active status and changed field names.
+
+Weekly assignments inherit the selected game's category; their `category` field is retained for schedule and historical snapshot compatibility. `GHANA_GAME` is accepted as an API alias and normalized to `GHANA`. `GET /api/weekly-game-schedules/validation/` summarizes per-weekday readiness. Incomplete schedules are allowed while being configured, but effective date resolution and creation/import of a new daily sheet require seven active games Monday–Saturday and six Sunday, exactly one Ghana Game and one Double Chance with all remaining games Timed, unique games and display orders, and valid timed/Whole Day fields. Existing-sheet imports continue to use immutable stored game snapshots.
+
 ## Calculations
 
 - NET Sales = sum of all game sales for the Sub-Agent Number.
@@ -95,6 +101,12 @@ Excel exports contain workbook metadata, summary metrics, daily reconciliation, 
 - `GET|PATCH|DELETE /api/people/{id}/`
 - `GET|POST /api/tpm-codes/`
 - `GET|PATCH|DELETE /api/tpm-codes/{id}/`
+- `GET|POST /api/games/`
+- `GET|PATCH /api/games/{id}/`
+- `GET|POST /api/weekly-game-schedules/`
+- `GET|PATCH|DELETE /api/weekly-game-schedules/{id}/`
+- `GET /api/weekly-game-schedules/validation/`
+- `GET /api/holiday-game-overrides/`
 - `GET /api/games/for-date/?date=YYYY-MM-DD`
 - `POST /api/daily-sheet-imports/preview/`
 - `GET /api/daily-sheet-imports/{id}/`

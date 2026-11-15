@@ -18,7 +18,7 @@ import {
   searchPeople,
 } from "../lib/phase4-operations.js";
 import { buildReportQuery, filenameFromDisposition, resolvePeriodDisplay, validateReportFilters } from "../lib/report-operations.js";
-import { emptyScheduleForm, schedulePayload, validateScheduleForm, withScheduleMode } from "../lib/game-schedule-operations.js";
+import { emptyScheduleForm, schedulePayload, validateScheduleForm, validateWeeklySchedule, WEEKDAYS, withScheduleMode } from "../lib/game-schedule-operations.js";
 import { activeAgenciesFromPayload, buildAssignmentRows, listFromApiPayload, shouldSyncAgencyAssignments } from "../lib/resource-shapes.js";
 
 async function file(path) {
@@ -467,6 +467,12 @@ test("phase 5 report proxy allowlist permits exact get-only report paths", () =>
 
 test("weekly schedule proxy allowlist permits exact paths and methods only", () => {
   assert.equal(isAllowedBackendProxyPath("games", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("games", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("games/7", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("games/7", "PATCH"), true);
+  assert.equal(isAllowedBackendProxyPath("games/7", "DELETE"), false);
+  assert.equal(isAllowedBackendProxyPath("games/for-date", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("games/abc", "PATCH"), false);
   assert.equal(isAllowedBackendProxyPath("weekly-game-schedules", "GET"), true);
   assert.equal(isAllowedBackendProxyPath("weekly-game-schedules", "POST"), true);
   assert.equal(isAllowedBackendProxyPath("weekly-game-schedules/7", "GET"), true);
@@ -475,7 +481,7 @@ test("weekly schedule proxy allowlist permits exact paths and methods only", () 
   assert.equal(isAllowedBackendProxyPath("weekly-game-schedules", "DELETE"), false);
   assert.equal(isAllowedBackendProxyPath("weekly-game-schedules/abc", "PATCH"), false);
   assert.equal(isAllowedBackendProxyPath("weekly-game-schedules/7/activate", "POST"), false);
-  assert.equal(isAllowedBackendProxyPath("games", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("games", "DELETE"), false);
 });
 
 test("holiday override proxy allowlist permits reads and protected lifecycle mutations only", () => {
@@ -500,6 +506,19 @@ test("weekly schedule proxy keeps csrf enforcement before unsafe forwarding", as
   assert.deepEqual(result.payload, { detail: "Invalid security token." });
   assert.equal(result.diagnostics.allowed, true);
   assert.equal(calls.length, 0);
+});
+
+test("game creation proxy keeps CSRF enforcement and exact methods", async () => {
+  const blocked = await resolveProxy({
+    segments: ["games"],
+    body: JSON.stringify({ name: "Example", category: "TIMED" }),
+    validateCsrf: csrfFail,
+  });
+  assert.equal(blocked.result.status, 403);
+  assert.equal(blocked.result.diagnostics.allowed, true);
+  assert.equal(blocked.calls.length, 0);
+  assert.equal(isAllowedBackendProxyPath("games/7", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("games/7/delete", "DELETE"), false);
 });
 
 test("daily sheet import proxy allowlist permits exact paths and methods only", () => {
@@ -603,6 +622,23 @@ test("weekly schedule Whole Day mode clears time fields", () => {
   assert.equal(wholeDay.draw_time, "");
   assert.equal(validateScheduleForm({ ...wholeDay, weekday: "1", display_order: "1" }), "");
   assert.equal(schedulePayload({ ...wholeDay, weekday: "1", display_order: "1" }).closing_time, null);
+});
+
+test("weekly schedule readiness checks required counts, categories and unique order", () => {
+  const games = [
+    { id: 1, category: "GHANA_GAME", is_active: true },
+    { id: 2, category: "DOUBLE_CHANCE", is_active: true },
+    ...Array.from({ length: 5 }, (_, index) => ({ id: index + 3, category: "TIMED", is_active: true })),
+  ];
+  const entries = WEEKDAYS.flatMap(({ value }) => games
+    .slice(0, value === 7 ? 6 : 7)
+    .map((game, index) => ({ game: game.id, weekday: value, display_order: index + 1, is_active: true })));
+
+  assert.ok(validateWeeklySchedule(entries, games).every((day) => day.ready));
+  const incomplete = validateWeeklySchedule(entries.filter((entry) => !(entry.weekday === 1 && entry.game === 7)), games);
+  assert.ok(incomplete.find((day) => day.value === 1).issues.includes("Expected 7 active games; found 6."));
+  const duplicateOrder = validateWeeklySchedule(entries.map((entry) => entry.weekday === 2 && entry.game === 3 ? { ...entry, display_order: 2 } : entry), games);
+  assert.ok(duplicateOrder.find((day) => day.value === 2).issues.includes("Active display order values must be unique for this weekday."));
 });
 
 test("weekly schedule screen hides mutation controls from accountants and keeps responsive layout", async () => {

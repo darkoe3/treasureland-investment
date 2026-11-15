@@ -3,6 +3,7 @@
 import { CalendarDays, Check, Edit2, Plus, Power, PowerOff, Save, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { apiPath, clientRequest } from "../lib/client-api";
+import GameCatalogue from "./GameCatalogue";
 import {
   categoryLabel,
   emptyScheduleForm,
@@ -12,6 +13,7 @@ import {
   scheduleMode,
   schedulePayload,
   validateScheduleForm,
+  validateWeeklySchedule,
   WEEKDAYS,
   withScheduleMode,
 } from "../lib/game-schedule-operations";
@@ -39,19 +41,6 @@ function localDateString() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
-function ModeToggle({ value, onChange }) {
-  return (
-    <div className="segmented-control" role="group" aria-label="Schedule mode">
-      <button type="button" className={!value ? "selected" : ""} onClick={() => onChange(false)}>
-        Timed
-      </button>
-      <button type="button" className={value ? "selected" : ""} onClick={() => onChange(true)}>
-        Whole Day
-      </button>
-    </div>
-  );
-}
-
 export default function GameScheduleClient({ user }) {
   const canMutate = user.role === "SUPER_ADMIN";
   const [entries, setEntries] = useState([]);
@@ -63,9 +52,16 @@ export default function GameScheduleClient({ user }) {
   const [holidayChoices, setHolidayChoices] = useState({ normal: [], source: [] });
   const [editingId, setEditingId] = useState("");
   const [state, setState] = useState({ loading: true, saving: false, error: "", success: "" });
+  const [activeTab, setActiveTab] = useState("schedule");
+  const [showValidation, setShowValidation] = useState(false);
 
   const groups = useMemo(() => groupScheduleByWeekday(entries), [entries]);
   const activeGames = useMemo(() => games.filter((game) => game.is_active !== false), [games]);
+  const selectedGame = games.find((game) => String(game.id) === form.game);
+  const selectableGames = selectedGame && selectedGame.is_active === false
+    ? [...activeGames, selectedGame]
+    : activeGames;
+  const weeklyValidation = useMemo(() => validateWeeklySchedule(entries, games), [entries, games]);
 
   async function loadData() {
     setState((current) => ({ ...current, loading: true, error: "" }));
@@ -79,8 +75,10 @@ export default function GameScheduleClient({ user }) {
       setGames(listFromApiPayload(gamesPayload));
       setOverrides(listFromSchedulePayload(overridesPayload));
       setState((current) => ({ ...current, loading: false }));
+      return true;
     } catch (error) {
       setState({ loading: false, saving: false, error: error.message, success: "" });
+      return false;
     }
   }
 
@@ -88,9 +86,17 @@ export default function GameScheduleClient({ user }) {
     queueMicrotask(loadData);
   }, []);
 
-  function beginCreate() {
+  function beginCreate(game = null, weekday = "") {
     setEditingId("");
-    setForm(emptyScheduleForm());
+    const empty = emptyScheduleForm();
+    const category = game?.category === "GHANA_GAME" ? "GHANA" : game?.category || empty.category;
+    const initial = {
+      ...empty,
+      game: game ? String(game.id) : "",
+      weekday: weekday ? String(weekday) : empty.weekday,
+      category,
+    };
+    setForm(game ? withScheduleMode(initial, game.category !== "TIMED") : initial);
     setState((current) => ({ ...current, error: "", success: "" }));
   }
 
@@ -248,20 +254,43 @@ export default function GameScheduleClient({ user }) {
       <section className="panel">
         <div className="panel-heading">
           <div>
+            <h2>Game Schedule</h2>
+            <p className="empty-state">Manage the catalogue, weekly assignments and holiday overrides. Schedule changes affect new sheets only.</p>
+          </div>
+        </div>
+        <nav className="game-schedule-tabs" aria-label="Game schedule sections">
+          <button type="button" aria-pressed={activeTab === "schedule"} className={activeTab === "schedule" ? "selected" : ""} onClick={() => setActiveTab("schedule")}>Weekly Schedule</button>
+          {canMutate ? <button type="button" aria-pressed={activeTab === "games"} className={activeTab === "games" ? "selected" : ""} onClick={() => setActiveTab("games")}>Manage Games</button> : null}
+          <button type="button" aria-pressed={activeTab === "holidays"} className={activeTab === "holidays" ? "selected" : ""} onClick={() => setActiveTab("holidays")}>Holiday Overrides</button>
+        </nav>
+      </section>
+
+      {activeTab === "schedule" ? <>
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
             <h2>Weekly Game Schedule</h2>
             <p className="empty-state">Current active entries feed new daily sheet snapshots.</p>
           </div>
-          {canMutate ? (
-            <button className="secondary-button" type="button" onClick={beginCreate}>
-              <Plus size={16} aria-hidden="true" />
-              New entry
-            </button>
-          ) : null}
+          {canMutate ? <button className="secondary-button" type="button" onClick={() => beginCreate()}><Plus size={16} aria-hidden="true" />New entry</button> : null}
         </div>
-        {state.error ? <p className="form-error">{state.error}</p> : null}
-        {state.success ? <p className="form-success">{state.success}</p> : null}
+        {state.error ? <p className="form-error" role="alert">{state.error}</p> : null}
+        {state.success ? <p className="form-success" role="status">{state.success}</p> : null}
       </section>
-
+      <section className="panel schedule-validation">
+        <div className="panel-heading">
+          <div>
+            <h3>Weekly schedule validation</h3>
+            <p className={weeklyValidation.every((day) => day.ready) ? "form-success" : "form-error"} role="status">
+              {weeklyValidation.every((day) => day.ready) ? "Ready for Daily Sheets." : "Work in progress — incomplete schedules cannot be used for Daily Sheets."}
+            </p>
+          </div>
+          <button type="button" className="secondary-button" onClick={() => setShowValidation(true)}>Validate Weekly Schedule</button>
+        </div>
+        {showValidation ? <ul className="schedule-validation-list" aria-live="polite">
+          {weeklyValidation.map((day) => <li key={day.value}><strong>{day.label}:</strong> {day.ready ? "Ready." : day.issues.join(" ")}</li>)}
+        </ul> : null}
+      </section>
       <section className="schedule-layout">
         <div className="schedule-days">
           {groups.map((group) => (
@@ -288,7 +317,7 @@ export default function GameScheduleClient({ user }) {
                   </thead>
                   <tbody>
                     {state.loading ? <tr><td colSpan={canMutate ? 7 : 6} className="empty-cell">Loading schedule...</td></tr> : null}
-                    {!state.loading && !group.entries.length ? <tr><td colSpan={canMutate ? 7 : 6} className="empty-cell">No schedule entries.</td></tr> : null}
+                    {!state.loading && !group.entries.length ? <tr><td colSpan={canMutate ? 7 : 6} className="empty-cell">{canMutate ? <><p>No schedule assignments for this day.</p><button className="secondary-button" type="button" onClick={() => beginCreate(null, group.value)}>Add game to day</button></> : "No schedule assignments for this day."}</td></tr> : null}
                     {group.entries.map((entry) => (
                       <tr key={entry.id}>
                         <td data-label="Order">{entry.display_order}</td>
@@ -296,7 +325,7 @@ export default function GameScheduleClient({ user }) {
                         <td data-label="Mode">{scheduleMode(entry)}</td>
                         <td data-label="Closing">{entry.is_whole_day ? "Whole Day" : formatTime(entry.closing_time)}</td>
                         <td data-label="Draw">{entry.is_whole_day ? "Whole Day" : formatTime(entry.draw_time)}</td>
-                        <td data-label="Status"><StatusBadge active={entry.is_active} /></td>
+                        <td data-label="Status"><StatusBadge active={entry.is_active && entry.game_is_active !== false} /></td>
                         {canMutate ? (
                           <td data-label="Actions">
                             <div className="button-row compact">
@@ -308,7 +337,7 @@ export default function GameScheduleClient({ user }) {
                                   <PowerOff size={16} aria-hidden="true" />
                                 </button>
                               ) : (
-                                <button className="icon-button success-soft" type="button" onClick={() => setActive(entry, true)} aria-label={`Activate ${entry.game_name}`}>
+                                <button className="icon-button success-soft" type="button" disabled={entry.game_is_active === false} onClick={() => setActive(entry, true)} aria-label={`Activate ${entry.game_name}`}>
                                   <Power size={16} aria-hidden="true" />
                                 </button>
                               )}
@@ -336,11 +365,20 @@ export default function GameScheduleClient({ user }) {
             </div>
             <div className="field-grid single">
               <label className="field-group">Game
-                <select required value={form.game} onChange={(event) => setForm({ ...form, game: event.target.value })}>
+                <select required value={form.game} onChange={(event) => {
+                  const selectedGame = activeGames.find((game) => String(game.id) === event.target.value);
+                  if (!selectedGame) {
+                    setForm({ ...form, game: "" });
+                    return;
+                  }
+                  const category = selectedGame.category === "GHANA_GAME" ? "GHANA" : selectedGame.category;
+                  setForm(withScheduleMode({ ...form, game: event.target.value, category }, selectedGame.category !== "TIMED"));
+                }}>
                   <option value="">Select game</option>
-                  {activeGames.map((game) => <option key={game.id} value={game.id}>{game.name}</option>)}
+                  {selectableGames.map((game) => <option key={game.id} value={game.id}>{game.name}{game.is_active === false ? " (Inactive)" : ""}</option>)}
                 </select>
               </label>
+              {!activeGames.length ? <p className="form-error">No active games. <button className="secondary-button compact-button" type="button" onClick={() => setActiveTab("games")}>Create the first game</button></p> : null}
               <label className="field-group">Weekday
                 <select required value={form.weekday} onChange={(event) => setForm({ ...form, weekday: event.target.value })}>
                   {WEEKDAYS.map((weekday) => <option key={weekday.value} value={weekday.value}>{weekday.label}</option>)}
@@ -349,11 +387,7 @@ export default function GameScheduleClient({ user }) {
               <label className="field-group">Display order
                 <input type="number" min="1" step="1" required value={form.display_order} onChange={(event) => setForm({ ...form, display_order: event.target.value })} />
               </label>
-              <div className="field-group">
-                <span>Mode</span>
-                <ModeToggle value={form.is_whole_day} onChange={(isWholeDay) => setForm(withScheduleMode(form, isWholeDay))} />
-              </div>
-              {form.is_whole_day ? <label className="field-group">Category<select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}><option value="GHANA">Ghana Game</option><option value="DOUBLE_CHANCE">Double Chance</option></select></label> : null}
+              <p className="field-group"><strong>Mode:</strong> {form.is_whole_day ? "Whole Day" : "Timed"} (based on the selected game&apos;s category)</p>
               {!form.is_whole_day ? (
                 <>
                   <label className="field-group">Closing Time
@@ -376,6 +410,9 @@ export default function GameScheduleClient({ user }) {
           </form>
         ) : null}
       </section>
+      </> : null}
+      {activeTab === "games" && canMutate ? <GameCatalogue games={games} entries={entries} loading={state.loading} onRefresh={loadData} onSchedule={(game) => { beginCreate(game); setActiveTab("schedule"); }} /> : null}
+      {activeTab === "holidays" ? <>
       <section className="panel holiday-overrides-panel">
         <div className="panel-heading">
           <div>
@@ -424,6 +461,7 @@ export default function GameScheduleClient({ user }) {
           </form>
         ) : null}
       </section>
+      </> : null}
     </div>
   );
 }

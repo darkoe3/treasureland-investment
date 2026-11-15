@@ -68,7 +68,24 @@ class Phase5Mixin:
             tax=Decimal(tax),
             created_by=self.acct,
         )
-        sheet.copy_weekday_games()
+        schedules = WeeklyGameSchedule.objects.filter(
+            weekday=day.isoweekday(),
+            is_active=True,
+            game__is_active=True,
+        ).select_related("game").order_by("display_order", "id")
+        DailySheetGame.objects.bulk_create([
+            DailySheetGame(
+                daily_sheet=sheet,
+                game=schedule.game,
+                game_name_snapshot=schedule.game.name,
+                category_snapshot=schedule.category,
+                is_whole_day_snapshot=schedule.is_whole_day,
+                closing_time_snapshot=schedule.closing_time,
+                draw_time_snapshot=schedule.draw_time,
+                display_order=schedule.display_order,
+            )
+            for schedule in schedules
+        ])
         sheet.status = status_value
         sheet.save()
         return sheet

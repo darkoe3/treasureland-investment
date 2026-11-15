@@ -8,6 +8,7 @@ from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APITestCase
 
 from core.models import DailySheet, DailySheetGame, Game, TPMDailyTransaction, TransactionGameSale
+from core.game_schedule import apply_approved_weekly_game_schedule
 from core.reports import build_report, build_workbook
 from core.tests.test_phase_2 import Phase2Mixin
 
@@ -17,6 +18,7 @@ class CommissionTests(Phase2Mixin, APITestCase):
         self.build_base()
 
     def test_manual_creation_policy_and_readonly_snapshot(self):
+        apply_approved_weekly_game_schedule()
         self.client.force_authenticate(self.accountant)
         policy = self.client.get('/api/daily-sheets/commission-policy/')
         self.assertEqual(Decimal(policy.data['commission_rate']), Decimal('.02'))

@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.db import connection
-from django.test import TestCase
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TransactionTestCase
 
 from core.game_schedule import apply_approved_weekly_game_schedule
 from core.holiday_overrides import effective_schedule_for_date
@@ -17,11 +18,29 @@ from core.views import DailySheetImportBatchViewSet
 
 
 def migrate_schedule():
-    importlib.import_module("core.migrations.0023_confirmed_weekly_schedule").update_schedule(
-        apps, SimpleNamespace(connection=connection))
+    constraint = next(
+        constraint
+        for constraint in WeeklyGameSchedule._meta.constraints
+        if constraint.name == "unique_active_weekday_display_order"
+    )
+    migration_schema = SimpleNamespace(connection=connection)
+    with connection.schema_editor() as schema_editor:
+        schema_editor.remove_constraint(WeeklyGameSchedule, constraint)
+    try:
+        legacy_apps = MigrationExecutor(connection).loader.project_state(
+            [("core", "0022_game_categories")]
+        ).apps
+        importlib.import_module("core.migrations.0023_confirmed_weekly_schedule").update_schedule(
+            legacy_apps, migration_schema)
+        importlib.import_module(
+            "core.migrations.0027_game_catalogue_and_schedule_constraints"
+        ).repair_active_display_order(apps, migration_schema)
+    finally:
+        with connection.schema_editor() as schema_editor:
+            schema_editor.add_constraint(WeeklyGameSchedule, constraint)
 
 
-class CategoryScheduleTests(Phase2Mixin, TestCase):
+class CategoryScheduleTests(Phase2Mixin, TransactionTestCase):
     def setUp(self):
         self.build_base()
 
@@ -45,8 +64,9 @@ class CategoryScheduleTests(Phase2Mixin, TestCase):
             WeeklyGameSchedule.objects.create(game=dc.game, weekday=1, category="DOUBLE_CHANCE", is_whole_day=True)
 
     def test_migration_idempotent_preserves_history_timed_rows_and_five_percent(self):
+        apply_approved_weekly_game_schedule()
         legacy = Game.objects.create(name="Monday Special")
-        WeeklyGameSchedule.objects.create(game=legacy, weekday=1, category="GHANA", is_whole_day=True, display_order=3)
+        WeeklyGameSchedule.objects.filter(weekday=1, category="GHANA").update(game=legacy)
         sheet = self.create_sheet(commission_rate="0.05")
         # Represent a pre-category snapshot: do not backfill it from current games.
         sheet.sheet_games.update(category_snapshot=None)
@@ -56,12 +76,23 @@ class CategoryScheduleTests(Phase2Mixin, TestCase):
         obligation_before = PaymentObligation.objects.values().get(pk=obligation.pk)
         before = list(sheet.sheet_games.values())
         totals = sheet.totals()
-        timed = list(WeeklyGameSchedule.objects.filter(category="TIMED").values())
+        timed = list(
+            WeeklyGameSchedule.objects.filter(category="TIMED")
+            .order_by("weekday", "display_order", "pk")
+            .values("pk", "game_id", "weekday", "category", "is_whole_day", "closing_time", "draw_time", "is_active")
+        )
         migrate_schedule()
         schedules = list(WeeklyGameSchedule.objects.values())
         migrate_schedule()
         self.assertEqual(schedules, list(WeeklyGameSchedule.objects.values()))
-        self.assertEqual(timed, list(WeeklyGameSchedule.objects.filter(category="TIMED").values()))
+        self.assertEqual(
+            timed,
+            list(
+                WeeklyGameSchedule.objects.filter(category="TIMED")
+                .order_by("weekday", "display_order", "pk")
+                .values("pk", "game_id", "weekday", "category", "is_whole_day", "closing_time", "draw_time", "is_active")
+            ),
+        )
         sheet.copy_weekday_games()
         self.assertEqual(before, list(sheet.sheet_games.values()))
         self.assertEqual(sheet.totals(), totals)
@@ -84,9 +115,20 @@ class CategoryScheduleTests(Phase2Mixin, TestCase):
             legacy = Game.objects.create(name=legacy_name)
             WeeklyGameSchedule.objects.filter(weekday=day, category="GHANA").update(game=legacy)
         WeeklyGameSchedule.objects.update(category="TIMED")
-        timed = list(WeeklyGameSchedule.objects.filter(is_whole_day=False).values())
+        timed = list(
+            WeeklyGameSchedule.objects.filter(is_whole_day=False)
+            .order_by("weekday", "display_order", "pk")
+            .values("pk", "game_id", "weekday", "category", "is_whole_day", "closing_time", "draw_time", "is_active")
+        )
         migrate_schedule()
-        self.assertEqual(timed, list(WeeklyGameSchedule.objects.filter(is_whole_day=False).values()))
+        self.assertEqual(
+            timed,
+            list(
+                WeeklyGameSchedule.objects.filter(is_whole_day=False)
+                .order_by("weekday", "display_order", "pk")
+                .values("pk", "game_id", "weekday", "category", "is_whole_day", "closing_time", "draw_time", "is_active")
+            ),
+        )
         for day, name in enumerate(["MSP", "Lucky Ghana", "Midweek", "Fortune", "Bonanza", "National", "Aseda"], 1):
             active = WeeklyGameSchedule.objects.filter(weekday=day, is_active=True)
             self.assertEqual(active.count(), 6 if day == 7 else 7)

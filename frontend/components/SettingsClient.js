@@ -15,17 +15,25 @@ export default function SettingsClient() {
   const [saved, setSaved] = useState(null);
   const [values, setValues] = useState({});
   const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState({});
   const [message, setMessage] = useState("");
   const [denied, setDenied] = useState(false);
   const submitting = useRef(false);
+  const mounted = useRef(false);
   const [reload, setReload] = useState(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   useEffect(() => {
     let active = true;
     clientRequest(apiPath("organisation-settings/")).then((data) => {
       if (active) { setSaved(data); setValues(editable(data)); setErrors({}); setMessage(""); }
-    }).catch((error) => { if (active) { setMessage(""); setDenied(error.status === 403); setErrors({ detail: "Could not load settings. Please retry." }); } });
+    }).catch((error) => { if (active) { setMessage(""); setDenied(error.status === 403); setErrors({ detail: "Could not load settings. Please retry." }); } }).finally(() => {
+      if (active) setLoading(false);
+    });
     return () => { active = false; };
   }, [reload]);
   useEffect(() => {
@@ -36,22 +44,28 @@ export default function SettingsClient() {
   function reloadSettings() {
     setErrors({});
     setMessage("");
+    setLoading(true);
     setReload((current) => current + 1);
   }
   async function save(event) {
     event.preventDefault();
     if (!editing) return;
-    if (submitting.current) return;
-    submitting.current = true; setBusy(true); setErrors({}); setMessage("");
+    if (submitting.current || saving) return;
+    submitting.current = true; setSaving(true); setErrors({}); setMessage("");
     try {
       const changes = Object.fromEntries(Object.entries(values).filter(([key, value]) => saved[key] !== value));
       const data = await clientRequest(apiPath("organisation-settings/"), { method: "PATCH", body: JSON.stringify(changes) });
-      setSaved(data); setValues(editable(data)); setEditing(false); setMessage("Settings saved successfully.");
+      if (mounted.current) { setSaved(data); setValues(editable(data)); setEditing(false); setMessage("Settings saved successfully."); }
     } catch (error) {
-      if (error.status === 403) setDenied(true);
-      const message = typeof error.message === "string" && !/https?:\/\/|password|token|cookie|secret/i.test(error.message) ? error.message : "Could not save settings.";
-      setErrors(error.status === 400 && error.payload ? error.payload : { detail: `${message} Your changes are preserved. Please retry.` });
-    } finally { submitting.current = false; setBusy(false); }
+      if (mounted.current) {
+        if (error.status === 403) setDenied(true);
+        const message = typeof error.message === "string" && !/https?:\/\/|password|token|cookie|secret/i.test(error.message) ? error.message : "Could not save settings.";
+        setErrors(error.status === 400 && error.payload ? error.payload : { detail: `${message} Your changes are preserved. Please retry.` });
+      }
+    } finally {
+      submitting.current = false;
+      if (mounted.current) setSaving(false);
+    }
   }
   function feedback(key) { return errors[key] ? <p role="alert" id={`settings-error-${key}`}>{[].concat(errors[key]).join(" ")}</p> : null; }
   if (denied) return <AccessDenied />;
@@ -59,12 +73,12 @@ export default function SettingsClient() {
     <h2>{saved?.display_name || "Organisation"} settings</h2>
     <p>Manage organisation and receipt presentation. For your account, visit <Link href="/dashboard/profile">My Profile</Link>.</p>
     {message && <p role="status" className="form-success">{message}</p>}{feedback("detail")}{feedback("non_field_errors")}
-    {!saved ? <>{errors.detail ? <button onClick={reloadSettings}>Retry</button> : <p role="status">Loading settings…</p>}</> : <>
-      <form onSubmit={save} aria-busy={busy}>
-        <div className="settings-actions">{editing ? <><button type="submit" className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save settings"}</button><button type="button" disabled={busy} onClick={() => { setValues(editable(saved)); setEditing(false); setErrors({}); setMessage(""); }}>Cancel</button></> : <button type="button" className="primary-button" onClick={() => { setEditing(true); setErrors({}); setMessage(""); }}>Edit settings</button>}</div>
+    {!saved ? <>{loading ? <p role="status">Loading settings…</p> : errors.detail ? <button type="button" onClick={reloadSettings}>Retry</button> : null}</> : <>
+      <form onSubmit={save} aria-busy={saving}>
+        <div className="settings-actions">{editing ? <><button type="submit" className="primary-button" disabled={saving}>{saving ? "Saving…" : "Save settings"}</button><button type="button" disabled={saving} onClick={() => { setValues(editable(saved)); setEditing(false); setErrors({}); setMessage(""); }}>Cancel</button></> : <button type="button" className="primary-button" onClick={(event) => { event.preventDefault(); setSaving(false); setEditing(true); setErrors({}); setMessage(""); }}>Edit settings</button>}</div>
         <div className="settings-cards">{groups.map(([title, fields]) => <section className="settings-card" key={title}><h3>{title}</h3>
           {fields.map(([key, label, maxLength]) => {
-            const props = { id: `setting-${key}`, value: values[key] || "", disabled: !editing || busy, maxLength, required: ["display_name", "receipt_heading", "timezone", "date_format"].includes(key), onChange: (event) => { setValues((current) => ({ ...current, [key]: event.target.value })); setErrors({}); setMessage(""); }, "aria-invalid": !!errors[key], "aria-describedby": errors[key] ? `settings-error-${key}` : undefined };
+            const props = { id: `setting-${key}`, value: values[key] || "", disabled: !editing || saving, maxLength, required: ["display_name", "receipt_heading", "timezone", "date_format"].includes(key), onChange: (event) => { setValues((current) => ({ ...current, [key]: event.target.value })); setErrors({}); setMessage(""); }, "aria-invalid": !!errors[key], "aria-describedby": errors[key] ? `settings-error-${key}` : undefined };
             return <div key={key}><label htmlFor={props.id}>{label}{key === "date_format" ? <select {...props}>{["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY"].map((value) => <option key={value}>{value}</option>)}</select> : ["address", "receipt_footer"].includes(key) ? <textarea {...props} /> : <input {...props} type={key === "contact_email" ? "email" : "text"} />}</label>{feedback(key)}</div>;
           })}
           {title === "Regional display" && <p>Use an IANA timezone such as Africa/Lagos. These preferences format the receipt generation timestamp in its header; transaction dates and schedules remain unchanged.</p>}

@@ -35,6 +35,14 @@ async function mount() { requests = []; container = document.createElement('div'
 async function cleanup() { await React.act(async () => root.unmount()); container.remove(); }
 function button(text) { return [...container.querySelectorAll('button')].find((node) => node.textContent.includes(text)); }
 async function click(text) { await React.act(async () => button(text).click()); }
+async function clickWithEvent(text) {
+  let event;
+  await React.act(async () => {
+    event = new window.MouseEvent('click', { bubbles: true, cancelable: true });
+    button(text).dispatchEvent(event);
+  });
+  return event;
+}
 async function type(value) { const node = container.querySelector('#setting-display_name'); await React.act(async () => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(node, value); node.dispatchEvent(new window.Event('input', { bubbles: true })); }); }
 async function submit() { await React.act(async () => container.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); }
 function mutations() { return requests.filter((request) => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.options?.method)); }
@@ -47,13 +55,16 @@ test('Edit and Cancel are explicit non-submit actions with no mutation requests'
   let submitEvents = 0, submitEvent;
   form.addEventListener('submit', (event) => { submitEvents += 1; submitEvent = event; });
 
+  assert.equal(container.querySelector('[role=status]')?.textContent, undefined);
+  assert.equal(button('Saving'), undefined);
   assert.equal(button('Edit settings').getAttribute('type'), 'button');
   await submit();
   assert.equal(submitEvents, 1);
   assert.equal(submitEvent.defaultPrevented, true);
   assert.equal(mutations().length, 0);
   assert.equal(container.querySelector('[role=status].form-success'), null);
-  await click('Edit settings');
+  const editClick = await clickWithEvent('Edit settings');
+  assert.equal(editClick.defaultPrevented, true);
   assert.equal(submitEvents, 1);
   assert.equal(mutations().length, 0);
   assert.ok(button('Save settings'));
@@ -96,6 +107,8 @@ test('settings edit, validation, network failure, duplicate prevention, success 
   assert.ok(container.textContent.includes('Invalid organisation.'));
   assert.equal(container.querySelector('input').getAttribute('aria-invalid'), 'true');
   assert.equal(container.querySelector('[role=status].form-success'), null);
+  assert.equal(button('Saving'), undefined);
+  assert.equal(button('Save settings').disabled, false);
   await type('Corrected');
   assert.equal(container.querySelector('[role=alert]'), null);
   assert.equal(container.querySelector('[role=status].form-success'), null);
@@ -105,6 +118,7 @@ test('settings edit, validation, network failure, duplicate prevention, success 
   assert.ok(container.textContent.includes('Your changes are preserved'));
   assert.equal(container.querySelector('input').value, 'Edited');
   assert.equal(container.querySelector('[role=status].form-success'), null);
+  assert.equal(button('Saving'), undefined);
   mode = 'success'; await submit(); await submit();
   assert.equal(requests.filter((r) => r.options?.method === 'PATCH').length, 3);
   assert.equal(button('Saving').disabled, true);
@@ -112,6 +126,7 @@ test('settings edit, validation, network failure, duplicate prevention, success 
   assert.equal(container.querySelector('[role=status].form-success'), null);
   await React.act(async () => resolve({ ...settings, display_name: 'Edited' }));
   assert.ok(container.textContent.includes('Settings saved successfully.'));
+  assert.equal(button('Saving'), undefined);
   await click('Edit settings');
   assert.equal(container.querySelector('[role="status"].form-success'), null);
   await type('Discard');
@@ -143,24 +158,80 @@ test('successful save feedback automatically dismisses after five seconds', asyn
 });
 
 test('load failure can retry and permission loss shows access denied', async () => {
-  let fail = true, resolveReload;
+  let attempts = 0, resolveReload;
   handler = async (_path, options) => {
     if (options) throw { status: 403 };
-    if (fail) throw new Error('Offline');
+    attempts += 1;
+    if (attempts < 3) throw new Error('Offline');
     return new Promise((resolve) => { resolveReload = resolve; });
   };
   await mount();
   assert.ok(button('Retry'));
   assert.ok(container.querySelector('[role=alert]'));
-  fail = false;
   await click('Retry');
-  assert.equal(container.querySelector('[role=alert]'), null);
+  assert.ok(button('Retry'));
+  assert.equal(container.querySelector('[role=status]')?.textContent, undefined);
+  assert.equal(button('Saving'), undefined);
+  await click('Retry');
   assert.ok(container.textContent.includes('Loading settings…'));
+  assert.equal(button('Saving'), undefined);
+  assert.equal(container.querySelector('input'), null);
   await React.act(async () => resolveReload(settings));
+  assert.equal(container.querySelector('[role=status]')?.textContent, undefined);
+  assert.equal(button('Saving'), undefined);
   assert.ok(button('Edit settings'));
   handler = async () => { throw { status: 403 }; };
   await click('Edit settings'); await type('Denied'); await submit();
   assert.ok(container.textContent.includes('Access denied')); assert.equal(container.querySelectorAll('input').length, 0);
+  await cleanup();
+});
+
+test('save request alone enters saving state and failures restore it', async () => {
+  let resolveSave;
+  handler = async (_path, options) => options ? new Promise((resolve) => { resolveSave = resolve; }) : settings;
+  await mount();
+  assert.equal(button('Saving'), undefined);
+  await click('Edit settings');
+  assert.ok(button('Save settings'));
+  assert.equal(button('Saving'), undefined);
+  await type('Save pending');
+  await submit();
+  assert.ok(button('Saving'));
+  assert.equal(button('Save settings'), undefined);
+  await React.act(async () => resolveSave({ ...settings, display_name: 'Save pending' }));
+  assert.equal(button('Saving'), undefined);
+  assert.ok(button('Edit settings'));
+  await cleanup();
+});
+
+test('failed save restores saving state without discarding edited values', async () => {
+  handler = async (_path, options) => {
+    if (options) throw { status: 400, payload: { display_name: ['Invalid organisation.'] } };
+    return settings;
+  };
+  await mount();
+  await click('Edit settings');
+  await type('Invalid name');
+  await submit();
+  assert.ok(container.textContent.includes('Invalid organisation.'));
+  assert.equal(container.querySelector('#setting-display_name').value, 'Invalid name');
+  assert.equal(button('Saving'), undefined);
+  assert.ok(button('Save settings'));
+  await cleanup();
+});
+
+test('initial load shows loading and clears it after settings arrive', async () => {
+  let resolveLoad;
+  handler = async () => new Promise((resolve) => { resolveLoad = resolve; });
+  const mountPromise = mount();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(container.textContent.includes('Loading settings…'));
+  assert.equal(button('Saving'), undefined);
+  await React.act(async () => resolveLoad(settings));
+  await mountPromise;
+  assert.equal(container.querySelector('[role=status]')?.textContent, undefined);
+  assert.equal(button('Saving'), undefined);
+  assert.ok(button('Edit settings'));
   await cleanup();
 });
 

@@ -190,10 +190,6 @@ class PasswordSerializer(serializers.Serializer):
             raise serializers.ValidationError({'current_password': 'Current password is incorrect.'})
         if data['new_password'] != data['confirm_password']:
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
-        try:
-            validate_password(data['new_password'], user)
-        except DjangoValidationError as error:
-            raise serializers.ValidationError({'new_password': error.messages})
         return data
 
 
@@ -207,7 +203,12 @@ class ChangePasswordView(APIView):
         user = User.objects.select_for_update().get(pk=request.user.pk)
         serializer = PasswordSerializer(data=request.data, context={'user': user})
         serializer.is_valid(raise_exception=True)
-        user.set_password(serializer.validated_data['new_password'])
+        new_password = serializer.validated_data['new_password']
+        try:
+            validate_password(new_password, user)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError({'new_password': error.messages})
+        user.set_password(new_password)
         user.save(update_fields=['password', 'updated_at'])
         for token in OutstandingToken.objects.filter(user=user):
             BlacklistedToken.objects.get_or_create(token=token)

@@ -9,7 +9,7 @@ export const WEEKDAYS = [
 ];
 
 export function categoryLabel(category) {
-  return { TIMED: "Timed", GHANA: "Ghana Game", DOUBLE_CHANCE: "Double Chance" }[category] || "";
+  return { TIMED: "Timed", GHANA: "Ghana (Whole Day)", DOUBLE_CHANCE: "Double Chance" }[category] || "";
 }
 
 export function scheduleMode(entry) {
@@ -76,7 +76,7 @@ export function emptyScheduleForm() {
   return {
     id: "",
     game: "",
-    weekday: "1",
+    weekday: "",
     display_order: "1",
     category: "TIMED",
     is_whole_day: false,
@@ -126,7 +126,17 @@ export function validateScheduleForm(form) {
   if (!form.closing_time || !form.draw_time) {
     return "Timed schedules require both Closing Time and Draw Time.";
   }
-  if (form.draw_time <= form.closing_time) {
+  const seconds = (value) => {
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,6})?)?$/.test(value)) return NaN;
+    const [hours, minutes, seconds = 0] = value.split(":").map(Number);
+    return hours * 3600 + minutes * 60 + seconds;
+  };
+  const closing = seconds(form.closing_time);
+  const draw = seconds(form.draw_time);
+  if (!Number.isFinite(closing) || !Number.isFinite(draw)) {
+    return "Enter valid Closing Time and Draw Time in Ghana local time (Africa/Accra).";
+  }
+  if (draw <= closing) {
     return "Draw Time must be later than Closing Time.";
   }
   return "";

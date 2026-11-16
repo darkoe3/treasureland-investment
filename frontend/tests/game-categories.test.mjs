@@ -41,10 +41,53 @@ test("weekly screen renders canonical names, categories, Whole Day and seven/six
   for (const name of names) assert.ok(html.includes(name));
   for (const day of operations.WEEKDAYS) assert.ok(html.includes(day.label));
   assert.equal((html.match(/<strong>Double Chance<\/strong>/g) || []).length, 7);
-  assert.equal((html.match(/Ghana Game/g) || []).length, 7);
+  assert.equal((html.match(/Ghana \(Whole Day\)/g) || []).length, 7);
   assert.ok(html.includes("7/7 active"));
   assert.ok(html.includes("6/6 active"));
   assert.ok(html.includes("Whole Day"));
+});
+
+test("adding Ghana Game to a full weekday requires a manual timed replacement", async () => {
+  const monday = Array.from({ length: 7 }, (_, index) => {
+    const category = index === 0 ? "GHANA" : index === 1 ? "DOUBLE_CHANCE" : "TIMED";
+    return {
+      id: index + 1,
+      game: index + 1,
+      game_name: `Existing ${index + 1}`,
+      game_is_active: true,
+      weekday: 1,
+      category,
+      is_whole_day: category !== "TIMED",
+      closing_time: category === "TIMED" ? "12:30" : null,
+      draw_time: category === "TIMED" ? "12:45" : null,
+      display_order: index + 1,
+      is_active: true,
+    };
+  });
+  const games = monday.map((entry) => ({
+    id: entry.game,
+    name: entry.game_name,
+    category: entry.category,
+    is_active: true,
+  }));
+  games.push({ id: 99, name: "Ghana Game", category: "TIMED", is_active: true });
+  const form = {
+    ...operations.emptyScheduleForm(),
+    game: "99",
+    weekday: "1",
+    display_order: "8",
+    closing_time: "12:30",
+    draw_time: "12:45",
+  };
+  const html = await renderComponent("GameScheduleClient", { user: { role: "SUPER_ADMIN" } }, {
+    0: monday,
+    1: games,
+    3: form,
+    8: { loading: false, saving: false, error: "", success: "" },
+    9: "schedule",
+  });
+  assert.ok(html.includes("first deactivate the TIMED game you intend to replace"));
+  assert.match(html, /<button class="primary-button" type="submit" disabled="">/);
 });
 
 test("Daily Sheet keeps Double Chance visible during Ghana holiday override", async () => {
@@ -52,7 +95,7 @@ test("Daily Sheet keeps Double Chance visible during Ghana holiday override", as
     holiday_replacement_game_name_snapshot: "Bonanza", holiday_source_date_snapshot: "2026-08-21", holiday_name_snapshot: "Holiday",
     sheet_games: entries.filter((e) => e.weekday === 1).map((e) => ({ id: e.id, game_name_snapshot: e.category === "GHANA" ? "Bonanza" : e.game_name, category_snapshot: e.category, is_whole_day_snapshot: e.is_whole_day })) };
   const html = await renderComponent("DailySheetDetailClient", { user: { role: "SUPER_ADMIN" }, initialSheet: sheet });
-  for (const label of ["Bonanza", "Ghana Game", "Double Chance", "Timed", "Whole Day"]) assert.ok(html.includes(label), label);
+  for (const label of ["Bonanza", "Ghana (Whole Day)", "Double Chance", "Timed", "Whole Day"]) assert.ok(html.includes(label), label);
   assert.ok(html.includes("Double Chance remains available"));
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(css, /@media \(max-width: 680px\)/);

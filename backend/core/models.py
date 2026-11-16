@@ -497,6 +497,7 @@ class AuditAction(models.TextChoices):
     PAYMENT_OBLIGATION_CREATED = "PAYMENT_OBLIGATION_CREATED", "Payment obligation created"
     PAYMENT_OBLIGATION_UPDATED = "PAYMENT_OBLIGATION_UPDATED", "Payment obligation updated"
     PAYMENT_OBLIGATION_CANCELLED = "PAYMENT_OBLIGATION_CANCELLED", "Payment obligation cancelled"
+    PAYMENT_OBLIGATION_DELETED = "PAYMENT_OBLIGATION_DELETED", "Payment obligation removed from operational views"
     PAYMENT_RECORDED = "PAYMENT_RECORDED", "Payment recorded"
     PAYMENT_REVERSED = "PAYMENT_REVERSED", "Payment reversed"
 
@@ -656,14 +657,28 @@ class PaymentObligation(TimeStampedModel):
     cancelled_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True, related_name="cancelled_payment_obligations")
     cancelled_at = models.DateTimeField(null=True, blank=True)
     cancellation_reason = models.TextField(blank=True, default="")
+    deleted_by = models.ForeignKey(User, on_delete=models.PROTECT, null=True, blank=True, related_name="deleted_payment_obligations")
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deletion_reason = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ["-obligation_date", "-id"]
         indexes = [models.Index(fields=["agency", "business_date", "game_id_snapshot"], name="payment_game_date_idx"), models.Index(fields=["agency", "status", "obligation_date"]), models.Index(fields=["payer", "obligation_date"])]
         constraints = [
             models.CheckConstraint(condition=Q(total_expected__gt=0), name="payment_obligation_total_expected_positive"),
-            models.UniqueConstraint(fields=["agency", "sub_agent_number", "business_date", "game_id_snapshot"], name="unique_payment_number_game_date"),
+            models.UniqueConstraint(
+                fields=["agency", "sub_agent_number", "business_date", "game_id_snapshot"],
+                condition=Q(status__in=["OPEN", "PARTIALLY_PAID", "PAID"], deleted_at__isnull=True),
+                name="unique_payment_number_game_date",
+            ),
             models.CheckConstraint(condition=(Q(game__isnull=True, business_date__isnull=True, game_id_snapshot__isnull=True, game_snapshot__isnull=True) | Q(game__isnull=False, business_date__isnull=False, game_id_snapshot__isnull=False, game_snapshot__isnull=False, sub_agent_number__isnull=False)), name="payment_game_identity_complete"),
+            models.CheckConstraint(
+                condition=(
+                    Q(deleted_at__isnull=True, deleted_by__isnull=True, deletion_reason="")
+                    | (Q(deleted_at__isnull=False, deleted_by__isnull=False) & ~Q(deletion_reason=""))
+                ),
+                name="payment_obligation_deletion_complete",
+            ),
         ]
 
     def clean(self):
@@ -677,6 +692,14 @@ class PaymentObligation(TimeStampedModel):
             raise ValidationError({"agency": "Active agencies only."})
         if self.payer_id and not self.payer.is_active:
             raise ValidationError({"payer": "Inactive payers cannot carry obligations."})
+        if self.deleted_at and self.status not in {self.ObligationStatus.OPEN, self.ObligationStatus.CANCELLED}:
+            raise ValidationError({"status": "Only unpaid open or cancelled obligations can be removed from operational views."})
+        if self.deleted_at and not self.deletion_reason.strip():
+            raise ValidationError({"deletion_reason": "A removal reason is required."})
+        if not self.deleted_at and (self.deleted_by_id or self.deletion_reason):
+            raise ValidationError({"deleted_at": "Removal metadata requires a removal timestamp."})
+        if self.deleted_at and self.pk and self.payments.exists():
+            raise ValidationError({"deleted_at": "Obligations with payment or reversal history cannot be removed."})
         if self.pk:
             original = PaymentObligation.objects.filter(pk=self.pk).first()
             if original:

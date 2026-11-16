@@ -14,10 +14,13 @@ The payment system remains independent of DailySheet and DailySheetGame. Game sn
 
 There is no data backfill or historical game inference. Migration tests compare every existing obligation/payment column before and after migration and verify reversal preserves those rows. Earlier migrations were not edited. Reversing 0025 removes the newly added game metadata, so it should only be reversed before relying on new game-linked records.
 
+Migration 0029 replaces the unconditional obligation identity constraint with a partial unique constraint for non-cancelled, non-removed rows and adds soft-removal actor, timestamp and reason metadata. It adds a deletion audit action and a completeness constraint for removal metadata; existing obligations and payments are not backfilled or rewritten.
+
 ## API and permissions
 
-- `GET /api/agencies/{agency_id}/payment-effective-games/?business_date=YYYY-MM-DD`: authenticated, agency-scoped, exact ISO date, deterministic order; rejects extra/repeated query parameters and returns selector display fields only. The frontend proxy permits this exact numeric-agency path with GET only.
+- `GET /api/agencies/{agency_id}/payment-effective-games/?business_date=YYYY-MM-DD`: authenticated, agency-scoped, exact ISO date, deterministic order; rejects extra/repeated query parameters and returns selector display fields only. The selected agency controls authorization; the current weekly schedule and holiday override configuration is global, not agency-specific. The frontend proxy permits this exact numeric-agency path with GET only.
 - `POST /api/payment-obligations/`: accepts `game`, `business_date` and optional `creation_key` alongside existing fields. Creates snapshots on the backend. Identical same-actor request keys replay the existing obligation; conflicting reuse is rejected without disclosing another obligation. Existing register/number/payer locks serialize creation and the database constraint supplies a final duplicate safeguard.
+- `DELETE /api/payment-obligations/{id}/`: Super Admin only; requires a reason and soft-removes an unpaid OPEN or CANCELLED obligation from operational views. Any posted or reversed payment history blocks removal. The obligation, payment records and audit log are retained.
 - Payment creation rejects submitted game/date/snapshot fields. Its existing payment idempotency, amounts, receipt numbering, locks and reversal rules remain intact.
 - Obligation and payment lists accept game ID/name/category, business date/range, weekday and Holiday Override filters. Payment/obligation status and payment-date filters remain agency-scoped.
 - Analytics add `game_breakdown`, with expected/gross/reversals/net/outstanding/counts/last-payment values. `group_by` supports game, category, business_date, weekday, agency, payer, sub_agent_number and terminal_number. Game pagination uses `game_page`, independently of number pagination's `page`.
@@ -26,11 +29,11 @@ Super Admin retains access to all agencies. Accountant creation requires the sel
 
 ## Duplicate and cancellation policy
 
-A second obligation for the same agency/number/business date/effective game is rejected with a linkable existing obligation ID and a clear instruction to record payment against it. Cancelled identities remain reserved: replacement is explicitly prohibited, rather than silently overwriting or reusing them. Existing cancellation remains audited. Creation audit metadata contains safe IDs, business date, actor and timestamp; no names, notes or request payloads are added.
+A second non-cancelled, non-removed obligation for the same agency/number/business date/effective game is rejected with a linkable existing obligation ID and a clear instruction to record payment against it. Cancelling an obligation preserves its audit record and releases that identity for a replacement with a new obligation reference. Super Admin removal is soft-only, requires a reason, and is restricted to unpaid OPEN or CANCELLED records with no payment rows. Accountant deletion is not permitted; accountant cancellation remains reason-required and agency-permission scoped. Creation audit metadata contains safe IDs, business date, actor and timestamp; no names, notes or request payloads are added.
 
 ## UI and receipts
 
-The New Obligation flow selects agency, saved number/terminal, business date and then a backend-provided game. Choices display category, Whole Day/times and Holiday Override labels; a selected-game review appears before submission. Changes of agency/date clear the game. Loading, empty and retry states prevent accidental selection. Existing failed-form preservation and double-submit protection remain.
+The New Obligation flow selects agency, saved number/terminal, business date and then a backend-provided game. Choices display category, Whole Day/times and Holiday Override labels; a selected-game review appears before submission. Changes of agency/date clear the game. Loading, empty and retry states prevent accidental selection; safe API validation or permission messages are shown when loading fails. After cancellation, authorized users can create a replacement prefilled with the original agency, payer, Sub-Agent Number, terminal, game and business date. Role-aware edit/cancel/remove controls require reasons for cancellation and removal.
 
 Obligation lists/details, payment history, payment forms and HTML/PDF receipts show stored game details. Legacy records explicitly display `Game: Not assigned - legacy obligation.` and remain payable/reversible/downloadable. Global payment history and game analytics provide scoped filters and pagination.
 

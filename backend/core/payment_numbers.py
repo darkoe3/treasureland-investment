@@ -48,9 +48,10 @@ def filter_numbers(queryset, params, prefix=""):
 
 
 def totals(obligations, payments=None):
+    obligations = obligations.filter(deleted_at__isnull=True)
     payments = payments if payments is not None else PayerPayment.objects.filter(obligation__in=obligations)
     amounts = payments.aggregate(gross=Sum("amount_received"), reversed=Sum("amount_received", filter=Q(status="REVERSED")), last=Max("payment_date"), count=Count("pk"))
-    expected = obligations.aggregate(value=Sum("total_expected"))["value"] or 0
+    expected = obligations.exclude(status="CANCELLED").aggregate(value=Sum("total_expected"))["value"] or 0
     outstanding = obligations.filter(status__in=["OPEN", "PARTIALLY_PAID"])
     outstanding_expected = outstanding.aggregate(value=Sum("total_expected"))["value"] or 0
     outstanding_paid = PayerPayment.objects.filter(obligation__in=outstanding, status="POSTED").aggregate(value=Sum("amount_received"))["value"] or 0

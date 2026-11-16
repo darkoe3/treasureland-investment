@@ -46,7 +46,7 @@ test("effective-game selector loads agency/date, labels categories and holidays,
   assert.deepEqual(requests, ["agencies/7/payment-effective-games/?business_date=2026-11-09"]);
   const select = container.querySelector("select");
   assert.equal(select.value, ""); assert.equal(select.required, true);
-  for (const label of ["Timed", "Ghana Game", "Double Chance", "Whole Day", "Closing 12:30 / Draw 12:45", "Holiday Override"]) assert.ok(container.textContent.includes(label));
+  for (const label of ["Timed", "Ghana (Whole Day)", "Double Chance", "Whole Day", "Closing 12:30 / Draw 12:45", "Holiday Override"]) assert.ok(container.textContent.includes(label));
   await React.act(async () => { select.value = "2"; select.dispatchEvent(new window.Event("change", { bubbles: true })); });
   assert.match(container.textContent, /Review selected game: Ghana replacement/);
   select.focus(); assert.equal(document.activeElement, select);
@@ -62,9 +62,9 @@ test("loading and empty states prevent choosing a game", async (t) => {
   assert.equal(container.querySelector("select").disabled, true);
 });
 test("failed loading is recoverable without selecting a game", async (t) => {
-  handler = async () => { throw new Error("Failure"); };
+  handler = async () => { throw Object.assign(new Error("The schedule is unavailable for this date."), { status: 400 }); };
   const container = await mount(t);
-  assert.match(container.textContent, /Could not load effective games/);
+  assert.match(container.textContent, /The schedule is unavailable for this date/);
   handler = async () => games;
   await React.act(async () => container.querySelector("button").click());
   assert.equal(container.querySelector("select").disabled, false);
@@ -85,6 +85,11 @@ test("controlled proxy permits only exact effective-game GET endpoint", () => {
   for (const method of ["POST", "PATCH", "DELETE", "PUT"]) assert.equal(isAllowedBackendProxyPath("agencies/7/payment-effective-games/", method), false);
   for (const path of ["agencies/all/payment-effective-games", "agencies/7/payment-effective-games/1", "payment-effective-games", "agencies/7/other"]) assert.equal(isAllowedBackendProxyPath(path, "GET"), false);
 });
+test("controlled proxy permits deletion only for a payment-obligation detail", () => {
+  assert.equal(isAllowedBackendProxyPath("payment-obligations/12/", "DELETE"), true);
+  assert.equal(isAllowedBackendProxyPath("payment-obligations/", "DELETE"), false);
+  assert.equal(isAllowedBackendProxyPath("payment-payers/12/", "DELETE"), false);
+});
 
 
 test("new obligation preserves values after duplicate failure, requires number/date/game, and blocks double submit", async (t) => {
@@ -98,11 +103,14 @@ test("new obligation preserves values after duplicate failure, requires number/d
   vm.runInNewContext(code, { module: obligationModule, exports: obligationModule.exports, window, URLSearchParams, setTimeout, clearTimeout, require(name) {
     if (name === "next/link") return function TestLink({ children, ...props }) { return React.createElement("a", props, children); };
     if (name.includes("PaymentGamePicker")) return mod.exports.default;
-    if (name.includes("PaymentNumberPicker")) return function NumberStub({ onSelect }) { return React.createElement("button", { type: "button", onClick: () => onSelect({ id: 8, agency: 7, payer: 9, sub_agent_number: "SUB-8" }) }, "Choose SUB-8 / TERM-8"); };
+    if (name.includes("PaymentNumberPicker")) return function NumberStub({ onSelect, value }) { return React.createElement(React.Fragment, null,
+      React.createElement("button", { type: "button", onClick: () => onSelect({ id: 8, agency: 7, payer: 9, sub_agent_number: "SUB-8", terminal_number: "TERM-8" }) }, "Choose SUB-8 / TERM-8"),
+      value ? React.createElement("p", null, `Selected ${value.sub_agent_number} / ${value.terminal_number}`) : null); };
     if (name.includes("PaymentNumberLedger")) return { usePaymentPage: () => ({ rows: [], setPage() {} }), PageControls: () => null };
     if (name.includes("payment-games")) return gameOperations;
     if (name.includes("payment-operations")) return operations;
     if (name.includes("client-api")) return { apiPath: (path) => path, clientRequest: async (path, options) => {
+      if (!options || options.method === "GET") return games;
       posts.push(JSON.parse(options.body));
       if (fail) throw { status: 400, payload: { game: "An obligation already exists. Open the existing obligation to record payment." } };
       return new Promise((resolve) => { finish = resolve; });
@@ -112,9 +120,10 @@ test("new obligation preserves values after duplicate failure, requires number/d
   handler = async () => games;
   requests = [];
   const container = document.createElement("div"); document.body.append(container);
-  const root = createRoot(container);
+  let root = createRoot(container);
+  const props = { user: { role: "SUPER_ADMIN" }, data: { agencies: [{ id: 7, name: "Agency" }], payers: [{ id: 9, agency: 7, payer_name: "Payer" }], obligations: [] }, onRefresh: async () => {} };
   t.after(async () => { await React.act(async () => root.unmount()); container.remove(); });
-  await React.act(async () => root.render(React.createElement(obligationModule.exports.Obligations, { user: { role: "SUPER_ADMIN" }, data: { agencies: [{ id: 7, name: "Agency" }], payers: [{ id: 9, agency: 7 }], obligations: [] }, onRefresh: async () => {} })));
+  await React.act(async () => root.render(React.createElement(obligationModule.exports.Obligations, props)));
   const button = (label) => [...container.querySelectorAll("button")].find((node) => node.textContent === label);
   await React.act(async () => button("Create obligation").click());
   await React.act(async () => button("Choose SUB-8 / TERM-8").click());
@@ -139,4 +148,32 @@ test("new obligation preserves values after duplicate failure, requires number/d
   assert.equal(container.querySelector("dialog button[type=submit]").disabled, true);
   await React.act(async () => finish({ id: 20, ...posts[1], game_snapshot: games[1] }));
   assert.equal(container.querySelector("dialog"), null);
+
+  await React.act(async () => root.unmount());
+  const replacementParams = new URLSearchParams({
+    create: "1",
+    agency: "7",
+    payer: "9",
+    sub_agent_number: "8",
+    sub_agent_number_label: "SUB-8",
+    terminal_number: "TERM-8",
+    business_date: "2026-11-09",
+    game: "2",
+  });
+  window.history.replaceState({}, "", `/?${replacementParams}`);
+  root = createRoot(container);
+  await React.act(async () => root.render(React.createElement(obligationModule.exports.Obligations, props)));
+  assert.equal(field("Agency").value, "7");
+  assert.equal(field("Business date").value, "2026-11-09");
+  assert.equal(field("Game").value, "2");
+  assert.match(container.textContent, /Selected SUB-8 \/ TERM-8/);
+  await set("Description", "Replacement");
+  await set("Total expected", "100");
+  fail = true;
+  await React.act(async () => submit());
+  assert.equal(posts[2].agency, "7");
+  assert.equal(posts[2].payer, "9");
+  assert.equal(posts[2].sub_agent_number, "8");
+  assert.equal(posts[2].business_date, "2026-11-09");
+  assert.equal(posts[2].game, "2");
 });

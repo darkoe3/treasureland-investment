@@ -65,12 +65,10 @@ class PaymentEffectiveGamesView(APIView):
 
 def duplicate_guard(agency, number, game, business_date):
     existing = PaymentObligation.objects.filter(agency=agency, sub_agent_number=number,
-        business_date=business_date, game_id_snapshot=game.pk).first()
+        business_date=business_date, game_id_snapshot=game.pk,
+        status__in=["OPEN", "PARTIALLY_PAID", "PAID"], deleted_at__isnull=True).first()
     if existing:
-        if existing.status == "CANCELLED":
-            message = "A cancelled obligation exists for this number, game and date. Replacement is not permitted; contact an administrator."
-        else:
-            message = f"An obligation already exists for Sub-Agent Number {number.code}, {existing.game_snapshot['name']} on {business_date}. Open the existing obligation to record payment."
+        message = f"An obligation already exists for Sub-Agent Number {number.code}, {existing.game_snapshot['name']} on {business_date}. Open the existing obligation to record payment."
         raise ValidationError({"game": message, "existing_obligation_id": existing.pk})
 
 

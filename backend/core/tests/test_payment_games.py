@@ -51,6 +51,13 @@ class PaymentGameTests(GameFixture, TestCase):
         self.client.force_authenticate(None)
         self.assertEqual(self.client.get(self.url, {"business_date": "2026-11-09"}).status_code, 401)
 
+    def test_schedule_configuration_errors_are_reported_by_effective_games_endpoint(self):
+        from django.core.exceptions import ValidationError
+        with patch("core.payment_games.effective_schedule_for_date", side_effect=ValidationError({"schedule": ["Invalid active schedule."]})):
+            response = self.client.get(self.url, {"business_date": "2026-11-09"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid active schedule.", str(response.data))
+
     def test_explicit_valid_active_game_and_number_required(self):
         for changes in ({"game": None}, {"business_date": None}, {"game": Game.objects.get(name="Bonanza").pk}, {"sub_agent_number": None}, {"business_date": "2026-02-30"}):
             self.assertEqual(self.create(**changes).status_code, 400)
@@ -114,8 +121,17 @@ class PaymentGameTests(GameFixture, TestCase):
         self.assertEqual(duplicate.status_code, 400)
         self.assertIn("Open the existing obligation", str(duplicate.data))
         self.assertEqual(PaymentObligation.objects.count(), 1)
-        self.client.post(f"/api/payment-obligations/{first.data['id']}/cancel/", {"reason": "Cancelled explicitly"}, format="json")
-        self.assertIn("Replacement is not permitted", str(self.create().data))
+        cancelled = self.client.post(f"/api/payment-obligations/{first.data['id']}/cancel/", {"reason": "Cancelled explicitly"}, format="json")
+        self.assertEqual(cancelled.status_code, 200)
+        replacement = self.create()
+        self.assertEqual(replacement.status_code, 201, replacement.data)
+        self.assertNotEqual(replacement.data["obligation_number"], first.data["obligation_number"])
+        self.assertEqual(self.create().status_code, 400)
+        analytics = self.client.get("/api/payments/analytics/").data
+        self.assertEqual(analytics["obligation_portfolio"]["total_expected"], "100.00")
+        self.assertEqual(analytics["obligation_portfolio"]["status_counts"]["CANCELLED"], 1)
+        audit = AuditLog.objects.get(action="PAYMENT_OBLIGATION_CANCELLED")
+        self.assertEqual(audit.new_values["reason"], "Cancelled explicitly")
 
     def test_holiday_replaces_only_ghana_and_history_survives_change(self):
         normal = Game.objects.get(name="MSP")
@@ -155,6 +171,80 @@ class PaymentGameTests(GameFixture, TestCase):
         with self.assertRaises(IntegrityError), transaction.atomic():
             PaymentObligation.objects.bulk_create([duplicate])
         self.assertEqual(PaymentObligation.objects.count(), 1)
+
+    def test_cancelled_and_removed_obligations_do_not_reserve_active_identity(self):
+        created = self.create()
+        obligation = PaymentObligation.objects.get(pk=created.data["id"])
+        obligation.status = PaymentObligation.ObligationStatus.CANCELLED
+        obligation.cancelled_by = self.admin
+        obligation.cancelled_at = obligation.created_at
+        obligation.cancellation_reason = "Incorrect entry"
+        obligation.save()
+        self.assertEqual(self.create().status_code, 201)
+
+    def test_super_admin_removes_only_unpaid_records_with_reason_and_audit(self):
+        created = self.create()
+        obligation_id = created.data["id"]
+        missing_reason = self.client.delete(f"/api/payment-obligations/{obligation_id}/")
+        self.assertEqual(missing_reason.status_code, 400)
+        removed = self.client.delete(f"/api/payment-obligations/{obligation_id}/", {"reason": "Entered in error"}, format="json")
+        self.assertEqual(removed.status_code, 204)
+        obligation = PaymentObligation.objects.get(pk=obligation_id)
+        self.assertEqual((obligation.deleted_by, obligation.deletion_reason), (self.admin, "Entered in error"))
+        self.assertIsNotNone(obligation.deleted_at)
+        self.assertEqual(self.client.get("/api/payment-obligations/").data["count"], 0)
+        self.assertEqual(self.pay(obligation_id, "removed-obligation-payment").status_code, 400)
+        audit = AuditLog.objects.get(action="PAYMENT_OBLIGATION_DELETED")
+        self.assertEqual(audit.object_id, str(obligation_id))
+        self.assertEqual(audit.new_values["reason"], "Entered in error")
+        replacement = self.create()
+        self.assertEqual(replacement.status_code, 201, replacement.data)
+        self.assertNotEqual(replacement.data["obligation_number"], created.data["obligation_number"])
+        analytics = self.client.get("/api/payments/analytics/").data["obligation_portfolio"]
+        self.assertEqual(analytics["obligation_count"], 1)
+        self.assertEqual(analytics["total_expected"], "100.00")
+
+    def test_accountant_cannot_remove_obligations(self):
+        assignment = UserAgencyAssignment.objects.create(
+            user=User.objects.create_user(email="no-delete@example.com", password="Testpass123!"),
+            agency=self.agency,
+            can_create=True,
+            can_delete=True,
+        )
+        created = self.create()
+        self.client.force_authenticate(assignment.user)
+        denied = self.client.delete(
+            f"/api/payment-obligations/{created.data['id']}/",
+            {"reason": "Attempted removal"},
+            format="json",
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertIsNone(PaymentObligation.objects.get(pk=created.data["id"]).deleted_at)
+        self.assertFalse(AuditLog.objects.filter(action="PAYMENT_OBLIGATION_DELETED").exists())
+
+    def test_payment_and_reversal_history_prevent_removal(self):
+        created = self.create()
+        payment = self.pay(created.data["id"], "history-delete")
+        denied_posted = self.client.delete(
+            f"/api/payment-obligations/{created.data['id']}/",
+            {"reason": "Cannot remove posted history"},
+            format="json",
+        )
+        self.assertEqual(denied_posted.status_code, 400)
+        reversed_response = self.client.post(
+            f"/api/payer-payments/{payment.data['id']}/reverse/",
+            {"reason": "Correction", "confirmed": True},
+            format="json",
+        )
+        self.assertEqual(reversed_response.status_code, 200)
+        denied_reversed = self.client.delete(
+            f"/api/payment-obligations/{created.data['id']}/",
+            {"reason": "Cannot remove reversed history"},
+            format="json",
+        )
+        self.assertEqual(denied_reversed.status_code, 400)
+        self.assertIsNone(PaymentObligation.objects.get(pk=created.data["id"]).deleted_at)
+        self.assertEqual(PayerPayment.objects.filter(obligation_id=created.data["id"]).count(), 1)
 
     def test_game_snapshots_reject_model_and_bulk_mutation(self):
         from django.core.exceptions import ValidationError

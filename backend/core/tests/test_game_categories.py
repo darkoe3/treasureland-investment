@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from django.apps import apps
 from django.core.exceptions import ValidationError
-from django.db import connection
+from django.db import connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 
@@ -56,7 +56,8 @@ class CategoryScheduleTests(Phase2Mixin, TransactionTestCase):
                     self.assertEqual(row.is_whole_day, row.category != "TIMED")
                 view = DailySheetImportBatchViewSet()
                 dt = date(2026, 8, 24) + timedelta(days=day - 1)
-                self.assertEqual(view._current_schedule_snapshot(dt), schedule_snapshot_for_date(dt, None))
+                with transaction.atomic():
+                    self.assertEqual(view._current_schedule_snapshot(dt), schedule_snapshot_for_date(dt, None))
         sheet = self.create_sheet()
         self.assertEqual(set(sheet.sheet_games.filter(is_whole_day_snapshot=True).values_list("category_snapshot", flat=True)), {"GHANA", "DOUBLE_CHANCE"})
         dc = WeeklyGameSchedule.objects.get(weekday=1, category="DOUBLE_CHANCE")

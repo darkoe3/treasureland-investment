@@ -27,7 +27,7 @@ const DETAIL_METHODS = {
   "weekly-game-schedules": new Set(["GET", "PATCH", "DELETE"]),
   "holiday-game-overrides": new Set(["GET", "PATCH"]),
   "payment-payers": new Set(["GET", "PATCH"]),
-  "payment-obligations": new Set(["GET", "PATCH"]),
+  "payment-obligations": new Set(["GET", "PATCH", "DELETE"]),
   "payer-payments": new Set(["GET"]),
 };
 

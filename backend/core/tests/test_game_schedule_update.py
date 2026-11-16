@@ -154,6 +154,17 @@ class WeeklyGameScheduleAPITests(APITestCase):
     def test_super_admin_create_edit_activate_deactivate_and_audit(self):
         self.client.force_authenticate(self.admin)
         game = Game.objects.create(name="API Game", category="GHANA")
+        existing_ghana = WeeklyGameSchedule.objects.get(
+            weekday=Weekday.SUNDAY,
+            category="GHANA",
+            is_active=True,
+        )
+        replaced = self.client.patch(
+            f"/api/weekly-game-schedules/{existing_ghana.pk}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(replaced.status_code, status.HTTP_200_OK, replaced.data)
 
         created = self.client.post(
             "/api/weekly-game-schedules/",
@@ -177,6 +188,96 @@ class WeeklyGameScheduleAPITests(APITestCase):
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.SCHEDULE_CREATED, object_id=str(schedule_id)).exists())
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.SCHEDULE_ACTIVATED, object_id=str(schedule_id)).exists())
         self.assertTrue(AuditLog.objects.filter(action=AuditAction.SCHEDULE_DEACTIVATED, object_id=str(schedule_id)).exists())
+
+    def test_active_schedule_cannot_exceed_fixed_weekday_count(self):
+        self.client.force_authenticate(self.admin)
+        game = Game.objects.create(name="Ghana Game", category="TIMED")
+        payload = {
+            "game": game.pk,
+            "weekday": Weekday.MONDAY,
+            "category": "TIMED",
+            "is_whole_day": False,
+            "closing_time": "12:30",
+            "draw_time": "12:45",
+            "display_order": 8,
+            "is_active": True,
+        }
+
+        rejected = self.client.post("/api/weekly-game-schedules/", payload, format="json")
+        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("weekday", rejected.data)
+        self.assertFalse(game.weekly_schedules.exists())
+
+        replacement = WeeklyGameSchedule.objects.filter(
+            weekday=Weekday.MONDAY,
+            category="TIMED",
+            is_active=True,
+        ).order_by("display_order").first()
+        self.assertIsNotNone(replacement)
+        deactivated = self.client.patch(
+            f"/api/weekly-game-schedules/{replacement.pk}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(deactivated.status_code, status.HTTP_200_OK, deactivated.data)
+        payload["display_order"] = replacement.display_order
+        created = self.client.post("/api/weekly-game-schedules/", payload, format="json")
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+        active_count = WeeklyGameSchedule.objects.filter(
+            weekday=Weekday.MONDAY,
+            is_active=True,
+            game__is_active=True,
+        ).count()
+        self.assertEqual(active_count, 7)
+        summary = self.client.get("/api/weekly-game-schedules/validation/")
+        monday = next(row for row in summary.data["weekdays"] if row["weekday"] == Weekday.MONDAY)
+        self.assertTrue(monday["ready"], monday["errors"])
+
+    def test_schedule_reactivation_requires_available_count(self):
+        self.client.force_authenticate(self.admin)
+        game = Game.objects.create(name="Reactivated Schedule Game", category="TIMED")
+        created = self.client.post(
+            "/api/weekly-game-schedules/",
+            {
+                "game": game.pk,
+                "weekday": Weekday.MONDAY,
+                "category": "TIMED",
+                "is_whole_day": False,
+                "closing_time": "12:30",
+                "draw_time": "12:45",
+                "display_order": 8,
+                "is_active": False,
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.data)
+
+        rejected = self.client.patch(
+            f"/api/weekly-game-schedules/{created.data['id']}/",
+            {"is_active": True},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("weekday", rejected.data)
+
+        replacement = WeeklyGameSchedule.objects.filter(
+            weekday=Weekday.MONDAY,
+            category="TIMED",
+            is_active=True,
+        ).order_by("display_order").first()
+        self.assertIsNotNone(replacement)
+        deactivated = self.client.patch(
+            f"/api/weekly-game-schedules/{replacement.pk}/",
+            {"is_active": False},
+            format="json",
+        )
+        self.assertEqual(deactivated.status_code, status.HTTP_200_OK, deactivated.data)
+        activated = self.client.patch(
+            f"/api/weekly-game-schedules/{created.data['id']}/",
+            {"is_active": True},
+            format="json",
+        )
+        self.assertEqual(activated.status_code, status.HTTP_200_OK, activated.data)
 
     def test_accountant_mutation_denied_but_schedule_read_allowed(self):
         self.client.force_authenticate(self.accountant)

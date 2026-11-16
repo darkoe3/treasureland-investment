@@ -31,6 +31,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .agencies import AgencyWriteLockMixin, require_active_agency, agency_counts, agency_identity, agency_audit
 from .currency import CURRENCY_CODE, CURRENCY_NAME, PDF_CURRENCY_FONT_NAME, format_currency, register_pdf_currency_font
+from .game_schedule import lock_weekly_schedule_capacity
 from .models import (
     Agency,
     AuditAction,
@@ -779,7 +780,10 @@ class PaymentPayerViewSet(PaymentQueryMixin, BaseSearchViewSet):
     ordering_fields = ["payer_name", "created_at", "is_active"]
 
     def get_queryset(self):
-        expected_totals = PaymentObligation.objects.filter(payer_id=OuterRef("pk")).values("payer_id").annotate(total=Sum("total_expected")).values("total")
+        expected_totals = PaymentObligation.objects.filter(
+            payer_id=OuterRef("pk"),
+            deleted_at__isnull=True,
+        ).exclude(status=PaymentObligation.ObligationStatus.CANCELLED).values("payer_id").annotate(total=Sum("total_expected")).values("total")
         collected_totals = PayerPayment.objects.filter(
             obligation__payer_id=OuterRef("pk"),
             status=PayerPayment.PaymentStatus.POSTED,
@@ -795,7 +799,7 @@ class PaymentPayerViewSet(PaymentQueryMixin, BaseSearchViewSet):
             ),
             _active_obligations=Count(
                 "obligations",
-                filter=~Q(obligations__status=PaymentObligation.ObligationStatus.CANCELLED),
+                filter=~Q(obligations__status=PaymentObligation.ObligationStatus.CANCELLED) & Q(obligations__deleted_at__isnull=True),
                 distinct=True,
             ),
         ).order_by("payer_name", "id")
@@ -982,7 +986,7 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
                 Sum("payments__amount_received", filter=Q(payments__status=PayerPayment.PaymentStatus.REVERSED)),
                 Value(Decimal("0.00"), output_field=DecimalField(max_digits=14, decimal_places=2)),
             ),
-        ).annotate(_balance=F("total_expected") - F("_posted_total")).order_by("-obligation_date", "-id")
+        ).annotate(_balance=F("total_expected") - F("_posted_total")).filter(deleted_at__isnull=True).order_by("-obligation_date", "-id")
         if self.request.user.role != UserRole.SUPER_ADMIN:
             queryset = queryset.filter(agency__user_assignments__user=self.request.user, agency__is_active=True).distinct()
         agency_ids = self.validate_agency_query()
@@ -1045,6 +1049,8 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
         if key:
             existing = PaymentObligation.objects.filter(creation_key=key).first()
             if existing:
+                if existing.deleted_at:
+                    raise ValidationError({"creation_key": "This request key belongs to a removed obligation. Use a new request key."})
                 matches = existing.created_by_id == self.request.user.pk and all(
                     getattr(existing, field) == value for field, value in serializer.validated_data.items()
                 )
@@ -1076,7 +1082,7 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
         if request.user.role != UserRole.SUPER_ADMIN:
             require_assignment_flag(request.user, obligation.agency, "can_delete")
         reason = request.data.get("reason", "")
-        if not reason.strip():
+        if not isinstance(reason, str) or not reason.strip():
             raise ValidationError({"reason": "A cancellation reason is required."})
         with transaction.atomic():
             obligation = PaymentObligation.objects.select_for_update().get(pk=obligation.pk)
@@ -1087,8 +1093,41 @@ class PaymentObligationViewSet(PaymentQueryMixin, BaseSearchViewSet):
             obligation.cancelled_at = timezone.now()
             obligation.cancellation_reason = reason.strip()
             obligation.save(update_fields=["status", "cancelled_by", "cancelled_at", "cancellation_reason", "updated_at"])
-        log_audit(request.user, obligation.agency, AuditAction.PAYMENT_OBLIGATION_CANCELLED, "PaymentObligation", obligation.id, new_values={"status": obligation.status, "actor_id": request.user.id})
+            log_audit(request.user, obligation.agency, AuditAction.PAYMENT_OBLIGATION_CANCELLED, "PaymentObligation", obligation.id, new_values={"status": obligation.status, "actor_id": request.user.id, "reason": obligation.cancellation_reason})
         return Response(self.get_serializer(obligation).data)
+
+    def destroy(self, request, *args, **kwargs):
+        if request.user.role != UserRole.SUPER_ADMIN:
+            raise PermissionDenied("Only Super Admin can remove payment obligations from operational views.")
+        reason = request.data.get("reason", "")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValidationError({"reason": "A removal reason is required."})
+        with transaction.atomic():
+            obligation = PaymentObligation.objects.select_for_update().select_related("agency").get(
+                pk=self.get_object().pk, deleted_at__isnull=True
+            )
+            if obligation.status not in {
+                PaymentObligation.ObligationStatus.OPEN,
+                PaymentObligation.ObligationStatus.CANCELLED,
+            }:
+                raise ValidationError({"status": "Only unpaid open or cancelled obligations can be removed."})
+            if obligation.payments.exists():
+                raise ValidationError({"detail": "Obligations with payment or reversal history cannot be removed."})
+            old_values = {"status": obligation.status, "deleted_at": None}
+            obligation.deleted_by = request.user
+            obligation.deleted_at = timezone.now()
+            obligation.deletion_reason = reason.strip()
+            obligation.save(update_fields=["deleted_by", "deleted_at", "deletion_reason", "updated_at"])
+            log_audit(
+                request.user,
+                obligation.agency,
+                AuditAction.PAYMENT_OBLIGATION_DELETED,
+                "PaymentObligation",
+                obligation.id,
+                old_values=old_values,
+                new_values={"status": obligation.status, "deleted_at": obligation.deleted_at, "reason": obligation.deletion_reason, "actor_id": request.user.id},
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
@@ -1147,6 +1186,8 @@ class PayerPaymentViewSet(PaymentQueryMixin, BaseSearchViewSet):
         with transaction.atomic():
             obligation = serializer.validated_data["obligation"]
             obligation_locked = PaymentObligation.objects.select_for_update().select_related("agency", "payer").get(pk=obligation.pk)
+            if obligation_locked.deleted_at:
+                raise ValidationError({"obligation": "Removed obligations cannot accept payments."})
             if self.request.user.role != UserRole.SUPER_ADMIN:
                 require_assignment_flag(self.request.user, obligation_locked.agency, "can_create")
             key = serializer.validated_data["idempotency_key"].strip()
@@ -1289,7 +1330,7 @@ class PaymentAnalyticsView(APIView):
     def get(self, request):
         agency_ids = parse_id_filter(request.query_params, "agency")
         ensure_agency_filter_access(request.user, agency_ids)
-        obligations = PaymentObligation.objects.all()
+        obligations = PaymentObligation.objects.filter(deleted_at__isnull=True)
         if request.user.role != UserRole.SUPER_ADMIN:
             obligations = obligations.filter(agency__user_assignments__user=request.user, agency__is_active=True).distinct()
         if agency_ids:
@@ -1337,7 +1378,7 @@ class PaymentAnalyticsView(APIView):
         posted_payments = payments.filter(status=PayerPayment.PaymentStatus.POSTED)
         reversed_payments = payments.filter(status=PayerPayment.PaymentStatus.REVERSED)
         zero = Decimal("0.00")
-        total_expected = obligations.aggregate(total=Sum("total_expected"))["total"] or zero
+        total_expected = obligations.exclude(status=PaymentObligation.ObligationStatus.CANCELLED).aggregate(total=Sum("total_expected"))["total"] or zero
         posted_total = posted_payments.aggregate(total=Sum("amount_received"))["total"] or zero
         reversed_total = reversed_payments.aggregate(total=Sum("amount_received"))["total"] or zero
         gross_posted_total = payments.aggregate(total=Sum("amount_received"))["total"] or zero
@@ -1435,7 +1476,7 @@ class PaymentAnalyticsView(APIView):
         }
         if request.user.role == UserRole.SUPER_ADMIN:
             agency_rows = list(obligations.values("agency_id", "agency__name").annotate(
-                expected=Sum("total_expected"),
+                expected=Sum("total_expected", filter=~Q(status=PaymentObligation.ObligationStatus.CANCELLED)),
                 outstanding_expected=Sum("total_expected", filter=Q(status__in=[PaymentObligation.ObligationStatus.OPEN, PaymentObligation.ObligationStatus.PARTIALLY_PAID])),
                 obligation_count=Count("id"),
             ).order_by("agency__name"))
@@ -1488,6 +1529,7 @@ class GameViewSet(BaseSearchViewSet):
 
     @transaction.atomic
     def partial_update(self, request, *args, **kwargs):
+        lock_weekly_schedule_capacity()
         game = self.get_object()
         game = Game.objects.select_for_update().get(pk=game.pk)
         if game.is_active and self._explicit_boolean(request.data.get("is_active"), False):
@@ -1590,6 +1632,21 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
     search_fields = ["game__name"]
     ordering_fields = ["weekday", "display_order", "closing_time"]
 
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        lock_weekly_schedule_capacity()
+        return super().create(request, *args, **kwargs)
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        lock_weekly_schedule_capacity()
+        return super().update(request, *args, **kwargs)
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        lock_weekly_schedule_capacity()
+        return super().destroy(request, *args, **kwargs)
+
     def get_queryset(self):
         queryset = WeeklyGameSchedule.objects.select_related("game").order_by("weekday", "display_order", "id")
         active = self.request.query_params.get("active")
@@ -1627,6 +1684,7 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
 
     def _values_for_audit(self, schedule):
         return {
+            "timezone": "Africa/Accra",
             "game": schedule.game_id,
             "game_name": schedule.game.name,
             "weekday": schedule.weekday,
@@ -1638,6 +1696,7 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
             "is_active": schedule.is_active,
         }
 
+    @transaction.atomic
     def perform_create(self, serializer):
         schedule = serializer.save()
         log_audit(
@@ -1650,6 +1709,7 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
             description=f"Schedule created: {schedule.game.name} on {schedule.get_weekday_display()}",
         )
 
+    @transaction.atomic
     def perform_update(self, serializer):
         schedule = self.get_object()
         old_values = self._values_for_audit(schedule)
@@ -1670,6 +1730,7 @@ class WeeklyGameScheduleViewSet(BaseSearchViewSet):
             description=f"Schedule updated: {updated.game.name} on {updated.get_weekday_display()}",
         )
 
+    @transaction.atomic
     def perform_destroy(self, instance):
         old_values = self._values_for_audit(instance)
         instance.is_active = False

@@ -7,9 +7,13 @@ import { WEEKDAYS } from "../lib/game-schedule-operations";
 
 const categories = [
   { value: "TIMED", label: "TIMED — Timed" },
-  { value: "GHANA", label: "GHANA_GAME — Ghana Game" },
+  { value: "GHANA", label: "GHANA — Whole Day" },
   { value: "DOUBLE_CHANCE", label: "DOUBLE_CHANCE — Double Chance" },
 ];
+
+function isGhanaGame(name) {
+  return name.trim().toLowerCase() === "ghana game";
+}
 
 function emptyForm() {
   return { name: "", category: "TIMED", is_active: true };
@@ -22,7 +26,7 @@ function errorText(value) {
 }
 
 function backendError(payload, fallback) {
-  const message = errorText(payload.detail || payload.non_field_errors);
+  const message = errorText(payload.detail || payload.non_field_errors || payload.is_active || payload.weekday);
   const affected = Array.isArray(payload.affected_weekdays)
     ? payload.affected_weekdays.filter((day) => typeof day === "string")
     : [];
@@ -69,9 +73,18 @@ export default function GameCatalogue({ games, entries, onRefresh, onSchedule, l
     setSuccess("");
   }
 
+  function startGhanaGame() {
+    startCreate();
+    setForm({ name: "Ghana Game", category: "TIMED", is_active: true });
+  }
+
   function startEdit(game) {
     setEditingId(String(game.id));
-    setForm({ name: game.name, category: game.category, is_active: Boolean(game.is_active) });
+    setForm({
+      name: game.name,
+      category: isGhanaGame(game.name) ? "TIMED" : game.category,
+      is_active: Boolean(game.is_active),
+    });
     setFormOpen(true);
     setErrors({});
     setSuccess("");
@@ -164,7 +177,10 @@ export default function GameCatalogue({ games, entries, onRefresh, onSchedule, l
             <h2>Manage Games</h2>
             <p className="empty-state">Create the catalogue before assigning games to weekdays. Games with historical records are deactivated, never deleted.</p>
           </div>
-          {!formOpen ? <button className="primary-button" type="button" disabled={loading} onClick={startCreate}><Plus size={16} aria-hidden="true" />Create game</button> : null}
+          {!formOpen ? <div className="button-row">
+            {!games.some((game) => game.name.trim().toLowerCase() === "ghana game") ? <button className="secondary-button" type="button" disabled={loading} onClick={startGhanaGame}><Plus size={16} aria-hidden="true" />Add Ghana Game</button> : null}
+            <button className="primary-button" type="button" disabled={loading} onClick={startCreate}><Plus size={16} aria-hidden="true" />Create game</button>
+          </div> : null}
         </div>
         {success ? <p className="form-success" role="status">{success}</p> : null}
         <GameErrors errors={errors} field="detail" />
@@ -173,12 +189,17 @@ export default function GameCatalogue({ games, entries, onRefresh, onSchedule, l
       {formOpen ? <section className="panel game-catalogue-editor">
         <div className="panel-heading"><h3>{editingId ? "Edit game" : "Create game"}</h3><button className="icon-button" type="button" onClick={closeForm} aria-label="Close game form"><X size={18} aria-hidden="true" /></button></div>
         <form className="game-catalogue-form" onSubmit={saveGame} aria-busy={saving}>
+          {isGhanaGame(form.name) ? <p className="empty-state">Ghana Game is a Timed game, not the Whole Day Ghana category. After saving, choose Schedule to select a weekday and enter closing and draw times in Africa/Accra. No weekdays or times are assigned automatically.</p> : null}
           <label className="field-group">Game name
-            <input maxLength="120" required value={form.name} disabled={saving} onChange={(event) => { setForm({ ...form, name: event.target.value }); setErrors({}); }} />
+            <input maxLength="120" required value={form.name} disabled={saving} onChange={(event) => {
+              const name = event.target.value;
+              setForm({ ...form, name, ...(isGhanaGame(name) ? { category: "TIMED" } : {}) });
+              setErrors({});
+            }} />
             <GameErrors errors={errors} field="name" />
           </label>
           <label className="field-group">Category
-            <select value={form.category} disabled={saving} onChange={(event) => { setForm({ ...form, category: event.target.value }); setErrors({}); }}>
+            <select value={form.category} disabled={saving || isGhanaGame(form.name)} onChange={(event) => { setForm({ ...form, category: event.target.value }); setErrors({}); }}>
               {categories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}
             </select>
             <GameErrors errors={errors} field="category" />

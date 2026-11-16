@@ -109,6 +109,35 @@ test("catalogue loading is not shown as an empty database", async (t) => {
   assert.equal(button(container, "Create game").disabled, true);
 });
 
+test("Ghana Game shortcut creates a timed catalogue game without assumed times", async (t) => {
+  requestHandler = async () => ({ id: 99, name: "Ghana Game", category: "TIMED", is_active: true });
+  const container = await mount(t);
+  await React.act(async () => button(container, "Add Ghana Game").click());
+  assert.equal(container.querySelector('.game-catalogue-form input').value, 'Ghana Game');
+  assert.equal(container.querySelector('.game-catalogue-form select').value, 'TIMED');
+  assert.equal(container.querySelector('.game-catalogue-form select').disabled, true);
+  assert.match(container.textContent, /No weekdays or times are assigned automatically/);
+  await React.act(async () => container.querySelector('.game-catalogue-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
+  assert.equal(calls[0].path, '/games/');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { name: 'Ghana Game', category: 'TIMED', is_active: true });
+});
+
+test("renaming a game to Ghana Game selects and locks the TIMED category", async (t) => {
+  const container = await mount(t);
+  await React.act(async () => button(container, "Create game").click());
+  const name = container.querySelector('.game-catalogue-form input');
+  const category = container.querySelector('.game-catalogue-form select');
+  await setValue(category, "GHANA");
+  await setValue(name, " Ghana Game ");
+  assert.equal(category.value, "TIMED");
+  assert.equal(category.disabled, true);
+});
+
+test("Ghana Game shortcut is hidden when the named game already exists", async (t) => {
+  const container = await mount(t, { games: [{ id: 99, name: 'Ghana Game', category: 'TIMED', is_active: true }] });
+  assert.equal(button(container, 'Add Ghana Game'), undefined);
+});
+
 test("deactivation explicitly identifies affected weekdays and never hard-deletes", async (t) => {
   const game = { id: 7, name: "Lucky Star", category: "TIMED", is_active: true, created_at: "2026-01-01", updated_at: "2026-01-02" };
   const entries = [{ game: 7, weekday: 1, is_active: true, game_is_active: true }];
@@ -122,6 +151,22 @@ test("deactivation explicitly identifies affected weekdays and never hard-delete
   assert.deepEqual(JSON.parse(calls[0].options.body), { is_active: false, confirm_deactivation: true });
   assert.equal(calls.some((call) => call.options?.method === "DELETE"), false);
   window.confirm = confirm;
+});
+
+test("game reactivation displays the backend weekday-capacity error", async (t) => {
+  const game = { id: 8, name: "Inactive scheduled game", category: "TIMED", is_active: false };
+  requestHandler = async () => {
+    throw {
+      message: "Request failed.",
+      payload: { is_active: ["Cannot reactivate this game because Monday already has 7 active games."] },
+    };
+  };
+  const container = await mount(t, {
+    games: [game],
+    entries: [{ game: 8, weekday: 1, is_active: true, game_is_active: false }],
+  });
+  await React.act(async () => container.querySelector('[aria-label="Reactivate Inactive scheduled game"]').click());
+  assert.ok(container.textContent.includes("Monday already has 7 active games."));
 });
 
 test("game management tab remains Super Admin-only and catalogue supports schedule action", async () => {

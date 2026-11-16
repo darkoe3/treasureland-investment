@@ -32,6 +32,11 @@ function harness({ user = admin, obligation = partialObligation, payments = [], 
     false,
     success,
     "",
+    false,
+    false,
+    false,
+    false,
+    false,
     form,
     "",
     {},
@@ -60,7 +65,7 @@ function harness({ user = admin, obligation = partialObligation, payments = [], 
     useEffect() {},
   };
   const compiledModule = { exports: {} };
-  vm.runInNewContext(compiled, { module: compiledModule, exports: compiledModule.exports, URL: { createObjectURL: () => "blob:test", revokeObjectURL() {} }, document: { createElement: () => ({ click() {} }) }, setTimeout, require(name) {
+  vm.runInNewContext(compiled, { module: compiledModule, exports: compiledModule.exports, URL: { createObjectURL: () => "blob:test", revokeObjectURL() {} }, URLSearchParams, document: { createElement: () => ({ click() {} }) }, setTimeout, require(name) {
     if (name === "react") return fakeReact;
     if (name === "react/jsx-runtime") return require(name);
     if (name === "lucide-react") return icons;
@@ -104,7 +109,7 @@ test("successful payment closes the form, resets fields, and refreshes obligatio
   assert.equal(ui.states[1], false, "the payment form closes after confirmed success");
   // Spread into a host-realm plain object first: the sandboxed module's own object literal has a
   // different Object.prototype, which would otherwise fail a strict prototype-aware deep comparison.
-  assert.deepEqual({ ...ui.states[5] }, EMPTY_PAYMENT, "form fields reset after confirmed success");
+  assert.deepEqual({ ...ui.states[10] }, EMPTY_PAYMENT, "form fields reset after confirmed success");
   assert.deepEqual(ui.states[3], createdPayment, "success state captures the created payment for the banner");
   assert.ok(ui.calls.some(([path]) => path.includes("payment-obligations/5/")), "obligation totals/status refresh after success");
   assert.ok(ui.calls.some(([path]) => path.includes("payer-payments/") && path.includes("?")), "payment history refresh after success");
@@ -145,8 +150,8 @@ test("failed validation keeps the form open and preserves the entered values", a
   const formNode = find(ui.render(), (node) => node.type === "form");
   await formNode.props.onSubmit(submitEvent);
   assert.equal(ui.states[1], true, "the form stays open on validation failure");
-  assert.deepEqual(ui.states[5], enteredForm, "entered values are preserved on failure");
-  assert.deepEqual(ui.states[6], { amount_received: ["Amount exceeds balance."] }, "the safe backend validation message is shown");
+  assert.deepEqual(ui.states[10], enteredForm, "entered values are preserved on failure");
+  assert.deepEqual(ui.states[11], { amount_received: ["Amount exceeds balance."] }, "the safe backend validation message is shown");
   assert.equal(ui.states[3], null, "no success banner appears on failure");
   assert.equal(ui.calls.length, 1, "only one attempt was sent");
 });
@@ -197,4 +202,38 @@ test("cancelling the payment form closes it without recording a payment", async 
 
 test("idempotency keys and payment identifiers are never written to browser storage", async () => {
   assert.doesNotMatch(source, /localStorage|sessionStorage/);
+});
+
+test("authorized accountant can create a prefilled replacement without deletion privileges", () => {
+  const cancelled = {
+    ...partialObligation,
+    status: "CANCELLED",
+    business_date: "2026-01-01",
+    game: 7,
+    payer: 4,
+    sub_agent_number: 8,
+    sub_agent_number_snapshot: "SUB-8",
+    terminal_number_snapshot: "TERM-8",
+  };
+  const accountant = {
+    role: "ACCOUNTANT",
+    agency_assignments: [{ agency: { id: 1 }, can_create: true, can_edit: true, can_delete: false }],
+  };
+  const html = harness({ user: accountant, obligation: cancelled }).html();
+  assert.match(html, /Create Replacement Obligation/);
+  assert.match(html, /agency=1/);
+  assert.match(html, /payer=4/);
+  assert.match(html, /sub_agent_number=8/);
+  assert.match(html, /terminal_number=TERM-8/);
+  assert.match(html, /business_date=2026-01-01/);
+  assert.match(html, /game=7/);
+  assert.doesNotMatch(html, /Delete from operational views/);
+});
+
+test("Super Admin deletion control is hidden when any payment history exists", () => {
+  const cancelled = { ...partialObligation, status: "CANCELLED", total_paid: "0.00", reversed_total: "0.00" };
+  const withoutHistory = harness({ obligation: cancelled }).html();
+  const withHistory = harness({ obligation: cancelled, payments: [createdPayment] }).html();
+  assert.match(withoutHistory, /Delete from operational views/);
+  assert.doesNotMatch(withHistory, /Delete from operational views/);
 });

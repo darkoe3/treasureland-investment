@@ -58,6 +58,16 @@ export default function GameScheduleClient({ user }) {
   const groups = useMemo(() => groupScheduleByWeekday(entries), [entries]);
   const activeGames = useMemo(() => games.filter((game) => game.is_active !== false), [games]);
   const selectedGame = games.find((game) => String(game.id) === form.game);
+  const activeCountForSelectedDay = entries.filter((entry) => (
+    Number(entry.weekday) === Number(form.weekday)
+    && entry.is_active
+    && entry.game_is_active !== false
+  )).length;
+  const selectedDayLimit = Number(form.weekday) === 7 ? 6 : 7;
+  const addingGhanaGameToFullDay = !editingId
+    && form.is_active
+    && selectedGame?.name.trim().toLowerCase() === "ghana game"
+    && activeCountForSelectedDay >= selectedDayLimit;
   const selectableGames = selectedGame && selectedGame.is_active === false
     ? [...activeGames, selectedGame]
     : activeGames;
@@ -255,7 +265,7 @@ export default function GameScheduleClient({ user }) {
         <div className="panel-heading">
           <div>
             <h2>Game Schedule</h2>
-            <p className="empty-state">Manage the catalogue, weekly assignments and holiday overrides. Schedule changes affect new sheets only.</p>
+            <p className="empty-state">Manage the catalogue, weekly assignments and holiday overrides. All times use Ghana local time (Africa/Accra). Changes apply to newly created sheets and obligations; existing records keep their saved times.</p>
           </div>
         </div>
         <nav className="game-schedule-tabs" aria-label="Game schedule sections">
@@ -381,13 +391,18 @@ export default function GameScheduleClient({ user }) {
               {!activeGames.length ? <p className="form-error">No active games. <button className="secondary-button compact-button" type="button" onClick={() => setActiveTab("games")}>Create the first game</button></p> : null}
               <label className="field-group">Weekday
                 <select required value={form.weekday} onChange={(event) => setForm({ ...form, weekday: event.target.value })}>
+                  <option value="">Select weekday</option>
                   {WEEKDAYS.map((weekday) => <option key={weekday.value} value={weekday.value}>{weekday.label}</option>)}
                 </select>
               </label>
+              {addingGhanaGameToFullDay ? <p className="form-error" role="alert">
+                This weekday already has {selectedDayLimit} active games. To keep the approved schedule valid, first deactivate the TIMED game you intend to replace; do not remove the Whole Day Ghana or Double Chance entry. No game will be replaced automatically.
+              </p> : null}
               <label className="field-group">Display order
                 <input type="number" min="1" step="1" required value={form.display_order} onChange={(event) => setForm({ ...form, display_order: event.target.value })} />
               </label>
               <p className="field-group"><strong>Mode:</strong> {form.is_whole_day ? "Whole Day" : "Timed"} (based on the selected game&apos;s category)</p>
+              {form.is_whole_day ? <p className="empty-state">Whole Day games have no closing or draw time.</p> : <p className="empty-state">Enter closing and draw times in Ghana local time (Africa/Accra). Draw time must be later on the same day.</p>}
               {!form.is_whole_day ? (
                 <>
                   <label className="field-group">Closing Time
@@ -403,7 +418,7 @@ export default function GameScheduleClient({ user }) {
                 Active
               </label>
             </div>
-            <button className="primary-button" type="submit" disabled={state.saving}>
+            <button className="primary-button" type="submit" disabled={state.saving || addingGhanaGameToFullDay}>
               {editingId ? <Save size={16} aria-hidden="true" /> : <Check size={16} aria-hidden="true" />}
               {state.saving ? "Saving..." : editingId ? "Save entry" : "Create entry"}
             </button>

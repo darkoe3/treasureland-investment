@@ -26,6 +26,9 @@ def repair_active_display_order(apps, schema_editor):
         )
         for order, schedule_id in enumerate(rows, start=1):
             WeeklyGameSchedule.objects.filter(pk=schedule_id).update(display_order=order)
+    if schema_editor.connection.vendor == "postgresql":
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
 
 class Migration(migrations.Migration):

@@ -1,9 +1,22 @@
 from dataclasses import dataclass
 from datetime import time
 
+from django.db import connection
 from django.db import transaction
 
 from .models import Game, GameCategory, Weekday, WeeklyGameSchedule
+
+
+def lock_weekly_schedule_capacity():
+    if not connection.in_atomic_block:
+        raise RuntimeError("Weekly schedule capacity locks require an active transaction.")
+    if connection.vendor != "postgresql":
+        return
+
+    namespace = 0x544C49
+    with connection.cursor() as cursor:
+        for weekday in range(1, 8):
+            cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [namespace, weekday])
 
 
 @dataclass(frozen=True)
@@ -158,6 +171,7 @@ def entry_defaults(entry):
 
 @transaction.atomic
 def apply_approved_weekly_game_schedule():
+    lock_weekly_schedule_capacity()
     approved_keys = set()
     updated = []
 

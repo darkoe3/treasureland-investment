@@ -21,6 +21,47 @@ function emptyObligation(agency = "", payer = "") {
   return { agency, payer, game: "", business_date: "", creation_key: createPaymentIdempotencyKey(), sub_agent_number: "", selected_number: null, description: "", obligation_date: "", total_expected: "", notes: "" };
 }
 
+function initialObligationForm(data, canCreate) {
+  if (!canCreate || typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("create") !== "1") return null;
+  const agency = params.get("agency") || data.agencies[0]?.id || "";
+  const payer = params.get("payer") || data.payers.find((item) => String(item.agency) === String(agency))?.id || "";
+  const subAgentNumber = params.get("sub_agent_number") || "";
+  const selectedNumber = subAgentNumber ? {
+    id: Number(subAgentNumber),
+    agency,
+    payer,
+    agency_name: params.get("agency_name") || data.agencies.find((item) => String(item.id) === String(agency))?.name || "",
+    payer_name: params.get("payer_name") || data.payers.find((item) => String(item.id) === String(payer))?.payer_name || "",
+    sub_agent_number: params.get("sub_agent_number_label") || "",
+    terminal_number: params.get("terminal_number") || "",
+  } : null;
+  const businessDate = params.get("business_date") || "";
+  return {
+    ...emptyObligation(agency, payer),
+    sub_agent_number: subAgentNumber,
+    selected_number: selectedNumber,
+    business_date: businessDate,
+    obligation_date: businessDate,
+    game: params.get("game") || "",
+  };
+}
+
+function replacementObligationUrl(obligation) {
+  const params = new URLSearchParams({
+    create: "1",
+    agency: String(obligation.agency),
+    payer: String(obligation.payer),
+    sub_agent_number: String(obligation.sub_agent_number),
+    sub_agent_number_label: obligation.sub_agent_number_snapshot || "",
+    terminal_number: obligation.terminal_number_snapshot || "",
+    business_date: String(obligation.business_date || ""),
+    game: String(obligation.game || ""),
+  });
+  return `/dashboard/payments/obligations?${params.toString()}`;
+}
+
 function errorText(error) {
   if (!error) return "";
   if (typeof error === "string") return error;
@@ -45,14 +86,14 @@ function Loading() { return <div className="payment-loading" role="status"><span
 
 function ErrorBox({ error }) { return error ? <div className="payment-alert" role="alert"><ShieldAlert size={18} aria-hidden="true" /><span>{errorText(error)}</span></div> : null; }
 
-function SuccessBanner({ title, onDismiss, children, actions }) {
+function SuccessBanner({ title, onDismiss, children, actions, dismissible = true }) {
   const ref = useRef(null);
   useEffect(() => { ref.current?.focus(); }, []);
   return <section className="panel payment-success" role="status" aria-live="polite" tabIndex={-1} ref={ref}>
     <div className="payment-success-heading">
       <CheckCircle2 size={22} aria-hidden="true" />
       <div><h3>{title}</h3></div>
-      <button className="icon-button" type="button" onClick={onDismiss} aria-label="Dismiss success message"><X size={18} /></button>
+      {dismissible ? <button className="icon-button" type="button" onClick={onDismiss} aria-label="Dismiss success message"><X size={18} /></button> : null}
     </div>
     {children}
     {actions ? <div className="card-actions payment-success-actions">{actions}</div> : null}
@@ -267,9 +308,7 @@ function Obligations({ data, user, onRefresh }) {
   const [filters, setFilters] = useState({ agency: "", payer: "", status: "", search: "", sub_agent_number_snapshot: "", terminal_number: "", obligation_start: "", obligation_end: "" });
   const canCreate = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.can_create);
   // Lazy initializer opens the create panel on first render only when ?create=1 is present and permitted.
-  const [form, setForm] = useState(() => (canCreate && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("create") === "1")
-    ? emptyObligation(data.agencies[0]?.id || "", data.payers.find((payer) => String(payer.agency) === String(data.agencies[0]?.id))?.id || "")
-    : null);
+  const [form, setForm] = useState(() => initialObligationForm(data, canCreate));
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
@@ -342,21 +381,136 @@ function PaymentSuccessBanner({ payment, obligation, canRecord, onDismiss, onRec
 
 function ObligationDetail({ data, user, onRefresh, onDownload }) {
   const obligation = data.obligation;
+  const payments = data.payments || [];
+  const hasPaymentHistory = payments.length > 0 || paymentMoney(obligation?.total_paid) > 0 || paymentMoney(obligation?.reversed_total) > 0;
   const canRecord = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => String(item.agency.id) === String(obligation?.agency) && item.can_create);
   const [paymentOpen, setPaymentOpen] = useState(() => (canRecord && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("record") === "1"));
   const [cancelOpen, setCancelOpen] = useState(false);
   const [success, setSuccess] = useState(null);
   const [error, setError] = useState("");
-  const canCancel = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => item.agency.id === obligation?.agency && item.can_delete);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleted, setDeleted] = useState(false);
+  const [cancelled, setCancelled] = useState(false);
+  const [pending, setPending] = useState(false);
+  const canEdit = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => String(item.agency.id) === String(obligation?.agency) && item.can_edit);
+  const canCancel = user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => String(item.agency.id) === String(obligation?.agency) && item.can_delete);
+  const canDelete = user.role === "SUPER_ADMIN"
+    && ["OPEN", "CANCELLED"].includes(obligation?.status)
+    && !hasPaymentHistory;
+  const canCreateReplacement = (user.role === "SUPER_ADMIN" || user.agency_assignments?.some((item) => String(item.agency.id) === String(obligation?.agency) && item.can_create))
+    && Boolean(obligation?.sub_agent_number && obligation?.game && obligation?.business_date);
   function openPayment() { setSuccess(null); setPaymentOpen(true); }
   async function recordPayment(payment) {
     setPaymentOpen(false);
     await onRefresh();
     setSuccess(payment);
   }
-  async function cancel(event) { event.preventDefault(); setError(""); try { await clientRequest(apiPath(`payment-obligations/${obligation.id}/cancel/`), { method: "POST", body: JSON.stringify({ reason: event.currentTarget.reason.value }) }); setCancelOpen(false); onRefresh(); } catch (failure) { setError(apiError(failure)); } }
+  async function cancel(event) {
+    event.preventDefault();
+    setError("");
+    setPending(true);
+    try {
+      await clientRequest(apiPath(`payment-obligations/${obligation.id}/cancel/`), { method: "POST", body: JSON.stringify({ reason: event.currentTarget.reason.value }) });
+      setCancelOpen(false);
+      setCancelled(true);
+      await onRefresh();
+    } catch (failure) {
+      setError(apiError(failure));
+    } finally {
+      setPending(false);
+    }
+  }
+  async function edit(event) {
+    event.preventDefault();
+    setError("");
+    setPending(true);
+    const form = event.currentTarget;
+    const changes = {
+      description: form.elements.description.value,
+      obligation_date: form.elements.obligation_date.value,
+      due_date: form.elements.due_date.value || null,
+      notes: form.elements.notes.value,
+    };
+    if (!hasPaymentHistory) changes.total_expected = form.elements.total_expected.value;
+    try {
+      await clientRequest(apiPath(`payment-obligations/${obligation.id}/`), { method: "PATCH", body: JSON.stringify(changes) });
+      setEditOpen(false);
+      await onRefresh();
+    } catch (failure) {
+      setError(apiError(failure));
+    } finally {
+      setPending(false);
+    }
+  }
+  async function remove(event) {
+    event.preventDefault();
+    setError("");
+    setPending(true);
+    try {
+      await clientRequest(apiPath(`payment-obligations/${obligation.id}/`), { method: "DELETE", body: JSON.stringify({ reason: event.currentTarget.reason.value }) });
+      setDeleteOpen(false);
+      setDeleted(true);
+    } catch (failure) {
+      setError(apiError(failure));
+    } finally {
+      setPending(false);
+    }
+  }
   if (!obligation) return null;
-  return <div className="page-stack payment-workspace"><Link className="back-link" href="/dashboard/payments/obligations"><ArrowLeft size={16} aria-hidden="true" />All obligations</Link><PageHeading eyebrow={`${obligation.agency_name} · ${obligation.payer_name}`} title={obligation.obligation_number} copy={obligation.description} action={<div className="card-actions">{canRecord && obligation.status !== "CANCELLED" && obligation.status !== "PAID" ? <button className="primary-button" type="button" onClick={openPayment}>Record payment</button> : null}{canCancel && obligation.status !== "CANCELLED" && obligation.status !== "PAID" ? <button className="danger-button" type="button" onClick={() => setCancelOpen(true)}>Cancel obligation</button> : null}</div>} /><div className="payment-metric-grid"><Metric label="Expected" value={formatPaymentMoney(obligation.total_expected)} /><Metric label="Posted" value={formatPaymentMoney(obligation.total_paid)} tone="positive" /><Metric label="Reversed" value={formatPaymentMoney(obligation.reversed_total)} /><Metric label="Balance" value={formatPaymentMoney(obligation.balance)} tone="warning" /></div><NumberIdentity record={obligation} /><div className="detail-meta"><span>Obligation date <strong>{obligation.obligation_date}</strong></span><span>Status <StatusBadge status={obligation.status} /></span></div>{obligation.status === "PAID" ? <p className="payment-note">This obligation is fully paid. Posted payments cannot be edited or deleted.</p> : null}{obligation.status === "CANCELLED" ? <p className="payment-note">This obligation is cancelled and cannot receive payments.</p> : null}<ErrorBox error={error} />{success ? <PaymentSuccessBanner payment={success} obligation={data.obligation || obligation} canRecord={canRecord} onDismiss={() => setSuccess(null)} onRecordAnother={openPayment} onDownload={onDownload} /> : null}<section className="panel payment-table-panel"><div className="panel-heading"><div><p className="eyebrow">Immutable ledger</p><h3>Payment history</h3></div></div><PaymentTable rows={data.payments || []} /></section>{paymentOpen ? <PaymentForm obligation={obligation} user={user} onClose={() => setPaymentOpen(false)} onSuccess={recordPayment} /> : null}{cancelOpen ? <dialog open className="payment-dialog"><form onSubmit={cancel}><div className="dialog-heading"><h3>Cancel obligation</h3><button className="icon-button" type="button" onClick={() => setCancelOpen(false)} aria-label="Close cancellation"><X size={18} /></button></div><p>This cannot be undone and obligations with posted payments cannot be cancelled.</p><label>Required reason<textarea name="reason" required maxLength={500} rows="4" /></label><button className="danger-button" type="submit">Confirm cancellation</button></form></dialog> : null}</div>;
+  if (deleted) {
+    return <div className="page-stack payment-workspace">
+      <SuccessBanner title="Obligation removed from operational views." dismissible={false}>
+        <p>The obligation and its audit history are retained. It can no longer be used for operational calculations.</p>
+        <Link className="primary-button" href="/dashboard/payments/obligations">Return to obligations</Link>
+      </SuccessBanner>
+    </div>;
+  }
+  return <div className="page-stack payment-workspace">
+    <Link className="back-link" href="/dashboard/payments/obligations"><ArrowLeft size={16} aria-hidden="true" />All obligations</Link>
+    <PageHeading eyebrow={`${obligation.agency_name} · ${obligation.payer_name}`} title={obligation.obligation_number} copy={obligation.description} action={<div className="card-actions">
+      {canEdit && obligation.status !== "CANCELLED" ? <button className="secondary-button" type="button" onClick={() => setEditOpen(true)}>Edit</button> : null}
+      {obligation.status === "CANCELLED" && !cancelled && canCreateReplacement ? <Link className="primary-button" href={replacementObligationUrl(obligation)}>Create Replacement Obligation</Link> : null}
+      {canRecord && obligation.status !== "CANCELLED" && obligation.status !== "PAID" ? <button className="primary-button" type="button" onClick={openPayment}>Record payment</button> : null}
+      {canCancel && obligation.status !== "CANCELLED" && obligation.status !== "PAID" && paymentMoney(obligation.total_paid) === 0 ? <button className="danger-button" type="button" onClick={() => setCancelOpen(true)}>Cancel obligation</button> : null}
+      {canDelete ? <button className="danger-button" type="button" onClick={() => setDeleteOpen(true)}>Delete from operational views</button> : null}
+    </div>} />
+    <div className="payment-metric-grid"><Metric label="Expected" value={formatPaymentMoney(obligation.total_expected)} /><Metric label="Posted" value={formatPaymentMoney(obligation.total_paid)} tone="positive" /><Metric label="Reversed" value={formatPaymentMoney(obligation.reversed_total)} /><Metric label="Balance" value={formatPaymentMoney(obligation.balance)} tone="warning" /></div>
+    <NumberIdentity record={obligation} />
+    <div className="detail-meta"><span>Obligation date <strong>{obligation.obligation_date}</strong></span><span>Status <StatusBadge status={obligation.status} /></span></div>
+    {obligation.status === "PAID" ? <p className="payment-note">This obligation is fully paid. Posted payments cannot be edited or deleted.</p> : null}
+    {obligation.status === "CANCELLED" ? <p className="payment-note">This obligation is cancelled and cannot receive payments.</p> : null}
+    {cancelled ? <SuccessBanner title="Obligation cancelled. A replacement obligation can now be created." onDismiss={() => setCancelled(false)}>
+      <p>The original remains in the audit history. Create a replacement with the same Sub-Agent Number, terminal, game and business date.</p>
+      {canCreateReplacement ? <Link className="primary-button" href={replacementObligationUrl(obligation)}>Create Replacement Obligation</Link> : null}
+    </SuccessBanner> : null}
+    <ErrorBox error={error} />
+    {success ? <PaymentSuccessBanner payment={success} obligation={data.obligation || obligation} canRecord={canRecord} onDismiss={() => setSuccess(null)} onRecordAnother={openPayment} onDownload={onDownload} /> : null}
+    <section className="panel payment-table-panel"><div className="panel-heading"><div><p className="eyebrow">Immutable ledger</p><h3>Payment history</h3></div></div><PaymentTable rows={payments} /></section>
+    {paymentOpen ? <PaymentForm obligation={obligation} user={user} onClose={() => setPaymentOpen(false)} onSuccess={recordPayment} /> : null}
+    {cancelOpen ? <dialog open className="payment-dialog"><form onSubmit={cancel}>
+      <div className="dialog-heading"><h3>Cancel obligation</h3><button className="icon-button" type="button" onClick={() => setCancelOpen(false)} aria-label="Close cancellation" disabled={pending}><X size={18} /></button></div>
+      <p>This cannot be undone. Obligations with posted payments must be reversed before cancellation.</p>
+      <label>Required reason<textarea name="reason" required maxLength={500} rows="4" disabled={pending} /></label>
+      <button className="danger-button" type="submit" disabled={pending}>{pending ? "Cancelling…" : "Confirm cancellation"}</button>
+    </form></dialog> : null}
+    {editOpen ? <dialog open className="payment-dialog"><form onSubmit={edit}>
+      <div className="dialog-heading"><h3>Edit obligation</h3><button className="icon-button" type="button" onClick={() => setEditOpen(false)} aria-label="Close edit form" disabled={pending}><X size={18} /></button></div>
+      <label>Description<input name="description" required maxLength={255} defaultValue={obligation.description} disabled={pending} /></label>
+      <label>Obligation date<input name="obligation_date" required type="date" defaultValue={obligation.obligation_date} disabled={pending} /></label>
+      <label>Due date<input name="due_date" type="date" defaultValue={obligation.due_date || ""} disabled={pending} /></label>
+      {!hasPaymentHistory ? <label>Total expected<input name="total_expected" required min="0.01" step="0.01" type="number" defaultValue={obligation.total_expected} disabled={pending} /></label> : <p className="payment-note">Expected amount is locked because this obligation has payment history.</p>}
+      <label>Notes<textarea name="notes" rows="3" defaultValue={obligation.notes || ""} disabled={pending} /></label>
+      <ErrorBox error={error} />
+      <button className="primary-button" type="submit" disabled={pending}>{pending ? "Saving…" : "Save changes"}</button>
+    </form></dialog> : null}
+    {deleteOpen ? <dialog open className="payment-dialog"><form onSubmit={remove}>
+      <div className="dialog-heading"><h3>Remove obligation from operational views</h3><button className="icon-button" type="button" onClick={() => setDeleteOpen(false)} aria-label="Close removal" disabled={pending}><X size={18} /></button></div>
+      <p>This is available only for unpaid obligations with no payment or reversal history. The record and audit history are retained.</p>
+      <label>Required reason<textarea name="reason" required maxLength={500} rows="4" disabled={pending} /></label>
+      <button className="danger-button" type="submit" disabled={pending}>{pending ? "Removing…" : "Confirm removal"}</button>
+    </form></dialog> : null}
+  </div>;
 }
 
 function PaymentForm({ obligation, onClose, onSuccess }) {

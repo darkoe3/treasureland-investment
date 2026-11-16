@@ -32,6 +32,7 @@ from .models import (
     UserAgencyAssignment,
     UserRole,
     WeeklyGameSchedule,
+    Weekday,
     money,
 )
 
@@ -626,6 +627,16 @@ class GameSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         instance = self.instance
+        name = attrs.get("name", instance.name if instance else "")
+        category = attrs.get("category", instance.category if instance else GameCategory.TIMED)
+        if (
+            name.strip().casefold() == "ghana game"
+            and category != GameCategory.TIMED
+            and (instance is None or "name" in attrs or "category" in attrs)
+        ):
+            raise serializers.ValidationError({
+                "category": "The game named Ghana Game must use the TIMED category."
+            })
         if "confirm_deactivation" in attrs and (
             instance is None or attrs.get("is_active") is not False
         ):
@@ -668,6 +679,24 @@ class GameSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({
                         "is_active": "Update this game's schedule assignments to its current category before reactivating it."
                     })
+                scheduled_weekdays = WeeklyGameSchedule.objects.filter(
+                    game=instance,
+                    is_active=True,
+                ).values_list("weekday", flat=True).distinct()
+                for weekday in scheduled_weekdays:
+                    expected_count = 6 if weekday == Weekday.SUNDAY else 7
+                    active_count = WeeklyGameSchedule.objects.filter(
+                        weekday=weekday,
+                        is_active=True,
+                        game__is_active=True,
+                    ).count()
+                    if active_count >= expected_count:
+                        raise serializers.ValidationError({
+                            "is_active": (
+                                f"Cannot reactivate this game because {Weekday(weekday).label} already has "
+                                f"{expected_count} active games. Deactivate an existing assignment first."
+                            )
+                        })
         return attrs
 
     def update(self, instance, validated_data):
@@ -748,6 +777,21 @@ class WeeklyGameScheduleSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"draw_time": "Draw time must be later than closing time."})
 
         if game and weekday and is_active:
+            expected_count = 6 if weekday == Weekday.SUNDAY else 7
+            active_count = WeeklyGameSchedule.objects.filter(
+                weekday=weekday,
+                is_active=True,
+                game__is_active=True,
+            )
+            if self.instance:
+                active_count = active_count.exclude(pk=self.instance.pk)
+            if active_count.count() >= expected_count:
+                raise serializers.ValidationError({
+                    "weekday": (
+                        f"This weekday already has {expected_count} active games. "
+                        "Deactivate an existing assignment before adding a replacement."
+                    )
+                })
             duplicate = WeeklyGameSchedule.objects.filter(game=game, weekday=weekday, is_active=True)
             if self.instance:
                 duplicate = duplicate.exclude(pk=self.instance.pk)

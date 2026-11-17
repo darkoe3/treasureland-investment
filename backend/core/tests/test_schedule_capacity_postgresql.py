@@ -180,3 +180,78 @@ class ScheduleCapacityPostgreSQLConcurrencyTests(TransactionTestCase):
                 object_id=str(game_to_reactivate.pk),
             ).exists())
         self.assertTrue(scheduled_game.is_active)
+
+    def test_competing_connected_game_edits_serialize_validation_save_and_audit(self):
+        released = WeeklyGameSchedule.objects.get(
+            weekday=Weekday.MONDAY,
+            is_active=True,
+            display_order=6,
+        )
+        released.is_active = False
+        released.save(update_fields=["is_active"])
+        games = [
+            Game.objects.create(name=f"Connected concurrent game {index}", category="TIMED", is_active=False)
+            for index in range(2)
+        ]
+        schedules = [
+            WeeklyGameSchedule.objects.create(
+                game=game,
+                weekday=Weekday.MONDAY,
+                category="TIMED",
+                is_whole_day=False,
+                closing_time=time(12, 30),
+                draw_time=time(12, 45),
+                display_order=8 + index,
+                is_active=False,
+            )
+            for index, game in enumerate(games)
+        ]
+        payloads = [
+            {
+                "name": game.name,
+                "category": "TIMED",
+                "is_active": True,
+                "assignments": [{
+                    "id": schedule.pk,
+                    "weekday": Weekday.MONDAY,
+                    "display_order": released.display_order,
+                    "is_active": True,
+                    "closing_time": "12:30",
+                    "draw_time": "12:45",
+                }],
+            }
+            for game, schedule in zip(games, schedules)
+        ]
+        barrier = threading.Barrier(2)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda item: self.concurrent_request(
+                    barrier,
+                    "post",
+                    f"/api/games/{item[1].pk}/edit-schedule/",
+                    payloads[item[0]],
+                ),
+                enumerate(games),
+            ))
+
+        self.assertEqual(sorted(result[0] for result in results), [200, 400], results)
+        failure = next(data for status_code, data in results if status_code == 400)
+        self.assertIn("weekday_conflicts", failure)
+        self.assertEqual(
+            WeeklyGameSchedule.objects.filter(
+                weekday=Weekday.MONDAY,
+                is_active=True,
+                game__is_active=True,
+            ).count(),
+            7,
+        )
+        active_competitors = []
+        for game in games:
+            game.refresh_from_db()
+            if game.weekly_schedules.filter(weekday=Weekday.MONDAY, is_active=True).exists() and game.is_active:
+                active_competitors.append(game)
+        self.assertEqual(len(active_competitors), 1)
+        self.assertEqual(
+            AuditLog.objects.filter(action=AuditAction.GAME_REACTIVATED, object_id__in=[str(game.pk) for game in games]).count(),
+            1,
+        )

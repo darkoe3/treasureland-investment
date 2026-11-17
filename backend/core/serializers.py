@@ -652,7 +652,10 @@ class GameSerializer(serializers.ModelSerializer):
                     "name": "This game is referenced by active holiday overrides and cannot be renamed."
                 })
         if instance and "category" in attrs and attrs["category"] != instance.category:
-            if WeeklyGameSchedule.objects.filter(game=instance, is_active=True).exists():
+            if (
+                WeeklyGameSchedule.objects.filter(game=instance, is_active=True).exists()
+                and not self.context.get("connected_schedule_update")
+            ):
                 raise serializers.ValidationError({
                     "category": "Deactivate and update this game's schedule assignments before changing its category."
                 })
@@ -675,33 +678,53 @@ class GameSerializer(serializers.ModelSerializer):
             else:
                 category = attrs.get("category", instance.category)
                 mismatched_schedules = WeeklyGameSchedule.objects.filter(game=instance).exclude(category=category)
-                if mismatched_schedules.exists():
+                if mismatched_schedules.exists() and not self.context.get("connected_schedule_update"):
                     raise serializers.ValidationError({
                         "is_active": "Update this game's schedule assignments to its current category before reactivating it."
                     })
-                scheduled_weekdays = WeeklyGameSchedule.objects.filter(
-                    game=instance,
-                    is_active=True,
-                ).values_list("weekday", flat=True).distinct()
-                for weekday in scheduled_weekdays:
-                    expected_count = 6 if weekday == Weekday.SUNDAY else 7
-                    active_count = WeeklyGameSchedule.objects.filter(
-                        weekday=weekday,
+                if not self.context.get("connected_schedule_update"):
+                    scheduled_weekdays = WeeklyGameSchedule.objects.filter(
+                        game=instance,
                         is_active=True,
-                        game__is_active=True,
-                    ).count()
-                    if active_count >= expected_count:
-                        raise serializers.ValidationError({
-                            "is_active": (
-                                f"Cannot reactivate this game because {Weekday(weekday).label} already has "
-                                f"{expected_count} active games. Deactivate an existing assignment first."
-                            )
-                        })
+                    ).values_list("weekday", flat=True).distinct()
+                    for weekday in scheduled_weekdays:
+                        expected_count = 6 if weekday == Weekday.SUNDAY else 7
+                        active_count = WeeklyGameSchedule.objects.filter(
+                            weekday=weekday,
+                            is_active=True,
+                            game__is_active=True,
+                        ).count()
+                        if active_count >= expected_count:
+                            raise serializers.ValidationError({
+                                "is_active": (
+                                    f"Cannot reactivate this game because {Weekday(weekday).label} already has "
+                                    f"{expected_count} active games. Deactivate an existing assignment first."
+                                )
+                            })
         return attrs
 
     def update(self, instance, validated_data):
         validated_data.pop("confirm_deactivation", None)
         return super().update(instance, validated_data)
+
+
+class GameScheduleAssignmentEditSerializer(serializers.Serializer):
+    id = serializers.IntegerField(min_value=1, required=False)
+    weekday = serializers.IntegerField(min_value=1, max_value=7)
+    display_order = serializers.IntegerField(min_value=1)
+    is_active = serializers.BooleanField()
+    closing_time = serializers.TimeField(required=False, allow_null=True)
+    draw_time = serializers.TimeField(required=False, allow_null=True)
+    replace_schedule_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+
+
+class GameScheduleEditSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=120, trim_whitespace=True)
+    category = GameCategoryField()
+    is_active = serializers.BooleanField()
+    confirm_clear_times = serializers.BooleanField(required=False, default=False)
+    confirm_deactivation = serializers.BooleanField(required=False, default=False)
+    assignments = GameScheduleAssignmentEditSerializer(many=True)
 
 
 class WeeklyGameCategoryField(GameCategoryField):

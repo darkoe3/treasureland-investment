@@ -472,6 +472,10 @@ test("weekly schedule proxy allowlist permits exact paths and methods only", () 
   assert.equal(isAllowedBackendProxyPath("games/7", "PATCH"), true);
   assert.equal(isAllowedBackendProxyPath("games/7", "DELETE"), false);
   assert.equal(isAllowedBackendProxyPath("games/for-date", "GET"), true);
+  assert.equal(isAllowedBackendProxyPath("games/7/edit-schedule", "POST"), true);
+  assert.equal(isAllowedBackendProxyPath("games/7/edit-schedule", "PATCH"), false);
+  assert.equal(isAllowedBackendProxyPath("games/abc/edit-schedule", "POST"), false);
+  assert.equal(isAllowedBackendProxyPath("games/7/edit-schedule/extra", "POST"), false);
   assert.equal(isAllowedBackendProxyPath("games/abc", "PATCH"), false);
   assert.equal(isAllowedBackendProxyPath("weekly-game-schedules", "GET"), true);
   assert.equal(isAllowedBackendProxyPath("weekly-game-schedules", "POST"), true);
@@ -506,6 +510,15 @@ test("weekly schedule proxy keeps csrf enforcement before unsafe forwarding", as
   assert.deepEqual(result.payload, { detail: "Invalid security token." });
   assert.equal(result.diagnostics.allowed, true);
   assert.equal(calls.length, 0);
+
+  const connected = await resolveProxy({
+    segments: ["games", "7", "edit-schedule"],
+    body: JSON.stringify({ category: "TIMED", assignments: [] }),
+    validateCsrf: csrfFail,
+  });
+  assert.equal(connected.result.status, 403);
+  assert.equal(connected.result.diagnostics.allowed, true);
+  assert.equal(connected.calls.length, 0);
 });
 
 test("game creation proxy keeps CSRF enforcement and exact methods", async () => {

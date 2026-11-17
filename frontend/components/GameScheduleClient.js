@@ -339,16 +339,16 @@ export default function GameScheduleClient({ user }) {
                         {canMutate ? (
                           <td data-label="Actions">
                             <div className="button-row compact">
-                              <button className="icon-button" type="button" onClick={() => beginEdit(entry)} aria-label={`Edit ${entry.game_name}`}>
-                                <Edit2 size={16} aria-hidden="true" />
+                              <button className="secondary-button compact-button" type="button" onClick={() => beginEdit(entry)}>
+                                <Edit2 size={16} aria-hidden="true" />Edit schedule
                               </button>
                               {entry.is_active ? (
-                                <button className="icon-button danger-soft" type="button" onClick={() => setActive(entry, false)} aria-label={`Deactivate ${entry.game_name}`}>
-                                  <PowerOff size={16} aria-hidden="true" />
+                                <button className="secondary-button compact-button danger-soft" type="button" onClick={() => setActive(entry, false)}>
+                                  <PowerOff size={16} aria-hidden="true" />Deactivate
                                 </button>
                               ) : (
-                                <button className="icon-button success-soft" type="button" disabled={entry.game_is_active === false} onClick={() => setActive(entry, true)} aria-label={`Activate ${entry.game_name}`}>
-                                  <Power size={16} aria-hidden="true" />
+                                <button className="secondary-button compact-button success-soft" type="button" disabled={entry.game_is_active === false} onClick={() => setActive(entry, true)}>
+                                  <Power size={16} aria-hidden="true" />Activate
                                 </button>
                               )}
                             </div>

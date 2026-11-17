@@ -888,6 +888,60 @@ th {
   grid-column: 1 / -1;
 }
 
+.game-connected-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.game-connected-fields,
+.game-assignment-fields,
+.game-assignment-times {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  align-items: end;
+  gap: 1rem;
+}
+
+.game-assignment-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+}
+
+.game-assignment-heading h4 {
+  margin: 0 0 .25rem;
+}
+
+.game-assignment-list {
+  display: grid;
+  gap: .75rem;
+}
+
+.game-assignment {
+  min-width: 0;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.game-assignment legend {
+  padding: 0 .4rem;
+  font-weight: 700;
+}
+
+.game-assignment small {
+  display: block;
+  margin-top: .35rem;
+  color: var(--ink-500);
+}
+
+.game-assignment .form-error {
+  margin: .5rem 0 0;
+}
+
 .game-catalogue-search {
   display: grid;
   gap: .4rem;
@@ -908,6 +962,10 @@ th {
   min-height: 40px;
 }
 
+.game-catalogue .button-row.compact {
+  flex-wrap: wrap;
+}
+
 .game-catalogue-empty {
   display: flex;
   flex-wrap: wrap;
@@ -918,6 +976,17 @@ th {
 @media (max-height: 700px) and (min-width: 981px) {
   .schedule-form {
     position: static;
+  }
+}
+
+@media (max-width: 680px) {
+  .game-assignment {
+    padding: .8rem;
+  }
+
+  .game-assignment-fields,
+  .game-assignment-times {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

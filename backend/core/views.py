@@ -41,6 +41,7 @@ from .models import (
     DailySheetImportStatus,
     DailySheetStatus,
     Game,
+    GameCategory,
     HolidayGameOverride,
     OmittedTerminal,
     PaymentObligation,
@@ -75,6 +76,7 @@ from .serializers import (
     DailySheetSerializer,
     EmailTokenObtainPairSerializer,
     GameSerializer,
+    GameScheduleEditSerializer,
     HolidayGameOverrideSerializer,
     OmittedTerminalSerializer,
     PaymentObligationSerializer,
@@ -1550,13 +1552,411 @@ class GameViewSet(BaseSearchViewSet):
                 )
         return super().partial_update(request, *args, **kwargs)
 
+    @action(detail=True, methods=["post"], url_path="edit-schedule")
+    @transaction.atomic
+    def edit_schedule(self, request, pk=None):
+        lock_weekly_schedule_capacity()
+        game = Game.objects.select_for_update().get(pk=self.get_object().pk)
+        schedules = list(
+            WeeklyGameSchedule.objects.select_for_update()
+            .filter(game=game)
+            .select_related("game")
+            .order_by("weekday", "id")
+        )
+        all_schedules = list(
+            WeeklyGameSchedule.objects.select_for_update()
+            .select_related("game")
+            .order_by("weekday", "display_order", "id")
+        )
+        input_serializer = GameScheduleEditSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        values = input_serializer.validated_data
+        assignments = values["assignments"]
+        existing_by_id = {schedule.pk: schedule for schedule in schedules}
+        submitted_ids = [item["id"] for item in assignments if "id" in item]
+        if len(submitted_ids) != len(set(submitted_ids)) or set(submitted_ids) != set(existing_by_id):
+            raise ValidationError({
+                "assignments": "Include each existing assignment exactly once; use Inactive instead of removing an assignment."
+            })
+
+        game_data = {
+            "name": values["name"],
+            "category": values["category"],
+            "is_active": values["is_active"],
+        }
+        game_serializer = GameSerializer(
+            game,
+            data=game_data,
+            partial=True,
+            context={"connected_schedule_update": True},
+        )
+        game_serializer.is_valid(raise_exception=True)
+        new_category = game_serializer.validated_data["category"]
+        game_data = {
+            field: game_serializer.validated_data[field]
+            for field in ("name", "category", "is_active")
+        }
+        category_changed = new_category != game.category
+        if new_category != GameCategory.TIMED and any(
+            schedule.closing_time is not None or schedule.draw_time is not None
+            for schedule in schedules
+        ) and not values["confirm_clear_times"]:
+            raise ValidationError({
+                "confirm_clear_times": "Confirm that current closing and draw times will be cleared from the listed assignments."
+            })
+        if category_changed and new_category == GameCategory.TIMED:
+            missing_times = [
+                {"weekday": item["weekday"], "id": item.get("id"), "errors": {
+                    field: "Enter an explicit time for every Timed assignment."
+                    for field in ("closing_time", "draw_time")
+                    if item.get(field) is None
+                }}
+                for item in assignments
+                if item.get("closing_time") is None or item.get("draw_time") is None
+            ]
+            if missing_times:
+                raise ValidationError({"assignments": missing_times})
+
+        for item in assignments:
+            if new_category == GameCategory.TIMED:
+                if item.get("closing_time") is None or item.get("draw_time") is None:
+                    raise ValidationError({
+                        "assignments": [{
+                            "weekday": item["weekday"],
+                            "id": item.get("id"),
+                            "errors": {
+                                field: "Timed assignments require an explicit closing and draw time."
+                                for field in ("closing_time", "draw_time")
+                                if item.get(field) is None
+                            },
+                        }]
+                    })
+                if item["draw_time"] <= item["closing_time"]:
+                    raise ValidationError({
+                        "assignments": [{
+                            "weekday": item["weekday"],
+                            "id": item.get("id"),
+                            "errors": {"draw_time": "Draw time must be later than closing time in Africa/Accra."},
+                        }]
+                    })
+
+        if game.is_active and not values["is_active"]:
+            active_weekdays = sorted({
+                schedule.weekday for schedule in schedules if schedule.is_active
+            })
+            if active_weekdays and not values["confirm_deactivation"]:
+                return Response(
+                    {
+                        "detail": "Confirm deactivation of this game and its active schedule assignments.",
+                        "confirmation_required": True,
+                        "affected_weekdays": [Weekday(day).label for day in active_weekdays],
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        replacement_ids = [
+            item["replace_schedule_id"]
+            for item in assignments
+            if item.get("replace_schedule_id") is not None
+        ]
+        if len(replacement_ids) != len(set(replacement_ids)):
+            raise ValidationError({"assignments": "Choose a different replacement for each weekday."})
+        schedules_by_id = {schedule.pk: schedule for schedule in all_schedules}
+        replacements = {}
+        for item in assignments:
+            replacement_id = item.get("replace_schedule_id")
+            if replacement_id is None:
+                continue
+            replacement = schedules_by_id.get(replacement_id)
+            if (
+                not item["is_active"]
+                or not values["is_active"]
+                or replacement is None
+                or replacement.game_id == game.pk
+                or replacement.weekday != item["weekday"]
+                or not replacement.is_active
+                or not replacement.game.is_active
+            ):
+                raise ValidationError({
+                    "assignments": [{
+                        "weekday": item["weekday"],
+                        "errors": {"replace_schedule_id": "Choose an active assignment for this same weekday."},
+                    }]
+                })
+            replacements[replacement_id] = replacement
+
+        if category_changed:
+            for schedule in schedules:
+                if schedule.category != GameCategory.GHANA:
+                    continue
+                affected_overrides = [
+                    override for override in HolidayGameOverride.objects.filter(
+                        is_active=True,
+                    ).filter(Q(normal_game_id=game.pk) | Q(replacement_game_id=game.pk))
+                    if (
+                        (override.normal_game_id == game.pk and override.holiday_date.isoweekday() == schedule.weekday)
+                        or (override.replacement_game_id == game.pk and override.source_date.isoweekday() == schedule.weekday)
+                    )
+                ]
+                if affected_overrides:
+                    raise ValidationError({
+                        "assignments": [{
+                            "weekday": schedule.weekday,
+                            "id": schedule.pk,
+                            "errors": {"category": "Deactivate holiday overrides that use this Ghana assignment before changing its category."},
+                        }]
+                    })
+
+        projected = {}
+        for schedule in all_schedules:
+            projected[schedule.pk] = {
+                "id": schedule.pk,
+                "weekday": schedule.weekday,
+                "game_id": schedule.game_id,
+                "game_name": schedule.game.name,
+                "game_category": schedule.game.category,
+                "category": schedule.category,
+                "is_whole_day": schedule.is_whole_day,
+                "closing_time": schedule.closing_time,
+                "draw_time": schedule.draw_time,
+                "display_order": schedule.display_order,
+                "is_active": schedule.is_active,
+                "game_is_active": schedule.game.is_active,
+            }
+        for index, item in enumerate(assignments):
+            projected_id = item.get("id", -(index + 1))
+            projected[projected_id] = {
+                "id": projected_id,
+                "weekday": item["weekday"],
+                "game_id": game.pk,
+                "game_name": values["name"],
+                "game_category": new_category,
+                "category": new_category,
+                "is_whole_day": new_category != GameCategory.TIMED,
+                "closing_time": item.get("closing_time") if new_category == GameCategory.TIMED else None,
+                "draw_time": item.get("draw_time") if new_category == GameCategory.TIMED else None,
+                "display_order": item["display_order"],
+                "is_active": item["is_active"],
+                "game_is_active": values["is_active"],
+            }
+        for replacement_id in replacements:
+            projected[replacement_id]["is_active"] = False
+
+        newly_activated = any(
+            item["is_active"] and (
+                "id" not in item or not existing_by_id[item["id"]].is_active
+            )
+            for item in assignments
+        )
+        validate_weekdays = set()
+        if values["is_active"] and (
+            (not game.is_active)
+            or newly_activated
+            or (category_changed and any(item["is_active"] for item in assignments))
+        ):
+            validate_weekdays = {
+                item["weekday"] for item in assignments if item["is_active"]
+            }
+        weekday_conflicts = []
+        inspect_weekdays = validate_weekdays | {item["weekday"] for item in assignments}
+        for weekday in sorted(inspect_weekdays):
+            assigned_entries = [
+                entry for entry in projected.values()
+                if entry["weekday"] == weekday and entry["is_active"]
+            ]
+            day_entries = [
+                entry for entry in assigned_entries if entry["game_is_active"]
+            ]
+            expected = 6 if weekday == Weekday.SUNDAY else 7
+            errors = []
+            if weekday in validate_weekdays and len(day_entries) > expected:
+                errors.append({
+                    "code": "full_capacity",
+                    "message": f"{Weekday(weekday).label} has {len(day_entries)} active games; capacity is {expected}. Choose an active assignment to replace.",
+                })
+            elif weekday in validate_weekdays and len(day_entries) < expected:
+                errors.append({
+                    "code": "missing_assignments",
+                    "message": f"{Weekday(weekday).label} needs {expected} active games; the proposed schedule has {len(day_entries)}. Add or activate {expected - len(day_entries)} assignment(s).",
+                })
+            for field, code, message in (
+                ("game_id", "duplicate_assignment", "The same game is assigned more than once."),
+                ("display_order", "occupied_display_order", "Two active games use the same display order."),
+            ):
+                field_values = [entry[field] for entry in assigned_entries]
+                if len(field_values) != len(set(field_values)):
+                    errors.append({"code": code, "message": f"{Weekday(weekday).label}: {message}"})
+            category_entries = [
+                entry for entry in assigned_entries
+                if entry["game_is_active"] or entry["game_id"] == game.pk
+            ]
+            for entry in category_entries:
+                if entry["category"] != entry["game_category"]:
+                    errors.append({
+                        "code": "category_mismatch",
+                        "message": f"{entry['game_name']} on {Weekday(weekday).label} has a schedule category that does not match its game category.",
+                    })
+                if entry["is_whole_day"] != (entry["category"] != GameCategory.TIMED):
+                    errors.append({
+                        "code": "category_mismatch",
+                        "message": f"{entry['game_name']} on {Weekday(weekday).label} has a category and Whole Day mismatch.",
+                    })
+            if weekday in validate_weekdays:
+                for category, label, expected_category_count in (
+                    (GameCategory.GHANA, "Ghana Game", 1),
+                    (GameCategory.DOUBLE_CHANCE, "Double Chance", 1),
+                    (GameCategory.TIMED, "Timed", expected - 2),
+                ):
+                    actual = sum(entry["category"] == category for entry in day_entries)
+                    if actual != expected_category_count:
+                        if actual > expected_category_count:
+                            excess_names = [
+                                entry["game_name"] for entry in day_entries
+                                if entry["category"] == category
+                            ][:actual - expected_category_count]
+                            adjustment = f"Deactivate or convert one of: {', '.join(excess_names)}."
+                        else:
+                            adjustment = f"Add or activate {expected_category_count - actual} {label} assignment(s)."
+                        errors.append({
+                            "code": "category_composition",
+                            "message": (
+                                f"{Weekday(weekday).label} needs exactly {expected_category_count} {label} assignment(s); "
+                                f"the proposed schedule has {actual}. {adjustment}"
+                            ),
+                        })
+            if errors:
+                weekday_conflicts.append({
+                    "weekday": weekday,
+                    "weekday_display": Weekday(weekday).label,
+                    "errors": errors,
+                })
+        if weekday_conflicts:
+            raise ValidationError({"weekday_conflicts": weekday_conflicts})
+
+        game_changed_fields = {
+            field for field in ("name", "category", "is_active")
+            if getattr(game, field) != game_data[field]
+        }
+        game_old_values = self._audit_values(game, game_changed_fields)
+        before_schedule_values = {
+            schedule.pk: self._values_for_schedule_audit(schedule)
+            for schedule in [*schedules, *replacements.values()]
+        }
+        changed_ids = []
+        for item in assignments:
+            schedule = existing_by_id.get(item.get("id"))
+            if schedule is None:
+                continue
+            desired = (
+                item["weekday"],
+                new_category,
+                new_category != GameCategory.TIMED,
+                item.get("closing_time") if new_category == GameCategory.TIMED else None,
+                item.get("draw_time") if new_category == GameCategory.TIMED else None,
+                item["display_order"],
+                item["is_active"],
+            )
+            current = (
+                schedule.weekday,
+                schedule.category,
+                schedule.is_whole_day,
+                schedule.closing_time,
+                schedule.draw_time,
+                schedule.display_order,
+                schedule.is_active,
+            )
+            if current != desired:
+                changed_ids.append(schedule.pk)
+        WeeklyGameSchedule.objects.filter(pk__in=[*changed_ids, *replacement_ids]).update(is_active=False)
+        if game_changed_fields:
+            game = game_serializer.save()
+
+        saved_schedules = []
+        for item in assignments:
+            schedule = existing_by_id.get(item.get("id"))
+            if schedule is None:
+                schedule = WeeklyGameSchedule(game=game, weekday=item["weekday"])
+            else:
+                schedule.game = game
+                schedule.weekday = item["weekday"]
+            schedule.category = new_category
+            schedule.is_whole_day = new_category != GameCategory.TIMED
+            schedule.closing_time = item.get("closing_time") if new_category == GameCategory.TIMED else None
+            schedule.draw_time = item.get("draw_time") if new_category == GameCategory.TIMED else None
+            schedule.display_order = item["display_order"]
+            schedule.is_active = item["is_active"]
+            if schedule.pk is None or schedule.pk in changed_ids:
+                schedule.save()
+            saved_schedules.append(schedule)
+        for replacement in replacements.values():
+            replacement.is_active = False
+            replacement.save(update_fields=["is_active", "updated_at"])
+
+        if game_changed_fields:
+            if game.is_active != game_old_values["is_active"]:
+                game_action = AuditAction.GAME_REACTIVATED if game.is_active else AuditAction.GAME_DEACTIVATED
+            else:
+                game_action = AuditAction.GAME_UPDATED
+            log_audit(
+                request.user, None, game_action, "Game", game.pk,
+                old_values=game_old_values,
+                new_values=self._audit_values(game, game_changed_fields),
+                description="Game and schedule updated.",
+            )
+        for schedule in saved_schedules:
+            old_values = before_schedule_values.get(schedule.pk)
+            new_values = self._values_for_schedule_audit(schedule)
+            if old_values == new_values:
+                continue
+            if old_values is None:
+                action_value = AuditAction.SCHEDULE_CREATED
+            elif old_values["is_active"] != new_values["is_active"]:
+                action_value = AuditAction.SCHEDULE_ACTIVATED if new_values["is_active"] else AuditAction.SCHEDULE_DEACTIVATED
+            else:
+                action_value = AuditAction.SCHEDULE_UPDATED
+            log_audit(
+                request.user, None, action_value, "WeeklyGameSchedule", schedule.pk,
+                old_values=old_values,
+                new_values=new_values,
+                description=f"Schedule updated: {game.name} on {schedule.get_weekday_display()}",
+            )
+        for replacement in replacements.values():
+            old_values = before_schedule_values[replacement.pk]
+            new_values = self._values_for_schedule_audit(replacement)
+            log_audit(
+                request.user, None, AuditAction.SCHEDULE_DEACTIVATED, "WeeklyGameSchedule", replacement.pk,
+                old_values=old_values,
+                new_values=new_values,
+                description=f"Schedule deactivated as an explicitly selected replacement.",
+            )
+        return Response({
+            "game": GameSerializer(game).data,
+            "assignments": WeeklyGameScheduleSerializer(saved_schedules, many=True).data,
+        })
+
     @staticmethod
     def _audit_values(game, changed_fields):
         return {
             "game_id": game.pk,
+            "name": game.name,
             "category": game.category,
             "is_active": game.is_active,
             "changed_fields": sorted(changed_fields),
+        }
+
+    @staticmethod
+    def _values_for_schedule_audit(schedule):
+        return {
+            "timezone": "Africa/Accra",
+            "game": schedule.game_id,
+            "game_name": schedule.game.name,
+            "weekday": schedule.weekday,
+            "category": schedule.category,
+            "is_whole_day": schedule.is_whole_day,
+            "closing_time": schedule.closing_time,
+            "draw_time": schedule.draw_time,
+            "display_order": schedule.display_order,
+            "is_active": schedule.is_active,
         }
 
     @transaction.atomic

@@ -51,6 +51,70 @@ class ScheduleTimeEditingTests(GameFixture, TestCase):
         new_sheet.copy_weekday_games()
         self.assertEqual(new_sheet.sheet_games.get(game_id=self.schedule.game_id).closing_time_snapshot, time(13))
 
+    def test_category_conversion_preserves_historical_obligation_payment_receipt_and_sheet_snapshots(self):
+        created = self.create()
+        self.assertEqual(created.status_code, 201, created.data)
+        obligation = PaymentObligation.objects.get(pk=created.data["id"])
+        original_obligation_snapshot = deepcopy(obligation.game_snapshot)
+        payment = self.pay(obligation.pk, "category-conversion-history")
+        self.assertEqual(payment.status_code, 201, payment.data)
+        sheet = DailySheet.objects.create(agency=self.agency, transaction_date=date(2026, 11, 9), created_by=self.admin)
+        sheet.copy_weekday_games()
+        snapshot = sheet.sheet_games.get(game_id=self.schedule.game_id)
+        original_sheet_snapshot = (
+            snapshot.game_name_snapshot,
+            snapshot.category_snapshot,
+            snapshot.is_whole_day_snapshot,
+            snapshot.closing_time_snapshot,
+            snapshot.draw_time_snapshot,
+        )
+        game = self.schedule.game
+        assignments = [
+            {
+                "id": schedule.pk,
+                "weekday": schedule.weekday,
+                "display_order": schedule.display_order,
+                "is_active": schedule.is_active,
+                "closing_time": schedule.closing_time.strftime("%H:%M") if schedule.closing_time else None,
+                "draw_time": schedule.draw_time.strftime("%H:%M") if schedule.draw_time else None,
+            }
+            for schedule in game.weekly_schedules.order_by("weekday")
+        ]
+
+        converted = self.client.post(
+            f"/api/games/{game.pk}/edit-schedule/",
+            {
+                "name": game.name,
+                "category": "GHANA",
+                "is_active": False,
+                "confirm_clear_times": True,
+                "confirm_deactivation": True,
+                "assignments": assignments,
+            },
+            format="json",
+        )
+
+        self.assertEqual(converted.status_code, 200, converted.data)
+        obligation.refresh_from_db()
+        snapshot.refresh_from_db()
+        self.assertEqual(obligation.game_snapshot, original_obligation_snapshot)
+        self.assertEqual(
+            (
+                snapshot.game_name_snapshot,
+                snapshot.category_snapshot,
+                snapshot.is_whole_day_snapshot,
+                snapshot.closing_time_snapshot,
+                snapshot.draw_time_snapshot,
+            ),
+            original_sheet_snapshot,
+        )
+        receipt = self.client.get(f"/api/payer-payments/{payment.data['id']}/receipt/")
+        self.assertEqual(receipt.status_code, 200)
+        self.assertIn(original_obligation_snapshot["closing_time"].encode(), receipt.content)
+        game_audit = AuditLog.objects.get(action="GAME_DEACTIVATED", object_id=str(game.pk))
+        self.assertEqual(game_audit.old_values["category"], "TIMED")
+        self.assertEqual(game_audit.new_values["category"], "GHANA")
+
     def test_accountant_cannot_change_times_even_with_staff_flags(self):
         user = User.objects.create_user(email='schedule-staff@example.com', password='Testpass123!', is_staff=True, is_superuser=True)
         self.client.force_authenticate(user)

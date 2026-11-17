@@ -86,6 +86,7 @@ function isDailySheetImportPathAllowed(path, method) {
 export function isAllowedBackendProxyPath(path, method = "GET") {
   const normalizedMethod = String(method || "GET").toUpperCase();
   const cleanPath = cleanProxyPath(path);
+  if (/^games\/\d+\/edit-schedule$/.test(cleanPath)) return normalizedMethod === "POST";
   if (cleanPath === "organisation-settings") return ["GET", "PATCH"].includes(normalizedMethod);
   if (cleanPath === "profile") return ["GET", "PATCH"].includes(normalizedMethod);
   if (cleanPath === "profile/change-password") return normalizedMethod === "POST";
